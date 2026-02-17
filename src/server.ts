@@ -28,6 +28,9 @@ import { EventLinker } from './modules/event_linker/service/event-linker.js';
 import { LifecycleManager } from './modules/lifecycle/service/lifecycle-manager.js';
 import { VersioningHandler } from './modules/versioning/service/versioning-handler.js';
 import { VersionRepository } from './modules/versions/repo/version-repo.js';
+import { ClaimRepository } from './modules/claims/repo/claim-repo.js';
+import { ClaimQuoteExtractor } from './modules/claims/service/claim-extractor.js';
+import { OverviewGenerator } from './modules/overview/service/overview-generator.js';
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -93,17 +96,24 @@ export function buildApp() {
   const lifecycleManager = new LifecycleManager(eventRepo, eventBus, auditService, scheduler, clock);
   const versioningHandler = new VersioningHandler(eventRepo, versionRepo, mediaRepo, eventBus);
 
+  // Phase 3: Claims → Overview
+  const claimRepo = new ClaimRepository(prisma);
+  const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService);
+  const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService);
+
   eventBus.subscribe('ArticlePolicyOk', 'EmbeddingService', embeddingService.handler());
   eventBus.subscribe('ArticleEmbedded', 'EventLinker', eventLinker.handler());
   eventBus.subscribe('EventCreated', 'LifecycleManager.handleEventCreated', lifecycleManager.handleEventCreated());
   eventBus.subscribe('ArticleLinkedToEvent', 'LifecycleManager.handleArticleLinked', lifecycleManager.handleArticleLinked());
   eventBus.subscribe('EventUpdateTriggered', 'VersioningHandler', versioningHandler.handler());
+  eventBus.subscribe('EventVersionCommitted', 'ClaimQuoteExtractor', claimExtractor.handler());
+  eventBus.subscribe('ClaimGraphBuilt', 'OverviewGenerator', overviewGenerator.handler());
 
   // Routes
   app.register(healthRoutes);
   app.register(tabsRoutes);
   app.register(feedRoutes(feedService));
-  app.register(eventDetailRoutes(eventRepo));
+  app.register(eventDetailRoutes(eventRepo, claimRepo));
   app.register(debugScrapeRoutes(scrapeOrchestrator));
 
   return app;

@@ -38,6 +38,52 @@ const mockEventRepo = {
         eventArticles: [],
       };
     }
+    if (id === 'with-overview') {
+      return {
+        id: 'with-overview',
+        state: 'PUBLISHED',
+        t0: new Date('2025-06-15T12:00:00Z'),
+        tLast: new Date('2025-06-15T14:00:00Z'),
+        publishAt: new Date('2025-06-15T12:05:00Z'),
+        publishedAt: new Date('2025-06-15T12:05:00Z'),
+        closedAt: null,
+        canonicalEventId: null,
+        createdAt: new Date(),
+        versions: [{
+          id: 'ver-1',
+          versionIndex: 0,
+          gateStatus: 'PASS',
+          headline: 'Reforma tributaria',
+          packetJson: {
+            overview: {
+              gate_status: 'PASS',
+              sections: [
+                { title: 'Qué pasó', key: 'que_paso', bullets: [
+                  { claim_id: 'c1', text: 'reforma tributaria aprobada', claim_type: 'FACT', status: 'SUPPORTED',
+                    citation_refs: [{ quote_id: 'q1', article_id: 'art-1', media_key: 'eltiempo', url: 'https://eltiempo.com/1' }] },
+                ] },
+                { title: 'Contexto', key: 'contexto', bullets: [] },
+                { title: 'En disputa', key: 'en_disputa', bullets: [] },
+                { title: 'Qué falta por confirmar', key: 'que_falta', bullets: [] },
+              ],
+            },
+            claims_count: 1,
+            quotes_count: 1,
+          },
+          diffJson: {},
+        }],
+        eventArticles: [{
+          article: {
+            id: 'art-1',
+            media: { mediaKey: 'eltiempo' },
+            title: 'Reforma tributaria',
+            snippet: 'El gobierno aprobó la reforma',
+            url: 'https://eltiempo.com/1',
+            publishedAt: new Date('2025-06-15T11:00:00Z'),
+          },
+        }],
+      };
+    }
     return null;
   },
 } as unknown as EventRepository;
@@ -128,6 +174,36 @@ describe('API contract tests', () => {
       const response = await app.inject({ method: 'GET', url: '/v1/events/existing-id' });
       const body = response.json();
       expect(body.latest_version).toBeNull();
+    });
+
+    it('returns overview with citations (quote_id, url) for event with overview', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v1/events/with-overview' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Schema validation
+      const schema = loadSchema('event-detail');
+      const validate = ajv.compile(schema);
+      const valid = validate(body);
+      if (!valid) console.error(validate.errors);
+      expect(valid).toBe(true);
+
+      // latest_version present with PASS gate
+      expect(body.latest_version).not.toBeNull();
+      expect(body.latest_version.gate_status).toBe('PASS');
+
+      // Overview present with sections and citations
+      expect(body.overview).toBeDefined();
+      expect(body.overview.gate_status).toBe('PASS');
+      expect(body.overview.sections).toHaveLength(4);
+
+      // "Qué pasó" section has bullet with citation_refs containing quote_id and url
+      const quePaso = body.overview.sections.find((s: any) => s.key === 'que_paso');
+      expect(quePaso).toBeDefined();
+      expect(quePaso.bullets).toHaveLength(1);
+      expect(quePaso.bullets[0].citation_refs).toHaveLength(1);
+      expect(quePaso.bullets[0].citation_refs[0]).toHaveProperty('quote_id', 'q1');
+      expect(quePaso.bullets[0].citation_refs[0]).toHaveProperty('url', 'https://eltiempo.com/1');
     });
   });
 });

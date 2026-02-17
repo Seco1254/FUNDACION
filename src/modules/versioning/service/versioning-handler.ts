@@ -81,7 +81,7 @@ export class VersioningHandler {
         event_id: ulid(),
         occurred_at: new Date().toISOString(),
         trace: { trace_id: traceId, span_id: ulid(), source_module: 'versioning' },
-        payload: { event_id, version_index: nextIndex },
+        payload: { event_id, version_id: version.id, version_index: nextIndex },
       });
     };
   }

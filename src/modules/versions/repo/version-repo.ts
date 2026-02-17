@@ -11,6 +11,25 @@ export class VersionRepository {
     }) as Promise<EventVersionEntity | null>;
   }
 
+  async findById(id: string): Promise<EventVersionEntity | null> {
+    return this.prisma.eventVersion.findUnique({
+      where: { id },
+    }) as Promise<EventVersionEntity | null>;
+  }
+
+  async update(id: string, data: {
+    packetJson?: unknown;
+    gateStatus?: string;
+  }): Promise<EventVersionEntity> {
+    return this.prisma.eventVersion.update({
+      where: { id },
+      data: {
+        ...(data.packetJson !== undefined ? { packetJson: data.packetJson as any } : {}),
+        ...(data.gateStatus !== undefined ? { gateStatus: data.gateStatus as any } : {}),
+      },
+    }) as Promise<EventVersionEntity>;
+  }
+
   async create(data: {
     eventId: string;
     versionIndex: number;
