@@ -42,4 +42,18 @@ export class ArticleRepository {
       data: { status: status as any, blockedReason: blockedReason as any },
     }) as Promise<ArticleEntity>;
   }
+
+  async updateEmbedding(
+    id: string,
+    data: { embeddingModel: string; embeddingHash: string; embeddingVec: number[] },
+  ): Promise<ArticleEntity> {
+    return this.prisma.article.update({
+      where: { id },
+      data: {
+        embeddingModel: data.embeddingModel,
+        embeddingHash: data.embeddingHash,
+        embeddingVec: data.embeddingVec as any,
+      },
+    }) as Promise<ArticleEntity>;
+  }
 }

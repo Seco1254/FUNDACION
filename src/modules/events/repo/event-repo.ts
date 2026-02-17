@@ -14,7 +14,26 @@ export class EventRepository {
         state: (data.state as any) ?? 'DETECTED',
         t0: data.t0,
         tLast: data.tLast,
+        publishAt: data.publishAt,
+        publishedAt: data.publishedAt,
+        closedAt: data.closedAt,
+        canonicalEventId: data.canonicalEventId,
       },
+    }) as Promise<EventEntity>;
+  }
+
+  async update(id: string, data: {
+    state?: string;
+    t0?: Date;
+    tLast?: Date;
+    publishAt?: Date;
+    publishedAt?: Date;
+    closedAt?: Date;
+    canonicalEventId?: string | null;
+  }): Promise<EventEntity> {
+    return this.prisma.event.update({
+      where: { id },
+      data: data as any,
     }) as Promise<EventEntity>;
   }
 
@@ -26,17 +45,17 @@ export class EventRepository {
   }
 
   async findPublishedFeed(cursor?: { publishedAt: Date; eventId: string }, pageSize: number = 20) {
-    const where = cursor
-      ? {
+    const where: any = { state: 'PUBLISHED' as any };
+    if (cursor) {
+      where.AND = [
+        {
           OR: [
             { publishedAt: { lt: cursor.publishedAt } },
-            {
-              publishedAt: cursor.publishedAt,
-              id: { lt: cursor.eventId },
-            },
+            { publishedAt: cursor.publishedAt, id: { lt: cursor.eventId } },
           ],
-        }
-      : {};
+        },
+      ];
+    }
 
     return this.prisma.event.findMany({
       where,
@@ -68,6 +87,56 @@ export class EventRepository {
       where: { eventId_articleId: { eventId, articleId } },
       update: {},
       create: { eventId, articleId },
+    });
+  }
+
+  async findCandidateEvents(since: Date): Promise<EventEntity[]> {
+    return this.prisma.event.findMany({
+      where: {
+        state: { not: 'CLOSED' as any },
+        tLast: { gte: since },
+      },
+    }) as Promise<EventEntity[]>;
+  }
+
+  async findArticlesForEvent(eventId: string): Promise<any[]> {
+    const rows = await this.prisma.eventArticle.findMany({
+      where: { eventId },
+      include: { article: true },
+    });
+    return rows.map((r: any) => r.article);
+  }
+
+  async countArticlesForEvent(eventId: string): Promise<number> {
+    return this.prisma.eventArticle.count({ where: { eventId } });
+  }
+
+  async findStaleEvents(before: Date): Promise<EventEntity[]> {
+    return this.prisma.event.findMany({
+      where: {
+        state: { notIn: ['CLOSED' as any] },
+        tLast: { lte: before },
+      },
+    }) as Promise<EventEntity[]>;
+  }
+
+  async findActiveEvents(): Promise<EventEntity[]> {
+    return this.prisma.event.findMany({
+      where: {
+        state: { in: ['PUBLISHED' as any, 'UPDATING' as any, 'DORMANT' as any] },
+      },
+    }) as Promise<EventEntity[]>;
+  }
+
+  async findByIdWithDetails(id: string) {
+    return this.prisma.event.findUnique({
+      where: { id },
+      include: {
+        versions: { orderBy: { versionIndex: 'desc' }, take: 1 },
+        eventArticles: {
+          include: { article: { include: { media: true } } },
+        },
+      },
     });
   }
 }

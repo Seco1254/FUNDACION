@@ -41,9 +41,12 @@ model Article {
   publishedAt   DateTime?       @map("published_at")
   title         String
   snippet       String
-  textNorm      String?         @map("text_norm")
-  status        ArticleStatus   @default(DISCOVERED)
-  blockedReason BlockedReason?  @map("blocked_reason")
+  textNorm       String?         @map("text_norm")
+  status         ArticleStatus   @default(DISCOVERED)
+  blockedReason  BlockedReason?  @map("blocked_reason")
+  embeddingModel String?         @map("embedding_model")
+  embeddingVec   Json?           @map("embedding_vec")
+  embeddingHash  String?         @map("embedding_hash")
   createdAt     DateTime        @default(now()) @map("created_at")
   eventArticles EventArticle[]
 

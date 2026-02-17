@@ -17,5 +17,8 @@ export interface ArticleEntity {
   textNorm: string | null;
   status: ArticleStatus;
   blockedReason: BlockedReason | null;
+  embeddingModel: string | null;
+  embeddingVec: number[] | null;
+  embeddingHash: string | null;
   createdAt: Date;
 }

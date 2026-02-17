@@ -23,6 +23,11 @@ import { PolicyGuard } from './modules/ingestion/service/policy-guard.js';
 import { productionFetchHtml } from './modules/ingestion/service/fetch-html.js';
 import { getScraperForMedia } from './modules/ingestion/scrapers/registry.js';
 import { debugScrapeRoutes } from './api/routes/debug-scrape.js';
+import { EmbeddingService } from './modules/embedding/service/embedding-service.js';
+import { EventLinker } from './modules/event_linker/service/event-linker.js';
+import { LifecycleManager } from './modules/lifecycle/service/lifecycle-manager.js';
+import { VersioningHandler } from './modules/versioning/service/versioning-handler.js';
+import { VersionRepository } from './modules/versions/repo/version-repo.js';
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -62,15 +67,37 @@ export function buildApp() {
     mediaRepo, articleRepo, eventBus, auditService, productionFetchHtml, getScraperForMedia,
   );
 
-  // Scheduler
+  // Phase 2: Embedding → EventLinker → Lifecycle → Versioning
   const clock = new RealClock();
-  const _scheduler = new Scheduler(clock, async (job) => {
+  const versionRepo = new VersionRepository(prisma);
+
+  const embeddingService = new EmbeddingService(articleRepo, eventBus, auditService);
+  const eventLinker = new EventLinker(articleRepo, eventRepo, eventBus, auditService, clock);
+  const scheduler = new Scheduler(clock, async (job) => {
     if (job.jobKey === 'scrape:tick') {
       await scrapeOrchestrator.run();
+    } else if (job.jobKey.startsWith('publish:')) {
+      const eventId = job.payload.eventId as string;
+      await lifecycleManager.executePublish(eventId);
+    } else if (job.jobKey.startsWith('refresh:')) {
+      const eventId = job.payload.eventId as string;
+      await lifecycleManager.executeRefresh(eventId);
+    } else if (job.jobKey === 'lifecycle:close') {
+      await lifecycleManager.runCloseCheck();
+    } else if (job.jobKey === 'lifecycle:scheduleRefreshes') {
+      await lifecycleManager.scheduleRefreshes();
     } else {
       logger.info({ jobKey: job.jobKey }, 'scheduler_job_stub');
     }
   });
+  const lifecycleManager = new LifecycleManager(eventRepo, eventBus, auditService, scheduler, clock);
+  const versioningHandler = new VersioningHandler(eventRepo, versionRepo, mediaRepo, eventBus);
+
+  eventBus.subscribe('ArticlePolicyOk', 'EmbeddingService', embeddingService.handler());
+  eventBus.subscribe('ArticleEmbedded', 'EventLinker', eventLinker.handler());
+  eventBus.subscribe('EventCreated', 'LifecycleManager.handleEventCreated', lifecycleManager.handleEventCreated());
+  eventBus.subscribe('ArticleLinkedToEvent', 'LifecycleManager.handleArticleLinked', lifecycleManager.handleArticleLinked());
+  eventBus.subscribe('EventUpdateTriggered', 'VersioningHandler', versioningHandler.handler());
 
   // Routes
   app.register(healthRoutes);

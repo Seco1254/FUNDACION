@@ -8,23 +8,44 @@ export function eventDetailRoutes(eventRepo: EventRepository) {
       async (request, reply) => {
         const { eventId } = request.params;
 
-        const eventWithVersions = await eventRepo.findByIdWithLatestVersion(eventId);
-        if (!eventWithVersions) {
+        const eventWithDetails = await eventRepo.findByIdWithDetails(eventId);
+        if (!eventWithDetails) {
           return reply.status(404).send({ error: 'Event not found' });
         }
 
-        const latestVersion = eventWithVersions.versions[0] ?? null;
+        const latestVersion = eventWithDetails.versions[0] ?? null;
+
+        const articles = (eventWithDetails.eventArticles ?? []).map((ea: any) => ({
+          article_id: ea.article.id,
+          media_key: ea.article.media?.mediaKey ?? 'unknown',
+          title: ea.article.title,
+          snippet: ea.article.snippet,
+          url: ea.article.url,
+          published_at: ea.article.publishedAt?.toISOString?.() ?? null,
+        }));
+
+        const mediaMap = new Map<string, any[]>();
+        for (const a of articles) {
+          const list = mediaMap.get(a.media_key) ?? [];
+          list.push(a);
+          mediaMap.set(a.media_key, list);
+        }
+
+        const mediaTabs = Array.from(mediaMap.entries()).map(([key, items]) => ({
+          media_key: key,
+          articles: items,
+        }));
 
         return {
           event: {
-            id: eventWithVersions.id,
-            state: eventWithVersions.state,
-            t0: eventWithVersions.t0?.toISOString() ?? null,
-            t_last: eventWithVersions.tLast?.toISOString() ?? null,
-            publish_at: eventWithVersions.publishAt?.toISOString() ?? null,
-            published_at: eventWithVersions.publishedAt?.toISOString() ?? null,
-            closed_at: eventWithVersions.closedAt?.toISOString() ?? null,
-            canonical_event_id: eventWithVersions.canonicalEventId ?? null,
+            id: eventWithDetails.id,
+            state: eventWithDetails.state,
+            t0: eventWithDetails.t0?.toISOString() ?? null,
+            t_last: eventWithDetails.tLast?.toISOString() ?? null,
+            publish_at: eventWithDetails.publishAt?.toISOString() ?? null,
+            published_at: eventWithDetails.publishedAt?.toISOString() ?? null,
+            closed_at: eventWithDetails.closedAt?.toISOString() ?? null,
+            canonical_event_id: eventWithDetails.canonicalEventId ?? null,
           },
           latest_version: latestVersion
             ? {
@@ -35,8 +56,8 @@ export function eventDetailRoutes(eventRepo: EventRepository) {
                 diff_json: latestVersion.diffJson ?? {},
               }
             : null,
-          media_tabs: [],
-          overview: { status: 'placeholder' },
+          media_tabs: mediaTabs,
+          overview: { status: 'NOT_READY_PHASE_2' },
           heatmap: { status: 'placeholder' },
         };
       },

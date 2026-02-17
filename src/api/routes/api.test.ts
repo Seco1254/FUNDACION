@@ -22,7 +22,7 @@ const mockFeedService = {
 } as unknown as FeedService;
 
 const mockEventRepo = {
-  findByIdWithLatestVersion: async (id: string) => {
+  findByIdWithDetails: async (id: string) => {
     if (id === 'existing-id') {
       return {
         id: 'existing-id',
@@ -35,6 +35,7 @@ const mockEventRepo = {
         canonicalEventId: null,
         createdAt: new Date(),
         versions: [],
+        eventArticles: [],
       };
     }
     return null;
