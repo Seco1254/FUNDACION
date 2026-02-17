@@ -15,6 +15,14 @@ import { AuditService } from './modules/audit/service/audit-service.js';
 import { EventBus } from './core/event_bus/dispatcher.js';
 import { RealClock } from './core/time/clock.js';
 import { Scheduler } from './core/scheduler/scheduler.js';
+import { ArticleRepository } from './modules/articles/repo/article-repo.js';
+import { MediaRepository } from './modules/media/repo/media-repo.js';
+import { ScrapeOrchestrator } from './modules/ingestion/service/scrape-orchestrator.js';
+import { FetcherParser } from './modules/ingestion/service/fetcher-parser.js';
+import { PolicyGuard } from './modules/ingestion/service/policy-guard.js';
+import { productionFetchHtml } from './modules/ingestion/service/fetch-html.js';
+import { getScraperForMedia } from './modules/ingestion/scrapers/registry.js';
+import { debugScrapeRoutes } from './api/routes/debug-scrape.js';
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -30,6 +38,8 @@ export function buildApp() {
   const eventRepo = new EventRepository(prisma);
   const feedRepo = new FeedRepository(eventRepo);
   const auditRepo = new AuditRepository(prisma);
+  const articleRepo = new ArticleRepository(prisma);
+  const mediaRepo = new MediaRepository(prisma);
 
   // Services
   const feedService = new FeedService(feedRepo);
@@ -39,10 +49,27 @@ export function buildApp() {
   const eventBus = new EventBus();
   eventBus.setAuditLogWriter(auditService);
 
+  // Ingestion pipeline
+  const fetcherParser = new FetcherParser(
+    articleRepo, mediaRepo, eventBus, auditService, productionFetchHtml, getScraperForMedia,
+  );
+  const policyGuard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditService);
+
+  eventBus.subscribe('ArticleDiscovered', 'FetcherParser', fetcherParser.handler());
+  eventBus.subscribe('ArticleNormalized', 'PolicyGuard', policyGuard.handler());
+
+  const scrapeOrchestrator = new ScrapeOrchestrator(
+    mediaRepo, articleRepo, eventBus, auditService, productionFetchHtml, getScraperForMedia,
+  );
+
   // Scheduler
   const clock = new RealClock();
   const _scheduler = new Scheduler(clock, async (job) => {
-    logger.info({ jobKey: job.jobKey }, 'scheduler_job_stub');
+    if (job.jobKey === 'scrape:tick') {
+      await scrapeOrchestrator.run();
+    } else {
+      logger.info({ jobKey: job.jobKey }, 'scheduler_job_stub');
+    }
   });
 
   // Routes
@@ -50,6 +77,7 @@ export function buildApp() {
   app.register(tabsRoutes);
   app.register(feedRoutes(feedService));
   app.register(eventDetailRoutes(eventRepo));
+  app.register(debugScrapeRoutes(scrapeOrchestrator));
 
   return app;
 }

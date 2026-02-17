@@ -1,0 +1,230 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { ScrapeOrchestrator } from './scrape-orchestrator.js';
+import { EventBus } from '../../../core/event_bus/dispatcher.js';
+import { EventEnvelope } from '../../../core/event_bus/envelope.js';
+import { MediaScraper } from '../domain/types.js';
+
+function loadFixture(name: string): string {
+  return readFileSync(resolve(process.cwd(), `test/fixtures/${name}`), 'utf-8');
+}
+
+function makeMockMediaRepo(media: Array<{ id: string; mediaKey: string; allowlisted: boolean }>) {
+  return {
+    findAllAllowlisted: vi.fn().mockResolvedValue(
+      media.filter((m) => m.allowlisted).map((m) => ({
+        id: m.id,
+        mediaKey: m.mediaKey,
+        name: m.mediaKey,
+        allowlisted: m.allowlisted,
+        createdAt: new Date(),
+      })),
+    ),
+    findByKey: vi.fn(),
+    findById: vi.fn(),
+    create: vi.fn(),
+  } as any;
+}
+
+function makeMockArticleRepo() {
+  return {
+    findByUrl: vi.fn().mockResolvedValue(null),
+    findById: vi.fn(),
+    create: vi.fn(),
+    updateStatus: vi.fn(),
+  } as any;
+}
+
+function makeMockAuditWriter() {
+  return {
+    write: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+describe('ScrapeOrchestrator', () => {
+  let eventBus: EventBus;
+  let published: EventEnvelope[];
+
+  beforeEach(() => {
+    eventBus = new EventBus();
+    published = [];
+    const origPublish = eventBus.publish.bind(eventBus);
+    vi.spyOn(eventBus, 'publish').mockImplementation(async (env: EventEnvelope) => {
+      published.push(env);
+    });
+  });
+
+  it('discovers 3 URLs from fixture list page and emits 3 ArticleDiscovered', async () => {
+    const listHtml = loadFixture('eltiempo-list.html');
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-1', mediaKey: 'eltiempo', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: ['https://www.eltiempo.com/'],
+      extractUrls(html: string) {
+        const urls: string[] = [];
+        const regex = /href=["'](https:\/\/www\.eltiempo\.com\/[\w-]+\/[\w-]+-\d+)["']/gi;
+        let match;
+        while ((match = regex.exec(html)) !== null) urls.push(match[1]);
+        return [...new Set(urls)];
+      },
+      parseArticle() {
+        return { title: '', snippet: '', publishedAt: null };
+      },
+    };
+
+    const fetchHtml = vi.fn().mockResolvedValue(listHtml);
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(published).toHaveLength(3);
+
+    for (const env of published) {
+      expect(env.event_name).toBe('ArticleDiscovered');
+      expect(env.payload).toHaveProperty('url');
+      expect(env.payload).toHaveProperty('media_key', 'eltiempo');
+      expect(env.payload).toHaveProperty('discovered_at');
+    }
+  });
+
+  it('deduplicates URLs within the same run', async () => {
+    const html = `
+      <a href="https://www.eltiempo.com/politica/test-article-123">A</a>
+      <a href="https://www.eltiempo.com/politica/test-article-123">B</a>
+      <a href="https://www.eltiempo.com/economia/otro-articulo-456">C</a>
+    `;
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-1', mediaKey: 'eltiempo', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: ['https://www.eltiempo.com/'],
+      extractUrls(h: string) {
+        const urls: string[] = [];
+        const regex = /href=["'](https:\/\/www\.eltiempo\.com\/[\w-]+\/[\w-]+-\d+)["']/gi;
+        let match;
+        while ((match = regex.exec(h)) !== null) urls.push(match[1]);
+        return urls; // intentionally NOT deduped to test orchestrator dedupe
+      },
+      parseArticle() {
+        return { title: '', snippet: '', publishedAt: null };
+      },
+    };
+
+    const fetchHtml = vi.fn().mockResolvedValue(html);
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(2);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('skips URLs that already exist in DB', async () => {
+    const html = `<a href="https://www.eltiempo.com/politica/existing-123">A</a>`;
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-1', mediaKey: 'eltiempo', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    articleRepo.findByUrl.mockResolvedValue({ id: 'existing', url: 'https://www.eltiempo.com/politica/existing-123' });
+
+    const auditWriter = makeMockAuditWriter();
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: ['https://www.eltiempo.com/'],
+      extractUrls() {
+        return ['https://www.eltiempo.com/politica/existing-123'];
+      },
+      parseArticle() {
+        return { title: '', snippet: '', publishedAt: null };
+      },
+    };
+
+    const fetchHtml = vi.fn().mockResolvedValue(html);
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(published).toHaveLength(0);
+  });
+
+  it('writes audit log when list page fetch fails', async () => {
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-1', mediaKey: 'eltiempo', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: ['https://www.eltiempo.com/'],
+      extractUrls() { return []; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+    };
+
+    const fetchHtml = vi.fn().mockRejectedValue(new Error('network error'));
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(0);
+    expect(auditWriter.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'SCRAPE_FAIL',
+        entity_type: 'ARTICLE',
+      }),
+    );
+  });
+
+  it('skips media with stub scraper (no list page URLs)', async () => {
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-3', mediaKey: 'MEDIA_3', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const stubScraper: MediaScraper = {
+      listPageUrls: [],
+      extractUrls() { return []; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+    };
+
+    const fetchHtml = vi.fn();
+    const scraperLookup = vi.fn().mockReturnValue(stubScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(0);
+    expect(fetchHtml).not.toHaveBeenCalled();
+  });
+});

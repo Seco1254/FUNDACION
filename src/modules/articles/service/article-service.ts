@@ -18,6 +18,7 @@ export class ArticleService {
     title: string;
     snippet: string;
     publishedAt?: Date | null;
+    status?: string;
   }): Promise<ArticleEntity> {
     return this.repo.create(data);
   }

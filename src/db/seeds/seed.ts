@@ -3,11 +3,15 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  const mediaEntries = Array.from({ length: 10 }, (_, i) => ({
-    mediaKey: `MEDIA_${i + 1}`,
-    name: `Media ${i + 1}`,
-    allowlisted: true,
-  }));
+  const mediaEntries = [
+    { mediaKey: 'eltiempo', name: 'El Tiempo', allowlisted: true },
+    { mediaKey: 'elespectador', name: 'El Espectador', allowlisted: true },
+    ...Array.from({ length: 8 }, (_, i) => ({
+      mediaKey: `MEDIA_${i + 3}`,
+      name: `Media ${i + 3}`,
+      allowlisted: true,
+    })),
+  ];
 
   for (const entry of mediaEntries) {
     await prisma.media.upsert({
@@ -17,7 +21,7 @@ async function main() {
     });
   }
 
-  console.log('Seed complete: 10 media entries created');
+  console.log('Seed complete: 10 media entries created (2 real + 8 stubs)');
 }
 
 main()

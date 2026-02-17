@@ -15,7 +15,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/db/seeds/seed.ts",
     "db:reset": "prisma migrate reset --force",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "scrape:once": "tsx src/scripts/scrape-once.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

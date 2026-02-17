@@ -18,6 +18,7 @@ export class ArticleRepository {
     title: string;
     snippet: string;
     publishedAt?: Date | null;
+    status?: string;
   }): Promise<ArticleEntity> {
     return this.prisma.article.create({
       data: {
@@ -26,7 +27,7 @@ export class ArticleRepository {
         title: data.title,
         snippet: data.snippet,
         publishedAt: data.publishedAt ?? null,
-        status: 'DISCOVERED',
+        status: (data.status as any) ?? 'DISCOVERED',
       },
     }) as Promise<ArticleEntity>;
   }
