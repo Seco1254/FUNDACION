@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventClosed",
+  "type": "object",
+  "required": ["event_name", "event_id", "occurred_at", "trace", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_name": {
+      "type": "string",
+      "const": "EventClosed"
+    },
+    "event_id": {
+      "type": "string",
+      "description": "ULID identifier for this event"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the event occurred"
+    },
+    "trace": {
+      "type": "object",
+      "required": ["trace_id", "span_id", "source_module"],
+      "additionalProperties": false,
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        },
+        "source_module": {
+          "type": "string"
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "closed_at", "close_reason"],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "closed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "close_reason": {
+          "type": "string",
+          "enum": ["INACTIVITY_7D"]
+        }
+      }
+    }
+  }
+}

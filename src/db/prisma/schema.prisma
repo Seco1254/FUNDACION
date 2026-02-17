@@ -1,0 +1,139 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Media {
+  id          String    @id @default(uuid()) @db.Uuid
+  mediaKey    String    @unique @map("media_key")
+  name        String
+  allowlisted Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  articles    Article[]
+
+  @@map("media")
+}
+
+enum ArticleStatus {
+  DISCOVERED
+  NORMALIZED
+  POLICY_OK
+  POLICY_BLOCKED
+}
+
+enum BlockedReason {
+  NOT_ALLOWLISTED
+  NOT_SPANISH
+  NO_EXTRACT
+  DUPLICATE_URL
+  PARSE_FAIL
+}
+
+model Article {
+  id            String          @id @default(uuid()) @db.Uuid
+  mediaId       String          @map("media_id") @db.Uuid
+  media         Media           @relation(fields: [mediaId], references: [id])
+  url           String          @unique
+  publishedAt   DateTime?       @map("published_at")
+  title         String
+  snippet       String
+  textNorm      String?         @map("text_norm")
+  status        ArticleStatus   @default(DISCOVERED)
+  blockedReason BlockedReason?  @map("blocked_reason")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  eventArticles EventArticle[]
+
+  @@map("article")
+}
+
+enum EventState {
+  DETECTED
+  PENDING_PUBLISH
+  PUBLISHED
+  UPDATING
+  DORMANT
+  CLOSED
+}
+
+model Event {
+  id               String         @id @default(uuid()) @db.Uuid
+  state            EventState     @default(DETECTED)
+  t0               DateTime?
+  tLast            DateTime?      @map("t_last")
+  publishAt        DateTime?      @map("publish_at")
+  publishedAt      DateTime?      @map("published_at")
+  closedAt         DateTime?      @map("closed_at")
+  canonicalEventId String?        @map("canonical_event_id") @db.Uuid
+  canonicalEvent   Event?         @relation("EventCanonical", fields: [canonicalEventId], references: [id])
+  mergedEvents     Event[]        @relation("EventCanonical")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  eventArticles    EventArticle[]
+  versions         EventVersion[]
+
+  @@index([state])
+  @@index([publishedAt(sort: Desc)])
+  @@index([tLast(sort: Desc)])
+  @@map("event")
+}
+
+model EventArticle {
+  eventId   String   @map("event_id") @db.Uuid
+  event     Event    @relation(fields: [eventId], references: [id])
+  articleId String   @map("article_id") @db.Uuid
+  article   Article  @relation(fields: [articleId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([eventId, articleId])
+  @@unique([eventId, articleId])
+  @@index([eventId])
+  @@index([articleId])
+  @@map("event_article")
+}
+
+enum GateStatus {
+  PASS
+  FAIL
+  NA
+}
+
+model EventVersion {
+  id           String     @id @default(uuid()) @db.Uuid
+  eventId      String     @map("event_id") @db.Uuid
+  event        Event      @relation(fields: [eventId], references: [id])
+  versionIndex Int        @map("version_index")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  gateStatus   GateStatus @default(NA) @map("gate_status")
+  headline     String?
+  packetJson   Json       @default("{}") @map("packet_json")
+  diffJson     Json       @default("{}") @map("diff_json")
+
+  @@unique([eventId, versionIndex])
+  @@map("event_version")
+}
+
+enum AuditEntityType {
+  ARTICLE
+  EVENT
+  EVENT_VERSION
+  MERGE
+  SUB_EVENT
+  OVERVIEW
+}
+
+model AuditLog {
+  id         String          @id @default(uuid()) @db.Uuid
+  occurredAt DateTime        @default(now()) @map("occurred_at")
+  entityType AuditEntityType @map("entity_type")
+  entityId   String          @map("entity_id")
+  action     String
+  traceId    String          @map("trace_id")
+  data       Json            @default("{}")
+
+  @@index([entityId])
+  @@index([occurredAt(sort: Desc)])
+  @@map("audit_log")
+}

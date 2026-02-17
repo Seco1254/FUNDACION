@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventDetailResponse",
+  "type": "object",
+  "required": ["event", "latest_version", "media_tabs", "overview", "heatmap"],
+  "properties": {
+    "event": {
+      "type": "object",
+      "required": ["id", "state", "t0", "t_last", "publish_at", "published_at", "closed_at", "canonical_event_id"],
+      "properties": {
+        "id": { "type": "string" },
+        "state": { "type": "string", "enum": ["DETECTED", "PENDING_PUBLISH", "PUBLISHED", "UPDATING", "DORMANT", "CLOSED"] },
+        "t0": { "type": ["string", "null"] },
+        "t_last": { "type": ["string", "null"] },
+        "publish_at": { "type": ["string", "null"] },
+        "published_at": { "type": ["string", "null"] },
+        "closed_at": { "type": ["string", "null"] },
+        "canonical_event_id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "latest_version": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["version_index", "gate_status", "headline", "packet_json", "diff_json"],
+          "properties": {
+            "version_index": { "type": "integer" },
+            "gate_status": { "type": "string", "enum": ["PASS", "FAIL", "NA"] },
+            "headline": { "type": ["string", "null"] },
+            "packet_json": { "type": "object" },
+            "diff_json": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "media_tabs": { "type": "array" },
+    "overview": { "type": "object" },
+    "heatmap": { "type": "object" }
+  },
+  "additionalProperties": false
+}

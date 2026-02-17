@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HealthResponse",
+  "type": "object",
+  "required": ["ok", "time"],
+  "properties": {
+    "ok": { "type": "boolean", "const": true },
+    "time": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
