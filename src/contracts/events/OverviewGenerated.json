@@ -36,10 +36,13 @@
     },
     "payload": {
       "type": "object",
-      "required": ["event_id", "version_index", "gate_status"],
+      "required": ["event_id", "version_id", "version_index", "gate_status"],
       "additionalProperties": false,
       "properties": {
         "event_id": {
+          "type": "string"
+        },
+        "version_id": {
           "type": "string"
         },
         "version_index": {

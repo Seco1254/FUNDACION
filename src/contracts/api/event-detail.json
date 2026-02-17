@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "EventDetailResponse",
   "type": "object",
-  "required": ["event", "latest_version", "media_tabs", "overview", "heatmap"],
+  "required": ["event", "latest_version", "media_tabs", "overview", "bias", "topics", "topics_heatmap", "subevents", "heatmap"],
   "properties": {
     "event": {
       "type": "object",
@@ -38,6 +38,17 @@
     },
     "media_tabs": { "type": "array" },
     "overview": { "type": "object" },
+    "bias": {
+      "type": "object",
+      "required": ["media_level", "article_level"],
+      "properties": {
+        "media_level": { "type": "array" },
+        "article_level": { "type": "array" }
+      }
+    },
+    "topics": { "type": "object" },
+    "topics_heatmap": { "type": "array" },
+    "subevents": { "type": "array" },
     "heatmap": { "type": "object" }
   },
   "additionalProperties": false

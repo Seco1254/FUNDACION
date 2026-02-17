@@ -1,0 +1,39 @@
+{
+  "version": "0.1",
+  "labels": ["CRITICO", "INSTITUCIONAL", "EMOCIONAL", "TECNICO", "SEGURIDAD_FRAME", "ECONOMIA_FRAME", "GOBIERNO_FRAME", "OPOSICION_FRAME", "NEUTRO", "NO_CONCLUYENTE"],
+  "secondary_labels": ["IZQUIERDISTA", "DERECHISTA", "CENTRISTA", "PRO_GOBIERNO", "ANTI_GOBIERNO"],
+  "feature_dims": 512,
+  "features": {
+    "emotional_words": ["terrible", "espantoso", "maravilloso", "increible", "alarmante", "devastador", "tragico", "glorioso", "indignante", "vergonzoso", "heroico", "catastrofico", "exitoso", "dramatico", "impactante", "lamentable", "escandaloso", "deplorable", "extraordinario", "peligroso"],
+    "institutional_words": ["informo", "comunico", "segun", "oficialmente", "institucional", "autoridad", "entidad", "ministerio", "gobierno", "congreso", "senado", "decreto", "resolucion", "normativa", "comunicado", "pronunciamiento"],
+    "critical_words": ["critico", "cuestiono", "denuncio", "advirtio", "alerto", "opuso", "rechazo", "exigio", "reclamo", "protesto", "repudio", "condeno", "impugno", "censuro"],
+    "technical_words": ["porcentaje", "cifra", "estadistica", "indicador", "indice", "tasa", "variacion", "crecimiento", "disminucion", "incremento", "reduccion", "analisis", "estudio", "informe", "dato", "medicion"],
+    "negation_words": ["no", "nunca", "jamas", "tampoco", "sin", "nada", "ninguno", "ningun"],
+    "attribution_words": ["segun", "afirmo", "dijo", "declaro", "indico", "senalo", "aseguro", "manifesto", "expreso", "sostuvo"],
+    "pro_gov_words": ["logro", "avance", "cumplimiento", "progreso", "exito", "fortalecimiento", "mejora", "beneficio"],
+    "anti_gov_words": ["fracaso", "incumplimiento", "abandono", "negligencia", "ineficiencia", "corrupcion", "despilfarro", "crisis"]
+  },
+  "weights": {
+    "CRITICO": { "emotional": 0.2, "critical": 0.5, "negation": 0.15, "institutional": -0.2, "technical": -0.1, "bias": -0.1 },
+    "INSTITUCIONAL": { "emotional": -0.3, "critical": -0.2, "negation": -0.05, "institutional": 0.5, "technical": 0.1, "bias": 0.0 },
+    "EMOCIONAL": { "emotional": 0.6, "critical": 0.1, "negation": 0.1, "institutional": -0.2, "technical": -0.3, "bias": 0.0 },
+    "TECNICO": { "emotional": -0.3, "critical": -0.1, "negation": -0.05, "institutional": 0.1, "technical": 0.5, "bias": 0.0 },
+    "SEGURIDAD_FRAME": { "emotional": 0.1, "critical": 0.1, "negation": 0.05, "institutional": 0.1, "technical": 0.0, "bias": 0.0 },
+    "ECONOMIA_FRAME": { "emotional": -0.1, "critical": 0.0, "negation": 0.0, "institutional": 0.1, "technical": 0.3, "bias": 0.0 },
+    "GOBIERNO_FRAME": { "emotional": -0.1, "critical": -0.1, "negation": -0.05, "institutional": 0.3, "technical": 0.0, "bias": 0.1 },
+    "OPOSICION_FRAME": { "emotional": 0.1, "critical": 0.3, "negation": 0.1, "institutional": -0.1, "technical": 0.0, "bias": -0.1 },
+    "NEUTRO": { "emotional": -0.4, "critical": -0.3, "negation": -0.1, "institutional": 0.1, "technical": 0.2, "bias": 0.0 },
+    "NO_CONCLUYENTE": { "emotional": 0.0, "critical": 0.0, "negation": 0.0, "institutional": 0.0, "technical": 0.0, "bias": 0.0 }
+  },
+  "secondary_weights": {
+    "PRO_GOBIERNO": { "pro_gov": 0.6, "anti_gov": -0.3, "critical": -0.2, "institutional": 0.2 },
+    "ANTI_GOBIERNO": { "pro_gov": -0.3, "anti_gov": 0.6, "critical": 0.3, "institutional": -0.1 },
+    "IZQUIERDISTA": { "pro_gov": -0.1, "anti_gov": 0.2, "critical": 0.2, "institutional": -0.2 },
+    "DERECHISTA": { "pro_gov": 0.1, "anti_gov": -0.1, "critical": -0.1, "institutional": 0.3 },
+    "CENTRISTA": { "pro_gov": 0.0, "anti_gov": 0.0, "critical": -0.1, "institutional": 0.2 }
+  },
+  "thresholds": {
+    "primary_min_confidence": 0.15,
+    "secondary_min_confidence": 0.25
+  }
+}

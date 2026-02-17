@@ -182,6 +182,54 @@ model Quote {
   @@map("quote")
 }
 
+enum BiasScope {
+  MEDIA_LEVEL
+  ARTICLE_LEVEL
+}
+
+model BiasLabel {
+  id              String    @id @default(uuid()) @db.Uuid
+  scope           BiasScope
+  mediaId         String?   @map("media_id") @db.Uuid
+  articleId       String?   @map("article_id") @db.Uuid
+  eventId         String    @map("event_id") @db.Uuid
+  versionId       String    @map("version_id") @db.Uuid
+  labelPrimary    String    @map("label_primary")
+  labelSecondary  String?   @map("label_secondary")
+  intensity       Float
+  confidence      Float
+  rationaleJson   Json      @map("rationale_json") @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([eventId, versionId])
+  @@index([mediaId, eventId])
+  @@index([articleId])
+  @@map("bias_label")
+}
+
+model TopicAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventId    String   @map("event_id") @db.Uuid
+  versionId  String   @map("version_id") @db.Uuid
+  articleId  String   @map("article_id") @db.Uuid
+  topicKey   String   @map("topic_key")
+  weight     Float
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([eventId, versionId])
+  @@index([topicKey])
+  @@index([articleId])
+  @@map("topic_assignment")
+}
+
+model MediaProfile {
+  mediaId     String   @id @map("media_id") @db.Uuid
+  profileJson Json     @map("profile_json") @default("{}")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("media_profile")
+}
+
 enum AuditEntityType {
   ARTICLE
   EVENT
@@ -190,6 +238,8 @@ enum AuditEntityType {
   SUB_EVENT
   OVERVIEW
   CLAIM
+  BIAS
+  TOPIC
 }
 
 model AuditLog {

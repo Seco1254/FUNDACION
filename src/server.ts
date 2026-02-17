@@ -31,6 +31,13 @@ import { VersionRepository } from './modules/versions/repo/version-repo.js';
 import { ClaimRepository } from './modules/claims/repo/claim-repo.js';
 import { ClaimQuoteExtractor } from './modules/claims/service/claim-extractor.js';
 import { OverviewGenerator } from './modules/overview/service/overview-generator.js';
+import { BiasLabelRepository } from './modules/bias/repo/bias-label-repo.js';
+import { MediaProfileRepository } from './modules/bias/repo/media-profile-repo.js';
+import { BiasProfiler } from './modules/bias/service/bias-profiler.js';
+import { TopicAssignmentRepository } from './modules/topics/repo/topic-assignment-repo.js';
+import { TopicAssigner } from './modules/topics/service/topic-assigner.js';
+import { SubEventBuilder } from './modules/subevents/service/subevent-builder.js';
+import { biasRoutes } from './api/routes/bias.js';
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -101,6 +108,14 @@ export function buildApp() {
   const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService);
   const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService);
 
+  // Phase 4: Bias → Topics → SubEvents
+  const biasRepo = new BiasLabelRepository(prisma);
+  const mediaProfileRepo = new MediaProfileRepository(prisma);
+  const topicRepo = new TopicAssignmentRepository(prisma);
+  const biasProfiler = new BiasProfiler(eventRepo, claimRepo, biasRepo, mediaProfileRepo, mediaRepo, eventBus, auditService);
+  const topicAssigner = new TopicAssigner(eventRepo, claimRepo, topicRepo, versionRepo, eventBus, auditService);
+  const subEventBuilder = new SubEventBuilder(topicRepo, claimRepo, versionRepo, eventBus, auditService);
+
   eventBus.subscribe('ArticlePolicyOk', 'EmbeddingService', embeddingService.handler());
   eventBus.subscribe('ArticleEmbedded', 'EventLinker', eventLinker.handler());
   eventBus.subscribe('EventCreated', 'LifecycleManager.handleEventCreated', lifecycleManager.handleEventCreated());
@@ -108,12 +123,16 @@ export function buildApp() {
   eventBus.subscribe('EventUpdateTriggered', 'VersioningHandler', versioningHandler.handler());
   eventBus.subscribe('EventVersionCommitted', 'ClaimQuoteExtractor', claimExtractor.handler());
   eventBus.subscribe('ClaimGraphBuilt', 'OverviewGenerator', overviewGenerator.handler());
+  eventBus.subscribe('OverviewGenerated', 'TopicAssigner', topicAssigner.handler());
+  eventBus.subscribe('OverviewGenerated', 'BiasProfiler', biasProfiler.handler());
+  eventBus.subscribe('TopicHeatmapBuilt', 'SubEventBuilder', subEventBuilder.handler());
 
   // Routes
   app.register(healthRoutes);
   app.register(tabsRoutes);
   app.register(feedRoutes(feedService));
-  app.register(eventDetailRoutes(eventRepo, claimRepo));
+  app.register(eventDetailRoutes(eventRepo, claimRepo, biasRepo));
+  app.register(biasRoutes(eventRepo, biasRepo));
   app.register(debugScrapeRoutes(scrapeOrchestrator));
 
   return app;

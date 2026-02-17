@@ -101,7 +101,7 @@ export class OverviewGenerator {
         event_id: ulid(),
         occurred_at: new Date().toISOString(),
         trace: { trace_id: traceId, span_id: ulid(), source_module: 'overview' },
-        payload: { event_id, version_index: version?.versionIndex ?? 0, gate_status: overview.gate_status },
+        payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: overview.gate_status },
       });
     };
   }

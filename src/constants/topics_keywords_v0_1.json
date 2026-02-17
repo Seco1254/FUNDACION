@@ -1,0 +1,14 @@
+{
+  "SEGURIDAD": ["seguridad", "policia", "ejercito", "militar", "violencia", "homicidio", "narcotrafico", "crimen", "secuestro", "guerrilla", "conflicto", "armado", "defensa", "fuerza", "ataque", "bomba", "terrorismo", "extorsion"],
+  "ECONOMIA": ["economia", "economico", "pib", "inflacion", "dolar", "peso", "impuesto", "tributaria", "fiscal", "presupuesto", "deuda", "banco", "financiero", "empleo", "desempleo", "inversion", "mercado", "exportacion", "importacion", "salario", "precio"],
+  "JUSTICIA": ["justicia", "juicio", "fiscal", "tribunal", "corte", "sentencia", "demanda", "abogado", "condena", "investigacion", "penal", "carcel", "prision", "delito", "imputado", "procuraduria", "ley", "decreto"],
+  "SALUD": ["salud", "hospital", "medico", "pandemia", "vacuna", "enfermedad", "paciente", "clinica", "epidemia", "virus", "contagio", "mortalidad", "farmacia", "medicamento", "sanitario"],
+  "EDUCACION": ["educacion", "escuela", "universidad", "estudiante", "profesor", "docente", "colegio", "academico", "beca", "curriculo", "pedagogia", "enseñanza", "aprendizaje"],
+  "CORRUPCION": ["corrupcion", "soborno", "cohecho", "peculado", "malversacion", "fraude", "irregularidad", "lavado", "enriquecimiento", "nepotismo", "clientelismo", "escandalo"],
+  "PROTESTA": ["protesta", "marcha", "manifestacion", "huelga", "paro", "movilizacion", "bloqueo", "disturbio", "manifestante", "sindical", "sindicato", "reclamo"],
+  "POLITICA": ["politica", "gobierno", "presidente", "congreso", "senado", "camara", "partido", "eleccion", "candidato", "votacion", "parlamento", "oposicion", "coalicion", "ministro", "gobernador", "alcalde", "reforma"],
+  "RELACIONES_INT": ["internacional", "diplomatico", "embajada", "tratado", "frontera", "migracion", "refugiado", "onu", "oea", "bilateral", "canciller", "relaciones", "exterior", "extranjero"],
+  "AMBIENTE": ["ambiente", "ambiental", "clima", "deforestacion", "contaminacion", "biodiversidad", "ecologia", "sostenible", "carbon", "mineria", "petroleo", "energia", "renovable", "calentamiento"],
+  "TECNOLOGIA": ["tecnologia", "digital", "internet", "ciberseguridad", "innovacion", "inteligencia artificial", "software", "datos", "plataforma", "telecomunicacion", "aplicacion"],
+  "INFRAESTRUCTURA": ["infraestructura", "carretera", "puente", "transporte", "metro", "aeropuerto", "construccion", "obra", "vivienda", "acueducto", "via", "autopista", "ferrocarril"]
+}

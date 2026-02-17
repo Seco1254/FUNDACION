@@ -1,8 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { EventRepository } from '../../modules/events/repo/event-repo.js';
 import { ClaimRepository } from '../../modules/claims/repo/claim-repo.js';
+import { BiasLabelRepository } from '../../modules/bias/repo/bias-label-repo.js';
 
-export function eventDetailRoutes(eventRepo: EventRepository, claimRepo?: ClaimRepository) {
+export function eventDetailRoutes(
+  eventRepo: EventRepository,
+  claimRepo?: ClaimRepository,
+  biasRepo?: BiasLabelRepository,
+) {
   return async function (app: FastifyInstance) {
     app.get<{ Params: { eventId: string } }>(
       '/v1/events/:eventId',
@@ -80,6 +85,41 @@ export function eventDetailRoutes(eventRepo: EventRepository, claimRepo?: ClaimR
         const packetJson = (latestVersion?.packetJson as any) ?? {};
         const overview = packetJson.overview ?? { status: 'NOT_READY' };
 
+        // Bias from bias_label table
+        let bias: { media_level: any[]; article_level: any[] } = { media_level: [], article_level: [] };
+        if (biasRepo && latestVersion) {
+          try {
+            const mediaLabels = await biasRepo.findMediaLevelByEvent(eventId, latestVersion.id);
+            const articleLabels = await biasRepo.findArticleLevelByEvent(eventId, latestVersion.id);
+            bias = {
+              media_level: mediaLabels.map((l) => ({
+                media_id: l.mediaId,
+                label_primary: l.labelPrimary,
+                label_secondary: l.labelSecondary,
+                intensity: l.intensity,
+                confidence: l.confidence,
+                rationale: l.rationaleJson,
+              })),
+              article_level: articleLabels.map((l) => ({
+                article_id: l.articleId,
+                media_id: l.mediaId,
+                label_primary: l.labelPrimary,
+                label_secondary: l.labelSecondary,
+                intensity: l.intensity,
+                confidence: l.confidence,
+                rationale: l.rationaleJson,
+              })),
+            };
+          } catch {
+            // Bias table may not exist yet
+          }
+        }
+
+        // Topics + heatmap + subevents from packet_json
+        const topics = packetJson.topics ?? { top_topics: [], emergent: [] };
+        const topicsHeatmap = packetJson.topics_heatmap ?? [];
+        const subevents = packetJson.subevents ?? [];
+
         return {
           event: {
             id: eventWithDetails.id,
@@ -102,6 +142,10 @@ export function eventDetailRoutes(eventRepo: EventRepository, claimRepo?: ClaimR
             : null,
           media_tabs: mediaTabs,
           overview,
+          bias,
+          topics,
+          topics_heatmap: topicsHeatmap,
+          subevents,
           heatmap: { status: 'placeholder' },
         };
       },
