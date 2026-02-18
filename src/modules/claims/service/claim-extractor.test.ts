@@ -228,6 +228,12 @@ describe('ClaimQuoteExtractor handler', () => {
         versionIndex: 0,
         packetJson: {},
       }),
+      findById: vi.fn().mockResolvedValue({
+        id: 'ver-1',
+        versionIndex: 0,
+        packetJson: {},
+      }),
+      update: vi.fn().mockResolvedValue({}),
     };
 
     mediaRepo = {

@@ -9,6 +9,7 @@ export function debugScrapeRoutes(orchestrator: ScrapeOrchestrator): FastifyPlug
         ok: true,
         discovered: result.discovered,
         skipped: result.skipped,
+        summary: result.summary,
       });
     });
 

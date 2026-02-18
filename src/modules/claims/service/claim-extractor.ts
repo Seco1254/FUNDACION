@@ -7,6 +7,10 @@ import { MediaRepository } from '../../media/repo/media-repo.js';
 import { ClaimRepository } from '../repo/claim-repo.js';
 import { logger } from '../../../core/logging/logger.js';
 import type { ClaimType, ClaimStatus, QuoteStrength, QuoteRole } from '../domain/types.js';
+import type { LlmClient } from '../../../core/llm/client.js';
+import { buildClaimExtractionPrompt, CLAIM_EXTRACTION_SYSTEM } from '../../../core/llm/prompts.js';
+import type { ArticleInput } from '../../../core/llm/prompts.js';
+import { computeClaimsHash } from '../../../core/llm/dedup.js';
 
 interface ClaimCandidate {
   claimTextNorm: string;
@@ -154,6 +158,8 @@ function computeStatus(claim: ClaimCandidate): ClaimStatus {
 }
 
 export class ClaimQuoteExtractor {
+  private llm: LlmClient | null;
+
   constructor(
     private eventRepo: EventRepository,
     private versionRepo: VersionRepository,
@@ -161,7 +167,130 @@ export class ClaimQuoteExtractor {
     private claimRepo: ClaimRepository,
     private eventBus: EventBus,
     private auditWriter: AuditLogWriter,
-  ) {}
+    llm?: LlmClient | null,
+  ) {
+    this.llm = llm ?? null;
+  }
+
+  /**
+   * LLM-powered claim extraction. Returns true if it succeeded,
+   * false if LLM is unavailable or failed (caller should fallback to heuristic).
+   */
+  private async extractWithLlm(
+    articles: any[],
+    eventId: string,
+    versionId: string,
+  ): Promise<{ claimsCount: number; quotesCount: number } | null> {
+    if (!this.llm?.isAvailable()) return null;
+
+    // Build article inputs with media keys
+    const articleInputs: ArticleInput[] = await Promise.all(
+      articles.map(async (a) => {
+        const media = await this.mediaRepo.findById(a.mediaId);
+        return {
+          article_id: a.id,
+          media_key: media?.mediaKey ?? 'unknown',
+          title: a.title ?? '',
+          snippet: a.snippet ?? '',
+          url: a.url ?? '',
+          published_at: a.publishedAt?.toISOString?.() ?? null,
+        };
+      }),
+    );
+
+    const prompt = buildClaimExtractionPrompt(articleInputs);
+
+    try {
+      const { data } = await this.llm.completeJson<{
+        claims: Array<{
+          claim_text: string;
+          claim_type: string;
+          subject?: string;
+          predicate?: string;
+          object?: string;
+          polarity?: string;
+          confidence: number;
+          evidence: Array<{ source_url: string; quote: string; span_hint?: string }>;
+        }>;
+      }>([{ role: 'user', content: prompt }], CLAIM_EXTRACTION_SYSTEM);
+
+      if (!data.claims || !Array.isArray(data.claims)) {
+        logger.error({ eventId }, 'llm_claims_invalid_response');
+        return null;
+      }
+
+      // Build URL → article lookup
+      const urlToArticle = new Map<string, any>();
+      for (const a of articles) {
+        urlToArticle.set(a.url, a);
+      }
+
+      let claimsCount = 0;
+      let quotesCount = 0;
+      const seenNorm = new Set<string>();
+
+      for (const llmClaim of data.claims) {
+        if (!llmClaim.claim_text || !llmClaim.evidence?.length) continue;
+        if (llmClaim.confidence < 0 || llmClaim.confidence > 1) continue;
+
+        const normText = normalizeClaim(llmClaim.claim_text);
+        if (seenNorm.has(normText)) continue;
+        seenNorm.add(normText);
+
+        const validTypes: ClaimType[] = ['FACT', 'QUANT', 'ALLEGATION', 'FORECAST', 'OPINION'];
+        const claimType: ClaimType = validTypes.includes(llmClaim.claim_type as ClaimType)
+          ? (llmClaim.claim_type as ClaimType)
+          : classifyClaim(llmClaim.claim_text);
+
+        // Determine status from confidence + evidence count
+        const mediaKeys = new Set(llmClaim.evidence.map((e) => urlToArticle.get(e.source_url)?.mediaId).filter(Boolean));
+        let status: ClaimStatus = 'INSUFFICIENT';
+        if (llmClaim.confidence >= 0.7 && mediaKeys.size >= 2) status = 'SUPPORTED';
+        else if (llmClaim.confidence >= 0.5) status = 'SUPPORTED';
+        else if (llmClaim.polarity === 'deny') status = 'DISPUTED';
+
+        const claim = await this.claimRepo.createClaim({
+          eventId,
+          versionId,
+          claimText: llmClaim.claim_text,
+          claimType,
+          status,
+        });
+        claimsCount++;
+
+        for (const ev of llmClaim.evidence) {
+          const article = urlToArticle.get(ev.source_url);
+          if (!article) continue;
+
+          const quoteText = (ev.quote ?? '').slice(0, 240);
+          if (!quoteText) continue;
+
+          const sourceText = `${article.title}. ${article.snippet}`;
+          const spanStart = sourceText.indexOf(quoteText.slice(0, 60));
+
+          await this.claimRepo.createQuote({
+            claimId: claim.id,
+            articleId: article.id,
+            quoteText,
+            spanStart: spanStart >= 0 ? spanStart : null,
+            spanEnd: spanStart >= 0 ? spanStart + quoteText.length : null,
+            strength: mediaKeys.size >= 2 ? 'STRONG' : (quoteText.length >= 80 ? 'MEDIUM' : 'WEAK'),
+            role: claimType === 'ALLEGATION' || claimType === 'OPINION' ? 'ATTRIBUTION' : 'EVIDENCE',
+          });
+          quotesCount++;
+        }
+      }
+
+      logger.info({ eventId, claimsCount, quotesCount, mode: 'llm' }, 'claims_extracted_via_llm');
+      return { claimsCount, quotesCount };
+    } catch (err) {
+      logger.error(
+        { eventId, error: err instanceof Error ? err.message : String(err) },
+        'llm_claim_extraction_failed',
+      );
+      return null;
+    }
+  }
 
   handler(): EventHandler {
     return async (envelope: EventEnvelope): Promise<void> => {
@@ -189,6 +318,46 @@ export class ClaimQuoteExtractor {
         logger.info({ event_id }, 'no_articles_for_claim_extraction');
         return;
       }
+
+      // Compute claims hash for dedupe
+      const articleIds = articles.map((a: any) => a.id);
+      const articleUpdatedAts = articles.map((a: any) => a.createdAt?.toISOString?.() ?? '');
+      const claimsHash = computeClaimsHash(articleIds, articleUpdatedAts);
+
+      // Dedupe: check if claims hash matches what's already stored
+      const packet = (version.packetJson as any) ?? {};
+      if (packet._ai_hashes?.claims_hash === claimsHash) {
+        logger.info({ event_id, claims_hash: claimsHash }, 'dedup_hit_claims');
+      }
+
+      // Try LLM extraction first; fallback to heuristic if unavailable or fails
+      const llmResult = await this.extractWithLlm(articles, event_id, version.id);
+      if (llmResult) {
+        // Persist claims hash in packet_json
+        const freshVersion = await this.versionRepo.findById(version.id);
+        const freshPacket = (freshVersion?.packetJson as any) ?? {};
+        freshPacket._ai_hashes = { ...(freshPacket._ai_hashes ?? {}), claims_hash: claimsHash };
+        await this.versionRepo.update(version.id, { packetJson: freshPacket });
+
+        await this.auditWriter.write({
+          entity_type: 'CLAIM',
+          entity_id: event_id,
+          action: 'CLAIM_GRAPH_BUILT',
+          trace_id: traceId,
+          data: { version_id: version.id, claims_count: llmResult.claimsCount, quotes_count: llmResult.quotesCount, mode: 'llm', claims_hash: claimsHash },
+        });
+
+        await this.eventBus.publish({
+          event_name: 'ClaimGraphBuilt',
+          event_id: ulid(),
+          occurred_at: new Date().toISOString(),
+          trace: { trace_id: traceId, span_id: ulid(), source_module: 'claims' },
+          payload: { event_id, version_id: version.id },
+        });
+        return;
+      }
+
+      // ── Heuristic fallback ──────────────────────────────────────
 
       // Build claim candidates
       const claimsMap = new Map<string, ClaimCandidate>();
@@ -285,12 +454,18 @@ export class ClaimQuoteExtractor {
         }
       }
 
+      // Persist claims hash in packet_json (heuristic path)
+      const freshVersion = await this.versionRepo.findById(version.id);
+      const freshPacket = (freshVersion?.packetJson as any) ?? {};
+      freshPacket._ai_hashes = { ...(freshPacket._ai_hashes ?? {}), claims_hash: claimsHash };
+      await this.versionRepo.update(version.id, { packetJson: freshPacket });
+
       await this.auditWriter.write({
         entity_type: 'CLAIM',
         entity_id: event_id,
         action: 'CLAIM_GRAPH_BUILT',
         trace_id: traceId,
-        data: { version_id: version.id, claims_count: claimsCount, quotes_count: quotesCount },
+        data: { version_id: version.id, claims_count: claimsCount, quotes_count: quotesCount, claims_hash: claimsHash },
       });
 
       await this.eventBus.publish({
