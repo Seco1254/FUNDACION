@@ -2,7 +2,7 @@
 
 Modular monolith backend for serving iOS, Android, and Web clients.
 
-## Quickstart (copy-paste)
+## Quickstart — Docker (recommended)
 
 ```bash
 docker compose up -d          # Postgres on :5432
@@ -16,10 +16,29 @@ curl http://localhost:3000/v1/health
 curl http://localhost:3000/v1/feed
 ```
 
+## Quickstart — Homebrew Postgres (macOS, sin Docker)
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+createdb fundacion
+
+cp .env.example .env
+# Edit .env — replace DATABASE_URL with:
+#   DATABASE_URL=postgresql://$USER@localhost:5432/fundacion?schema=public
+
+npm install
+npm run db:generate
+npm run db:migrate:dev
+npm run db:seed
+npm run db:doctor             # verify DB is reachable
+npm run start:clean
+```
+
 ## Prerequisites
 
 - Node.js 20+
-- Docker & Docker Compose (for Postgres)
+- Postgres 14+ (via Docker Compose **or** Homebrew / system install)
 
 ## Setup (detailed)
 
@@ -75,19 +94,20 @@ If port 3000 is busy, use `PORT=3001 npm run dev`.
 
 ## Available scripts
 
-| Script              | Description                                      |
-|---------------------|--------------------------------------------------|
-| `npm run dev`       | Start dev server with hot reload (validates env)  |
-| `npm run build`     | Compile TypeScript                                |
-| `npm start`         | Start production server (validates env + dist)    |
-| `npm run start:clean` | rm dist, build, start (full clean restart)      |
-| `npm test`          | Run all tests (Vitest)                            |
-| `npm run lint`      | Run ESLint on src/                                |
-| `npm run db:migrate`| Run migrations (deploy)                           |
-| `npm run db:migrate:dev` | Run migrations (dev)                         |
-| `npm run db:seed`   | Seed the database                                 |
-| `npm run db:reset`  | Reset DB (drop + migrate + seed)                  |
-| `npm run db:generate` | Regenerate Prisma client                        |
+| Script              | Description                                       |
+|---------------------|---------------------------------------------------|
+| `npm run dev`       | Start dev server with hot reload (validates env+db)|
+| `npm run build`     | Compile TypeScript                                 |
+| `npm start`         | Start production server (validates env+dist+db)    |
+| `npm run start:clean` | rm dist, build, start (full clean restart)       |
+| `npm test`          | Run all tests (Vitest)                             |
+| `npm run lint`      | Run ESLint on src/                                 |
+| `npm run db:doctor` | Check env vars + DB connectivity                   |
+| `npm run db:migrate`| Run migrations (deploy)                            |
+| `npm run db:migrate:dev` | Run migrations (dev)                          |
+| `npm run db:seed`   | Seed the database                                  |
+| `npm run db:reset`  | Reset DB (drop + migrate + seed)                   |
+| `npm run db:generate` | Regenerate Prisma client                         |
 
 ## API Endpoints
 
