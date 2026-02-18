@@ -92,11 +92,31 @@ Server starts at `http://localhost:3000`.
 
 If port 3000 is busy, use `PORT=3001 npm run dev`.
 
+## One-command workflows
+
+```bash
+# Start backend + Expo web client in parallel (Ctrl+C stops both)
+npm run dev:all
+
+# Migrate + seed (add --wipe to drop everything first)
+npm run reset:db
+npm run reset:db -- --wipe
+
+# End-to-end smoke test: reset → scrape → wait publish → validate feed
+# Requires backend already running (npm run dev or npm run dev:all)
+npm run smoke
+npm run smoke -- --skip-reset   # skip DB reset step
+```
+
+`dev:all` exports fast-publish defaults (`PUBLISH_DELAY_MS=0`, `SCHEDULER_TICK_MS=3000`)
+so events appear in the feed within seconds. Override via `.env` or shell.
+
 ## Available scripts
 
 | Script              | Description                                       |
 |---------------------|---------------------------------------------------|
 | `npm run dev`       | Start dev server with hot reload (validates env+db)|
+| `npm run dev:all`   | Start backend + Expo web client in parallel        |
 | `npm run build`     | Compile TypeScript                                 |
 | `npm start`         | Start production server (validates env+dist+db)    |
 | `npm run start:clean` | rm dist, build, start (full clean restart)       |
@@ -108,6 +128,8 @@ If port 3000 is busy, use `PORT=3001 npm run dev`.
 | `npm run db:seed`   | Seed the database                                  |
 | `npm run db:reset`  | Reset DB (drop + migrate + seed)                   |
 | `npm run db:generate` | Regenerate Prisma client                         |
+| `npm run reset:db`  | Migrate + seed (safe, with optional `--wipe`)      |
+| `npm run smoke`     | E2E smoke test: reset → scrape → publish → feed   |
 
 ## API Endpoints
 

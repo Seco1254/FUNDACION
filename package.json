@@ -18,7 +18,10 @@
     "db:seed": "tsx src/db/seeds/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "db:generate": "prisma generate",
-    "scrape:once": "tsx src/scripts/scrape-once.ts"
+    "scrape:once": "tsx src/scripts/scrape-once.ts",
+    "dev:all": "./bin/dev-all",
+    "reset:db": "./bin/reset-db",
+    "smoke": "./bin/smoke"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

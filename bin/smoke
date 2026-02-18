@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# bin/smoke — end-to-end smoke test: reset-db → scrape → wait publish → validate feed
+# Usage: ./bin/smoke [--skip-reset]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# ── Load .env ──────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  echo "❌ .env not found"
+  echo "   Fix: cp .env.example .env  (then edit DATABASE_URL if needed)"
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "❌ DATABASE_URL is empty in .env"
+  exit 1
+fi
+
+BACKEND_URL="${BACKEND_URL:-http://localhost:${PORT:-3000}}"
+PUBLISH_TIMEOUT="${PUBLISH_TIMEOUT:-120}"
+PUBLISH_MIN="${PUBLISH_MIN:-5}"
+
+# ── Helpers ────────────────────────────────────────────────────────
+ts() { date '+%H:%M:%S'; }
+
+die() {
+  echo "❌ $(ts) $1"
+  exit 1
+}
+
+ok() {
+  echo "✅ $(ts) $1"
+}
+
+info() {
+  echo "🔄 $(ts) $1"
+}
+
+# ── Check backend is running ───────────────────────────────────────
+info "Checking backend at $BACKEND_URL/v1/health ..."
+if ! curl -sf "$BACKEND_URL/v1/health" > /dev/null 2>&1; then
+  die "Backend not reachable at $BACKEND_URL. Start it first: npm run dev"
+fi
+ok "Backend is running"
+
+# ── Step 1: reset-db (unless --skip-reset) ─────────────────────────
+if [ "${1:-}" != "--skip-reset" ]; then
+  info "Resetting database..."
+  ./bin/reset-db
+  ok "Database reset complete"
+else
+  info "Skipping database reset (--skip-reset)"
+fi
+
+# ── Step 2: Trigger scrape ─────────────────────────────────────────
+info "Triggering scrape via POST $BACKEND_URL/v1/debug/scrape/run ..."
+SCRAPE_RESP=$(curl -sf -X POST "$BACKEND_URL/v1/debug/scrape/run" 2>&1) || die "Scrape request failed (is backend running?)"
+
+DISCOVERED=$(echo "$SCRAPE_RESP" | node -e "
+  let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+    try { console.log(JSON.parse(d).discovered ?? 0); }
+    catch { console.log(0); }
+  });
+")
+ok "Scrape complete — discovered: $DISCOVERED articles"
+
+if [ "$DISCOVERED" -eq 0 ]; then
+  echo "⚠️  No articles discovered. Check internet connectivity and scraper config."
+fi
+
+# ── Step 3: Wait for events to reach PUBLISHED ─────────────────────
+info "Waiting for >= $PUBLISH_MIN PUBLISHED events (timeout: ${PUBLISH_TIMEOUT}s) ..."
+
+# Try psql first, fall back to prisma
+count_published() {
+  if command -v psql > /dev/null 2>&1; then
+    psql "$DATABASE_URL" -tAc "SELECT COUNT(*) FROM event WHERE state = 'PUBLISHED'" 2>/dev/null
+  else
+    npx prisma db execute --stdin <<< "SELECT COUNT(*) FROM event WHERE state = 'PUBLISHED'" 2>/dev/null \
+      | grep -oE '[0-9]+' | tail -1
+  fi
+}
+
+ELAPSED=0
+POLL_INTERVAL=2
+while [ "$ELAPSED" -lt "$PUBLISH_TIMEOUT" ]; do
+  PUBLISHED_COUNT=$(count_published 2>/dev/null || echo "0")
+  PUBLISHED_COUNT="${PUBLISHED_COUNT//[^0-9]/}"
+  PUBLISHED_COUNT="${PUBLISHED_COUNT:-0}"
+
+  if [ "$PUBLISHED_COUNT" -ge "$PUBLISH_MIN" ]; then
+    ok "$PUBLISHED_COUNT events PUBLISHED (>= $PUBLISH_MIN)"
+    break
+  fi
+
+  echo "   ⏳ $(ts) $PUBLISHED_COUNT PUBLISHED so far... (${ELAPSED}s / ${PUBLISH_TIMEOUT}s)"
+  sleep "$POLL_INTERVAL"
+  ELAPSED=$((ELAPSED + POLL_INTERVAL))
+done
+
+if [ "$ELAPSED" -ge "$PUBLISH_TIMEOUT" ]; then
+  FINAL_COUNT=$(count_published 2>/dev/null || echo "?")
+  die "Timeout: only $FINAL_COUNT PUBLISHED after ${PUBLISH_TIMEOUT}s. Check scheduler logs and PUBLISH_DELAY_MS."
+fi
+
+# ── Step 4: Validate feed ──────────────────────────────────────────
+info "Validating feed at GET $BACKEND_URL/v1/feed?tab=global ..."
+FEED_RESP=$(curl -sf "$BACKEND_URL/v1/feed?tab=global" 2>&1) || die "Feed request failed"
+
+FEED_LENGTH=$(echo "$FEED_RESP" | node -e "
+  let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+    try { const j=JSON.parse(d); console.log((j.items||j.data||[]).length); }
+    catch { console.log(0); }
+  });
+")
+
+if [ "$FEED_LENGTH" -ge 1 ]; then
+  ok "Feed has $FEED_LENGTH items"
+else
+  die "Feed is empty (0 items). Events may be published but feed query may have issues."
+fi
+
+# ── Step 5: Summary ───────────────────────────────────────────────
+echo ""
+echo "╔══════════════════════════════════════════════╗"
+echo "║           SMOKE TEST SUMMARY                 ║"
+echo "╠══════════════════════════════════════════════╣"
+
+# Counts via prisma/psql
+query_count() {
+  local sql="$1"
+  if command -v psql > /dev/null 2>&1; then
+    psql "$DATABASE_URL" -tAc "$sql" 2>/dev/null || echo "?"
+  else
+    npx prisma db execute --stdin <<< "$sql" 2>/dev/null | grep -oE '[0-9]+' | tail -1 || echo "?"
+  fi
+}
+
+MEDIA_COUNT=$(query_count "SELECT COUNT(*) FROM media")
+ART_DISCOVERED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'DISCOVERED'")
+ART_FETCHED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'FETCHED'")
+ART_FAILED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'FAILED'")
+EVT_PENDING=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PENDING_PUBLISH'")
+EVT_PUBLISHED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PUBLISHED'")
+EVT_CLOSED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'CLOSED'")
+
+echo "║  Media:              ${MEDIA_COUNT}"
+echo "║  Articles:"
+echo "║    DISCOVERED:       ${ART_DISCOVERED}"
+echo "║    FETCHED:          ${ART_FETCHED}"
+echo "║    FAILED:           ${ART_FAILED}"
+echo "║  Events:"
+echo "║    PENDING_PUBLISH:  ${EVT_PENDING}"
+echo "║    PUBLISHED:        ${EVT_PUBLISHED}"
+echo "║    CLOSED:           ${EVT_CLOSED}"
+echo "║  Feed items:         ${FEED_LENGTH}"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+ok "Smoke test PASSED"

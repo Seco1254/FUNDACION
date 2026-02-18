@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# bin/reset-db — migrate + seed the database
+# Usage: ./bin/reset-db [--wipe]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# ── Load .env ──────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  echo "❌ .env not found"
+  echo "   Fix: cp .env.example .env  (then edit DATABASE_URL if needed)"
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "❌ DATABASE_URL is empty in .env"
+  echo "   Fix: edit .env and set DATABASE_URL"
+  exit 1
+fi
+
+# ── Check Postgres is reachable ────────────────────────────────────
+check_pg() {
+  npx prisma db execute --stdin <<< "SELECT 1" > /dev/null 2>&1
+}
+
+if ! check_pg; then
+  echo "❌ Cannot connect to Postgres"
+  echo "   Possible fixes:"
+  echo "     Docker:   docker compose up -d"
+  echo "     Homebrew: brew services start postgresql@16"
+  echo "     Check:    pg_isready -h localhost -p 5432"
+  exit 1
+fi
+
+echo "✅ Postgres reachable"
+
+# ── Optional wipe ──────────────────────────────────────────────────
+if [ "${1:-}" = "--wipe" ]; then
+  echo "⚠️  Wiping database (prisma migrate reset --force)..."
+  npx prisma migrate reset --force
+  echo "✅ Database wiped"
+fi
+
+# ── Migrate ────────────────────────────────────────────────────────
+echo "🔄 Running migrations..."
+npx prisma migrate deploy
+echo "✅ Migrations applied"
+
+# ── Seed ───────────────────────────────────────────────────────────
+echo "🔄 Seeding database..."
+npx tsx src/db/seeds/seed.ts
+echo "✅ Seed complete"
+
+echo ""
+echo "✅ reset-db finished successfully"
