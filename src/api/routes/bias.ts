@@ -1,13 +1,28 @@
 import { FastifyInstance } from 'fastify';
 import { BiasLabelRepository } from '../../modules/bias/repo/bias-label-repo.js';
 import { EventRepository } from '../../modules/events/repo/event-repo.js';
+import { Cache } from '../../core/cache/cache.js';
+import { handleEtag } from '../../core/http/etag.js';
 
-export function biasRoutes(eventRepo: EventRepository, biasRepo: BiasLabelRepository) {
+export function biasRoutes(eventRepo: EventRepository, biasRepo: BiasLabelRepository, cache?: Cache) {
   return async function (app: FastifyInstance) {
     app.get<{ Params: { eventId: string; mediaKey: string } }>(
       '/v1/events/:eventId/bias/:mediaKey',
       async (request, reply) => {
         const { eventId, mediaKey } = request.params;
+        const cacheKey = `bias:${eventId}:${mediaKey}`;
+
+        // Try cache
+        if (cache) {
+          const cached = cache.get(cacheKey);
+          if (cached !== undefined) {
+            const { notModified } = handleEtag(request, reply, cached);
+            reply.header('cache-control', 'public, max-age=60, stale-while-revalidate=30');
+            reply.header('vary', 'Accept, Accept-Encoding');
+            if (notModified) return reply.status(304).send();
+            return cached;
+          }
+        }
 
         const eventWithDetails = await eventRepo.findByIdWithDetails(eventId);
         if (!eventWithDetails) {
@@ -39,7 +54,7 @@ export function biasRoutes(eventRepo: EventRepository, biasRepo: BiasLabelReposi
 
         const mediaLabelEntry = mediaLevel[0] ?? null;
 
-        return {
+        const body = {
           media_key: mediaKey,
           media_level: mediaLabelEntry
             ? {
@@ -59,6 +74,17 @@ export function biasRoutes(eventRepo: EventRepository, biasRepo: BiasLabelReposi
             rationale: l.rationaleJson,
           })),
         };
+
+        if (cache) {
+          cache.set(cacheKey, body, 60_000);
+        }
+
+        const { notModified } = handleEtag(request, reply, body);
+        reply.header('cache-control', 'public, max-age=60, stale-while-revalidate=30');
+        reply.header('vary', 'Accept, Accept-Encoding');
+        if (notModified) return reply.status(304).send();
+
+        return body;
       },
     );
   };

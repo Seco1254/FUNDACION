@@ -108,7 +108,7 @@ const mockBiasRepo = {
         labelSecondary: null,
         intensity: 0.5,
         confidence: 0.7,
-        rationaleJson: { why_short: 'Tono valorativo detectado', why_signals: ['tono valorativo'], why_quotes: [], top_features: [], signals: [], evidence_refs: [] },
+        rationaleJson: { why_short: 'Tono valorativo detectado', why_signals: ['tono valorativo'], why_quotes: [], top_features: [], signals: [], evidence_refs: [{ type: 'article', id: 'art-1' }] },
         createdAt: new Date(),
       }];
     }

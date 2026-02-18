@@ -38,16 +38,41 @@ import { TopicAssignmentRepository } from './modules/topics/repo/topic-assignmen
 import { TopicAssigner } from './modules/topics/service/topic-assigner.js';
 import { SubEventBuilder } from './modules/subevents/service/subevent-builder.js';
 import { biasRoutes } from './api/routes/bias.js';
+import { metricsRoutes } from './api/routes/metrics.js';
+
+// Phase 5: Production infrastructure
+import { Cache } from './core/cache/cache.js';
+import { SingleFlight } from './core/cache/singleflight.js';
+import { RateLimiter } from './core/http/rate-limiter.js';
+import { registerCacheInvalidation } from './core/cache/invalidation.js';
+import { registerMetricSubscribers } from './core/metrics/subscribers.js';
 
 export function buildApp() {
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    requestTimeout: parseInt(process.env.REQUEST_TIMEOUT_MS ?? '30000', 10),
+  });
 
   // CORS
   app.register(cors);
 
+  // Phase 5: Rate limiting
+  const rateLimiter = new RateLimiter({
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000', 10),
+    max: parseInt(process.env.RATE_LIMIT_MAX ?? '60', 10),
+  });
+  app.addHook('onRequest', rateLimiter.hook());
+
   // Trace middleware
   app.addHook('onRequest', traceMiddleware);
   app.addHook('onResponse', onResponseHook);
+
+  // Phase 5: In-memory cache + singleflight
+  const cache = new Cache({
+    maxEntries: parseInt(process.env.CACHE_MAX_ENTRIES ?? '500', 10),
+    defaultTtlMs: parseInt(process.env.CACHE_DEFAULT_TTL_MS ?? '30000', 10),
+  });
+  const singleFlight = new SingleFlight();
 
   // Repositories
   const eventRepo = new EventRepository(prisma);
@@ -127,12 +152,19 @@ export function buildApp() {
   eventBus.subscribe('OverviewGenerated', 'BiasProfiler', biasProfiler.handler());
   eventBus.subscribe('TopicHeatmapBuilt', 'SubEventBuilder', subEventBuilder.handler());
 
+  // Phase 5: Cache invalidation via event bus
+  registerCacheInvalidation(eventBus, cache);
+
+  // Phase 5: Metrics instrumentation via event bus
+  registerMetricSubscribers(eventBus);
+
   // Routes
   app.register(healthRoutes);
   app.register(tabsRoutes);
-  app.register(feedRoutes(feedService));
-  app.register(eventDetailRoutes(eventRepo, claimRepo, biasRepo));
-  app.register(biasRoutes(eventRepo, biasRepo));
+  app.register(feedRoutes(feedService, cache, singleFlight));
+  app.register(eventDetailRoutes(eventRepo, claimRepo, biasRepo, cache, singleFlight));
+  app.register(biasRoutes(eventRepo, biasRepo, cache));
+  app.register(metricsRoutes);
   app.register(debugScrapeRoutes(scrapeOrchestrator));
 
   return app;
