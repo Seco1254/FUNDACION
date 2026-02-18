@@ -336,6 +336,9 @@ export class OverviewGenerator {
         const overview = this.buildOverview(claimsWithQuotes);
         computedGateStatus = overview.gate_status;
 
+        // Build ai_overview from heuristic sections so the feed is never stuck on null
+        const heuristicAiOverview = this.buildHeuristicAiOverview(overview);
+
         if (version) {
           const updatedPacket = {
             ...existingPacket,
@@ -343,6 +346,9 @@ export class OverviewGenerator {
               gate_status: overview.gate_status,
               sections: overview.sections,
             },
+            ai_overview: heuristicAiOverview,
+            ai_teaser: (heuristicAiOverview.what_happened as string[])[0] ?? '',
+            overview_mode: 'heuristic',
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
             quality_flags: overview.quality_flags,
@@ -375,6 +381,42 @@ export class OverviewGenerator {
         trace: { trace_id: traceId, span_id: ulid(), source_module: 'overview' },
         payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: computedGateStatus },
       });
+    };
+  }
+
+  /**
+   * Derive ai_overview from heuristic sections so the feed never stays on null.
+   */
+  private buildHeuristicAiOverview(overview: OverviewResult): Record<string, unknown> {
+    const quePaso = overview.sections.find((s) => s.key === 'que_paso');
+    const contexto = overview.sections.find((s) => s.key === 'contexto');
+    const enDisputa = overview.sections.find((s) => s.key === 'en_disputa');
+
+    const whatHappened = (quePaso?.bullets ?? []).map((b) => b.text);
+    const context = (contexto?.bullets ?? []).map((b) => b.text);
+    const inDispute = (enDisputa?.bullets ?? []).map((b) => b.text);
+
+    // If gate FAIL and no bullets, provide a minimal "unavailable" message
+    if (whatHappened.length === 0 && context.length === 0) {
+      return {
+        overview: '',
+        what_happened: ['Aún no hay suficiente evidencia cruzada para un resumen.'],
+        context: [],
+        in_dispute: inDispute,
+        confidence_label: 'No concluyente',
+        why: `Resumen heurístico — gate: ${overview.gate_status}`,
+        status: overview.gate_status === 'FAIL' ? 'INSUFFICIENT_EVIDENCE' : 'HEURISTIC',
+      };
+    }
+
+    return {
+      overview: '',
+      what_happened: whatHappened,
+      context,
+      in_dispute: inDispute,
+      confidence_label: 'No concluyente',
+      why: 'Resumen generado por heurística (sin LLM)',
+      status: 'HEURISTIC',
     };
   }
 

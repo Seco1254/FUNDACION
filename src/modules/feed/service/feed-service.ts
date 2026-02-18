@@ -13,6 +13,21 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
   return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
 }
 
+/**
+ * Derive overview_status for the feed item so the client can distinguish states.
+ * - 'ready': ai_overview is populated and usable
+ * - 'unavailable': pipeline ran but produced no usable overview (gate FAIL, insufficient evidence)
+ * - 'pending': pipeline hasn't run yet
+ */
+function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
+  const ai = packet?.ai_overview;
+  if (!ai) return 'pending';
+  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
+  const ctx = Array.isArray(ai.context) ? ai.context : [];
+  if (wh.length > 0 || ctx.length > 0) return 'ready';
+  return 'unavailable';
+}
+
 const PAGE_SIZE = 20;
 
 export class FeedService {
@@ -65,6 +80,7 @@ export class FeedService {
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
+        overview_status: deriveOverviewStatus(packet),
       };
     });
 
@@ -106,6 +122,7 @@ export class FeedService {
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
+        overview_status: deriveOverviewStatus(packet),
       };
     });
 

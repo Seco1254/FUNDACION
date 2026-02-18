@@ -49,7 +49,8 @@
     "topics": { "type": "object" },
     "topics_heatmap": { "type": "array" },
     "subevents": { "type": "array" },
-    "heatmap": { "type": "object" }
+    "heatmap": { "type": "object" },
+    "overview_status": { "type": "string", "enum": ["ready", "unavailable", "pending"] }
   },
   "additionalProperties": false
 }

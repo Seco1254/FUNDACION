@@ -82,11 +82,22 @@ export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props
         </View>
       ) : (
         <View style={styles.overviewPlaceholder}>
-          <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
-          <Text style={styles.placeholderSubtitle}>
-            El análisis de fuentes está en proceso.
-          </Text>
-          {onRetryOverview && (
+          {item.overview_status === 'unavailable' ? (
+            <>
+              <Text style={styles.placeholderTitle}>Resumen no disponible</Text>
+              <Text style={styles.placeholderSubtitle}>
+                No hay suficiente evidencia cruzada todavía.
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
+              <Text style={styles.placeholderSubtitle}>
+                El análisis de fuentes está en proceso.
+              </Text>
+            </>
+          )}
+          {onRetryOverview && item.overview_status !== 'unavailable' && (
             <Pressable
               onPress={(e) => { e.stopPropagation(); onRetryOverview(); }}
               style={styles.retryBtn}

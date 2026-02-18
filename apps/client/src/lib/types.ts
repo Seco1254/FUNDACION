@@ -17,6 +17,7 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
+  overview_status?: 'ready' | 'unavailable' | 'pending';
   source_count?: number;
 }
 
@@ -161,6 +162,7 @@ export interface EventDetailResponse {
   latest_version: LatestVersion | null;
   media_tabs: MediaTab[];
   overview: Overview;
+  overview_status?: 'ready' | 'unavailable' | 'pending';
   bias: BiasData;
   topics: TopicsData;
   topics_heatmap: HeatmapBin[];

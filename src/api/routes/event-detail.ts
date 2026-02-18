@@ -141,6 +141,15 @@ export function eventDetailRoutes(
           const packetJson = (latestVersion?.packetJson as any) ?? {};
           const overview = packetJson.overview ?? { status: 'NOT_READY' };
 
+          // Derive overview_status for client-side state handling
+          const aiOv = packetJson.ai_overview;
+          let overviewStatus: 'ready' | 'unavailable' | 'pending' = 'pending';
+          if (aiOv) {
+            const wh = Array.isArray(aiOv.what_happened) ? aiOv.what_happened : [];
+            const ctx = Array.isArray(aiOv.context) ? aiOv.context : [];
+            overviewStatus = (wh.length > 0 || ctx.length > 0) ? 'ready' : 'unavailable';
+          }
+
           // Bias from bias_label table with safeguards
           let bias: { media_level: any[]; article_level: any[] } = { media_level: [], article_level: [] };
           if (biasRepo && latestVersion) {
@@ -202,6 +211,7 @@ export function eventDetailRoutes(
               : null,
             media_tabs: mediaTabs,
             overview,
+            overview_status: overviewStatus,
             bias,
             topics,
             topics_heatmap: topicsHeatmap,

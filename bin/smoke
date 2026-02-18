@@ -142,18 +142,18 @@ query_count() {
 }
 
 MEDIA_COUNT=$(query_count "SELECT COUNT(*) FROM media")
-ART_DISCOVERED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'DISCOVERED'")
-ART_FETCHED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'FETCHED'")
-ART_FAILED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'FAILED'")
+ART_POLICY_OK=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'POLICY_OK'")
+ART_BLOCKED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'POLICY_BLOCKED'")
+ART_NORMALIZED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'NORMALIZED'")
 EVT_PENDING=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PENDING_PUBLISH'")
 EVT_PUBLISHED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PUBLISHED'")
 EVT_CLOSED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'CLOSED'")
 
 echo "║  Media:              ${MEDIA_COUNT}"
 echo "║  Articles:"
-echo "║    DISCOVERED:       ${ART_DISCOVERED}"
-echo "║    FETCHED:          ${ART_FETCHED}"
-echo "║    FAILED:           ${ART_FAILED}"
+echo "║    POLICY_OK:        ${ART_POLICY_OK}"
+echo "║    POLICY_BLOCKED:   ${ART_BLOCKED}"
+echo "║    NORMALIZED:       ${ART_NORMALIZED}"
 echo "║  Events:"
 echo "║    PENDING_PUBLISH:  ${EVT_PENDING}"
 echo "║    PUBLISHED:        ${EVT_PUBLISHED}"

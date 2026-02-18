@@ -13,6 +13,7 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
+  overview_status?: 'ready' | 'unavailable' | 'pending';
   source_count?: number;
 }
 

@@ -21,7 +21,9 @@ import { colors, spacing, font, radius } from '../../src/lib/theme';
 import type { FeedItem } from '../../src/lib/types';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-const CARD_HEIGHT = Math.round(SCREEN_HEIGHT * 0.72);
+// Smaller card height to reveal peek of prev/next cards
+const PEEK_HEIGHT = 40;
+const CARD_HEIGHT = Math.round(SCREEN_HEIGHT * 0.68);
 const CARD_GAP = spacing.md;
 const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
 
@@ -91,6 +93,9 @@ export default function ForYouScreen() {
     const hasOverview = ov && (ov.what_happened.length > 0 || ov.context.length > 0);
     if (hasOverview) return;
 
+    // Don't poll if backend explicitly says overview is unavailable (gate blocked)
+    if (activeItem.overview_status === 'unavailable') return;
+
     function poll() {
       if (pollCountRef.current >= OVERVIEW_POLL_MAX) return;
       pollCountRef.current++;
@@ -100,7 +105,7 @@ export default function ForYouScreen() {
           const updated = data.items.find((i) => i.event_id === activeItem.event_id);
           if (updated?.ai_overview) {
             setItems((prev) =>
-              prev.map((it) => it.event_id === updated.event_id ? { ...it, ai_overview: updated.ai_overview } : it),
+              prev.map((it) => it.event_id === updated.event_id ? { ...it, ai_overview: updated.ai_overview, overview_status: updated.overview_status } : it),
             );
             return; // stop polling
           }
@@ -261,7 +266,7 @@ export default function ForYouScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
-  list: { paddingTop: spacing.sm, paddingBottom: SNAP_INTERVAL * 0.2 },
+  list: { paddingTop: PEEK_HEIGHT / 2, paddingBottom: PEEK_HEIGHT },
   cardWrapper: {
     height: CARD_HEIGHT,
     marginBottom: CARD_GAP,
