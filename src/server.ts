@@ -184,11 +184,14 @@ export function buildApp() {
   app.register(debugScrapeRoutes(scrapeOrchestrator));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
 
-  return app;
+  return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator };
 }
 
+const SCHEDULER_TICK_MS = 30_000;
+const SCRAPE_INTERVAL_MS = 15 * 60 * 1000;
+
 async function start() {
-  const app = buildApp();
+  const { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator } = buildApp();
   const port = parseInt(process.env.PORT ?? '3000', 10);
 
   try {
@@ -211,6 +214,45 @@ async function start() {
     }
     process.exit(1);
   }
+
+  // Rehydrate: publish any PENDING_PUBLISH events whose publishAt has passed
+  try {
+    const pending = await eventRepo.findPendingPublish();
+    const now = new Date();
+    let rehydrated = 0;
+    for (const evt of pending) {
+      if (!evt.publishAt || evt.publishAt <= now) {
+        await lifecycleManager.executePublish(evt.id);
+        rehydrated++;
+      } else {
+        scheduler.register(`publish:${evt.id}`, evt.publishAt, { eventId: evt.id });
+      }
+    }
+    if (pending.length > 0) {
+      logger.info({ total: pending.length, published_now: rehydrated }, 'startup_rehydration_complete');
+    }
+  } catch (err) {
+    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'startup_rehydration_failed');
+  }
+
+  // Register periodic scrape job
+  const nextScrape = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+  scheduler.register('scrape:tick', nextScrape, {});
+
+  // Scheduler tick: check and execute due jobs every 30s, re-register recurring jobs
+  setInterval(async () => {
+    try {
+      const executed = await scheduler.runDueJobs();
+      if (executed > 0) {
+        logger.info({ executed }, 'scheduler_tick');
+        // Re-register recurring scrape
+        const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+        scheduler.register('scrape:tick', next, {});
+      }
+    } catch (err) {
+      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'scheduler_tick_failed');
+    }
+  }, SCHEDULER_TICK_MS);
 }
 
 start();
