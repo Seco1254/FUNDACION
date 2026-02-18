@@ -51,6 +51,9 @@ import { RateLimiter } from './core/http/rate-limiter.js';
 import { registerCacheInvalidation } from './core/cache/invalidation.js';
 import { registerMetricSubscribers } from './core/metrics/subscribers.js';
 
+import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
+import { withTimeout } from './core/async/with-timeout.js';
+
 export function buildApp() {
   const app = Fastify({
     logger: false,
@@ -112,9 +115,21 @@ export function buildApp() {
 
   const embeddingService = new EmbeddingService(articleRepo, eventBus, auditService);
   const eventLinker = new EventLinker(articleRepo, eventRepo, eventBus, auditService, clock);
+  const schedulerScrapeTimeoutMs = parseInt(process.env.SCRAPE_TIMEOUT_MS ?? '60000', 10);
   const scheduler = new Scheduler(clock, async (job) => {
     if (job.jobKey === 'scrape:tick') {
-      await scrapeOrchestrator.run();
+      const traceId = `sched-${Date.now()}`;
+      if (!scrapeLock.tryAcquire(traceId)) {
+        logger.info({ jobKey: job.jobKey }, 'scheduler_scrape_skipped_locked');
+        return;
+      }
+      try {
+        await withTimeout(scrapeOrchestrator.run(), schedulerScrapeTimeoutMs, { stage: 'scheduler_scrape' });
+        scrapeLock.release({});
+      } catch (err) {
+        scrapeLock.release({ error: err instanceof Error ? err.message : String(err) });
+        throw err;
+      }
     } else if (job.jobKey.startsWith('publish:')) {
       const eventId = job.payload.eventId as string;
       await lifecycleManager.executePublish(eventId);
