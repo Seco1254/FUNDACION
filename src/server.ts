@@ -40,6 +40,7 @@ import { TopicAssigner } from './modules/topics/service/topic-assigner.js';
 import { SubEventBuilder } from './modules/subevents/service/subevent-builder.js';
 import { biasRoutes } from './api/routes/bias.js';
 import { metricsRoutes } from './api/routes/metrics.js';
+import { rehydratePublishJobs } from './core/scheduler/rehydrate.js';
 
 // Phase 5: Production infrastructure
 import { Cache } from './core/cache/cache.js';
@@ -158,6 +159,31 @@ export function buildApp() {
 
   // Phase 5: Metrics instrumentation via event bus
   registerMetricSubscribers(eventBus);
+
+  // Scheduler ticker — runs due jobs on a fixed interval with anti-overlap guard.
+  // Interval is configurable via SCHEDULER_TICK_MS env var (default 5 s).
+  const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '5000', 10);
+  let tickBusy = false;
+  const tickHandle = setInterval(async () => {
+    if (tickBusy) return; // anti-overlap: skip if previous tick is still running
+    tickBusy = true;
+    try {
+      const executed = await scheduler.runDueJobs();
+      if (executed > 0) logger.info({ executed }, 'scheduler_tick');
+    } catch (e) {
+      logger.error(e, 'scheduler_tick_failed');
+    } finally {
+      tickBusy = false;
+    }
+  }, SCHEDULER_TICK_MS);
+  app.addHook('onClose', async () => { clearInterval(tickHandle); });
+
+  // On startup: rehydrate PENDING_PUBLISH jobs from DB (lost on restart because
+  // the scheduler is in-memory). Safe to call multiple times — dedup by jobKey.
+  app.addHook('onReady', async () => {
+    const n = await rehydratePublishJobs(scheduler, eventRepo);
+    if (n > 0) logger.info({ rehydrated: n }, 'scheduler_rehydrated');
+  });
 
   // Routes
   app.register(healthRoutes);

@@ -11,18 +11,30 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 
-// ── load .env (same logic as check-env.js) ──────────────────────────
+// ── load .env (mirrors src/env.ts parseLine — strips quotes, inline comments) ──
+/** @param {string} line @returns {{ key: string; value: string } | null} */
+function parseLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const eqIdx = trimmed.indexOf('=');
+  if (eqIdx < 1) return null;
+  const key = trimmed.slice(0, eqIdx).trim();
+  const raw = trimmed.slice(eqIdx + 1);
+  const stripped = raw.trimStart();
+  const firstChar = stripped[0];
+  if (firstChar === '"' || firstChar === "'") {
+    const closeIdx = stripped.indexOf(firstChar, 1);
+    if (closeIdx !== -1) return { key, value: stripped.slice(1, closeIdx) };
+  }
+  const hashIdx = raw.indexOf('#');
+  const value = (hashIdx === -1 ? raw : raw.slice(0, hashIdx)).trim();
+  return { key, value };
+}
+
 if (existsSync('.env')) {
   for (const line of readFileSync('.env', 'utf-8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx < 1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    const value = trimmed.slice(eqIdx + 1).trim();
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
+    const parsed = parseLine(line);
+    if (parsed && !(parsed.key in process.env)) process.env[parsed.key] = parsed.value;
   }
 }
 
