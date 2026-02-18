@@ -204,6 +204,22 @@ describe('OverviewGenerator', () => {
       expect(result.gate_status).toBe('PASS');
     });
 
+    it('handles claims with missing quotes gracefully', () => {
+      const claims = [
+        { id: 'claim-no-quotes', claimText: 'missing quotes field', claimType: 'FACT', status: 'SUPPORTED' },
+        makeClaim({ status: 'SUPPORTED', quotes: [makeQuote()] }),
+        makeClaim({ status: 'SUPPORTED', quotes: [makeQuote()] }),
+      ];
+
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      const result = gen.buildOverview(claims);
+
+      // Claim without quotes should be skipped (no citations)
+      expect(result.gate_status).toBe('PASS');
+      const allBullets = result.sections.flatMap((s) => s.bullets);
+      expect(allBullets).toHaveLength(2);
+    });
+
     it('quality_flags has correct evidence_rate', () => {
       const claims = [
         makeClaim({ status: 'SUPPORTED', quotes: [makeQuote()] }),

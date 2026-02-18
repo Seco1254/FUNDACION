@@ -134,6 +134,26 @@ describe('SubEventBuilder handler', () => {
     expect(published[0].event_name).toBe('SubEventsBuilt');
   });
 
+  it('handles corrupted topics_heatmap (non-array) gracefully', async () => {
+    versionRepo.findById.mockResolvedValue({
+      id: 'ver-1',
+      packetJson: { topics_heatmap: 'corrupted-string' },
+    });
+
+    const builder = new SubEventBuilder(topicRepo, claimRepo, versionRepo, eventBus, auditWriter);
+    await builder.handler()({
+      event_name: 'TopicHeatmapBuilt',
+      event_id: ulid(),
+      occurred_at: new Date().toISOString(),
+      trace: { trace_id: ulid(), span_id: ulid(), source_module: 'test' },
+      payload: { event_id: 'ev-1', version_id: 'ver-1' },
+    });
+
+    // Should not crash, should emit event normally
+    expect(published).toHaveLength(1);
+    expect(published[0].event_name).toBe('SubEventsBuilt');
+  });
+
   it('emits SubEventsBuilt even without new subevents', async () => {
     versionRepo.findById.mockResolvedValue({
       id: 'ver-1',

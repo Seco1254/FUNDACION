@@ -149,7 +149,8 @@ export class SubEventBuilder {
       const existingSubEvents: SubEvent[] = existingPacket.subevents ?? [];
       const existingClaimIds = new Set(existingSubEvents.flatMap((se) => se.key_claim_ids));
 
-      const heatmap: HeatmapBin[] = existingPacket.topics_heatmap ?? [];
+      const rawHeatmap = existingPacket.topics_heatmap;
+      const heatmap: HeatmapBin[] = Array.isArray(rawHeatmap) ? rawHeatmap : [];
       const newSubEvents: SubEvent[] = [...existingSubEvents];
 
       // Trigger 1: Topic drift

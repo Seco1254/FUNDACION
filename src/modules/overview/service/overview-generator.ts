@@ -115,14 +115,15 @@ export class OverviewGenerator {
     let totalQuotes = 0;
 
     for (const claim of claimsWithQuotes) {
-      const citations: CitationRef[] = claim.quotes.map((q: any) => ({
+      const quotes: any[] = claim.quotes ?? [];
+      const citations: CitationRef[] = quotes.map((q: any) => ({
         quote_id: q.id,
         article_id: q.articleId,
         media_key: q.article?.media?.mediaKey ?? 'unknown',
         url: q.article?.url ?? '',
       }));
 
-      totalQuotes += claim.quotes.length;
+      totalQuotes += quotes.length;
 
       // HARD RULE: no bullet without citation_refs
       if (citations.length === 0) continue;
