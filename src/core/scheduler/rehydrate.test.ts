@@ -28,7 +28,8 @@ describe('rehydratePublishJobs', () => {
     expect(jobs.map((j) => j.jobKey)).toContain('publish:evt-2');
   });
 
-  it('skips events with null publishAt', async () => {
+  it('schedules events with null publishAt for immediate execution (runAt ≈ now)', async () => {
+    const before = new Date();
     const scheduler = makeScheduler();
     const repo = {
       findPendingPublish: vi.fn().mockResolvedValue([
@@ -38,10 +39,19 @@ describe('rehydratePublishJobs', () => {
     };
 
     const count = await rehydratePublishJobs(scheduler, repo);
+    const after = new Date();
 
-    expect(count).toBe(1);
-    expect(scheduler.list()).toHaveLength(1);
-    expect(scheduler.list()[0].jobKey).toBe('publish:evt-ok');
+    // Both events are registered — null publishAt is no longer skipped
+    expect(count).toBe(2);
+    const jobs = scheduler.list();
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((j) => j.jobKey)).toContain('publish:evt-null');
+    expect(jobs.map((j) => j.jobKey)).toContain('publish:evt-ok');
+
+    // Null-publishAt job's runAt should be between 'before' and 'after' (immediate)
+    const nullJob = jobs.find((j) => j.jobKey === 'publish:evt-null')!;
+    expect(nullJob.runAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(nullJob.runAt.getTime()).toBeLessThanOrEqual(after.getTime());
   });
 
   it('returns 0 and registers nothing when no pending events', async () => {

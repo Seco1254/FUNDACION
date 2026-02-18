@@ -52,14 +52,20 @@ export class Scheduler {
           executed++;
           logger.info({ jobKey: key }, 'scheduler_job_executed');
         } catch (err) {
+          const eventId = key.startsWith('publish:') ? key.slice(8) : undefined;
           logger.error(
-            { jobKey: key, error: err instanceof Error ? err.message : String(err) },
+            {
+              jobKey: key,
+              ...(eventId && { event_id: eventId }),
+              error: err instanceof Error ? err.message : String(err),
+            },
             'scheduler_job_failed',
           );
         }
       }
     }
 
+    logger.debug({ pending: this.jobs.size, executed }, 'scheduler_tick_done');
     return executed;
   }
 }

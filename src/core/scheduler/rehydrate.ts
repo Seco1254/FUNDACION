@@ -21,10 +21,11 @@ export async function rehydratePublishJobs(
   const pending = await eventRepo.findPendingPublish();
   let count = 0;
   for (const ev of pending) {
-    if (ev.publishAt) {
-      scheduler.register(`publish:${ev.id}`, new Date(ev.publishAt), { eventId: ev.id });
-      count++;
-    }
+    // If publishAt is null (edge case: event stuck without a publish time),
+    // schedule for immediate execution so it isn't lost across restarts.
+    const runAt = ev.publishAt ? new Date(ev.publishAt) : new Date();
+    scheduler.register(`publish:${ev.id}`, runAt, { eventId: ev.id });
+    count++;
   }
   return count;
 }

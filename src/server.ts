@@ -198,14 +198,29 @@ export function buildApp() {
 
   // Scheduler ticker — runs due jobs on a fixed interval with anti-overlap guard.
   // Interval is configurable via SCHEDULER_TICK_MS env var (default 5 s).
+  // Re-registers the recurring scrape job after each execution so it never gets lost.
   const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '5000', 10);
+  const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
   let tickBusy = false;
+  let tickCount = 0;
+  const LOG_TICK_HEARTBEAT_EVERY = parseInt(process.env.LOG_TICK_HEARTBEAT_EVERY ?? '12', 10); // every ~60 s
   const tickHandle = setInterval(async () => {
     if (tickBusy) return; // anti-overlap: skip if previous tick is still running
     tickBusy = true;
+    tickCount++;
     try {
       const executed = await scheduler.runDueJobs();
-      if (executed > 0) logger.info({ executed }, 'scheduler_tick');
+      if (executed > 0) {
+        logger.info({ executed, pending: scheduler.list().length }, 'scheduler_tick');
+        // Re-register the recurring scrape job if it was just consumed by this tick.
+        if (!scheduler.list().some((j) => j.jobKey === 'scrape:tick')) {
+          const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+          scheduler.register('scrape:tick', next, {});
+          logger.info({ next_scrape: next.toISOString() }, 'scheduler_scrape_rescheduled');
+        }
+      } else if (tickCount % LOG_TICK_HEARTBEAT_EVERY === 0) {
+        logger.info({ pending: scheduler.list().length, tick: tickCount }, 'scheduler_heartbeat');
+      }
     } catch (e) {
       logger.error(e, 'scheduler_tick_failed');
     } finally {
@@ -234,11 +249,8 @@ export function buildApp() {
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator };
 }
 
-const SCHEDULER_TICK_MS = 30_000;
-const SCRAPE_INTERVAL_MS = 15 * 60 * 1000;
-
 async function start() {
-  const { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator } = buildApp();
+  const { app, scheduler, lifecycleManager, eventRepo } = buildApp();
   const port = parseInt(process.env.PORT ?? '3000', 10);
 
   try {
@@ -262,44 +274,30 @@ async function start() {
     process.exit(1);
   }
 
-  // Rehydrate: publish any PENDING_PUBLISH events whose publishAt has passed
+  // Rehydrate: directly publish any PENDING_PUBLISH events whose publishAt has passed.
+  // Events with a future publishAt are registered into the scheduler by the onReady hook
+  // (rehydratePublishJobs), so we only need to handle the past-due ones here.
   try {
     const pending = await eventRepo.findPendingPublish();
     const now = new Date();
-    let rehydrated = 0;
+    let published_now = 0;
     for (const evt of pending) {
       if (!evt.publishAt || evt.publishAt <= now) {
         await lifecycleManager.executePublish(evt.id);
-        rehydrated++;
-      } else {
-        scheduler.register(`publish:${evt.id}`, evt.publishAt, { eventId: evt.id });
+        published_now++;
       }
     }
     if (pending.length > 0) {
-      logger.info({ total: pending.length, published_now: rehydrated }, 'startup_rehydration_complete');
+      logger.info({ total: pending.length, published_now }, 'startup_rehydration_complete');
     }
   } catch (err) {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'startup_rehydration_failed');
   }
 
-  // Register periodic scrape job
-  const nextScrape = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+  // Register the initial periodic scrape job. The buildApp() tick loop handles re-registration.
+  const scrapeIntervalMs = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
+  const nextScrape = new Date(Date.now() + scrapeIntervalMs);
   scheduler.register('scrape:tick', nextScrape, {});
-
-  // Scheduler tick: check and execute due jobs every 30s, re-register recurring jobs
-  setInterval(async () => {
-    try {
-      const executed = await scheduler.runDueJobs();
-      if (executed > 0) {
-        logger.info({ executed }, 'scheduler_tick');
-        // Re-register recurring scrape
-        const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
-        scheduler.register('scrape:tick', next, {});
-      }
-    } catch (err) {
-      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'scheduler_tick_failed');
-    }
-  }, SCHEDULER_TICK_MS);
 }
 
 start();

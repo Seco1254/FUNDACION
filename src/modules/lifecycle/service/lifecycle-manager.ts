@@ -6,7 +6,7 @@ import { Scheduler } from '../../../core/scheduler/scheduler.js';
 import { Clock } from '../../../core/time/clock.js';
 import { logger } from '../../../core/logging/logger.js';
 
-const PUBLISH_DELAY_MS = 5 * 60 * 1000;
+export const PUBLISH_DELAY_MS = parseInt(process.env.PUBLISH_DELAY_MS ?? String(5 * 60 * 1000), 10);
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class LifecycleManager {
