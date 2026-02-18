@@ -1,11 +1,12 @@
 /**
- * EventLinker v2: Enhanced event linking with:
+ * EventLinker v2 — spec-exact implementation.
+ *
+ * Enhanced event linking with:
  *   - Multi-feature candidate scoring (embedding + entity + temporal)
+ *   - Hard block evaluation (action, city, date)
  *   - Optional LLM pair scoring for borderline cases
  *   - Mega-event prevention (max 25 articles, max 7 sub-events)
- *   - Improved merge rule with thresholds 0.62/0.50
- *
- * Replaces the v1 EventLinker while maintaining the same handler() interface.
+ *   - Merge decision: >=0.62 auto, 0.50-0.62 requires >=2 media, <0.50 create
  */
 
 import { ulid } from 'ulid';
@@ -63,11 +64,11 @@ export class EventLinkerV2 {
           .map((a: any) => a.embeddingVec as number[]);
         const texts = articles.map((a: any) => `${a.title} ${a.snippet}`);
 
-        // Mega-event guard: skip candidates that are too large
+        // Mega-event guard
         const megaCheck = checkMegaEvent({
           eventId: candidate.id,
           articleCount: articles.length,
-          subEventCount: 0, // We don't load sub-events at this stage for performance
+          subEventCount: 0,
         });
         if (megaCheck.isMega) {
           logger.info({
@@ -78,6 +79,9 @@ export class EventLinkerV2 {
           continue;
         }
 
+        // Count unique media for the 0.50-0.62 threshold rule
+        const uniqueMediaIds = new Set(articles.map((a: any) => a.mediaId));
+
         candidates.push({
           id: candidate.id,
           t0: candidate.t0,
@@ -85,6 +89,7 @@ export class EventLinkerV2 {
           articleVecs: vecs,
           articleTexts: texts,
           articleCount: articles.length,
+          uniqueMediaCount: uniqueMediaIds.size,
         });
       }
 
@@ -132,6 +137,8 @@ export class EventLinkerV2 {
           embedding: s.embeddingSim,
           entity: s.entityOverlap,
           temporal: s.temporalProximity,
+          hard_block: s.hardBlock,
+          hard_block_reasons: s.hardBlockReasons,
         })),
       },
     });
@@ -174,6 +181,7 @@ export class EventLinkerV2 {
         top_scores: decision.scores.slice(0, 3).map((s: any) => ({
           event_id: s.eventId,
           composite: s.compositeScore,
+          hard_block: s.hardBlock,
         })),
       },
     });
@@ -196,7 +204,7 @@ export class EventLinkerV2 {
       payload: { article_id: articleId, event_id: event.id, link_action: 'TRIGGER_CREATE' },
     });
 
-    // Merge check with improved threshold
+    // Merge check
     await this.mergeCheck(event.id, articleVec, rawCandidates, traceId);
   }
 
@@ -214,7 +222,6 @@ export class EventLinkerV2 {
 
       if (vecs.length === 0) continue;
 
-      // Mega-event guard: don't merge into mega events
       if (articles.length > MAX_ARTICLES_PER_EVENT) {
         continue;
       }
@@ -226,7 +233,6 @@ export class EventLinkerV2 {
         const newCount = await this.eventRepo.countArticlesForEvent(newEventId);
         const existingCount = await this.eventRepo.countArticlesForEvent(candidate.id);
 
-        // Prevent merge if combined would exceed mega threshold
         if (newCount + existingCount > MAX_ARTICLES_PER_EVENT) {
           logger.info({
             new_event_id: newEventId,

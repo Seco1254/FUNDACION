@@ -1,24 +1,19 @@
 /**
- * RankingService: computes ranked feed by loading events with articles,
- * scoring them, and returning sorted results.
- *
- * This service is injected into FeedService to replace pure-chronological ordering
- * with multi-feature ranking while preserving cursor-based pagination.
+ * RankingService — loads events with articles + claims, scores, returns ranked results.
  */
 
 import { EventRepository } from '../../events/repo/event-repo.js';
-import { computeEventScore, rankEvents, EventForScoring, ScoredEvent } from './event-scorer.js';
-import { JUNK_EXCLUDE_THRESHOLD } from './junk-scorer.js';
+import { ClaimRepository } from '../../claims/repo/claim-repo.js';
+import { rankEvents, EventForScoring, ScoredEvent } from './event-scorer.js';
 import { metrics } from '../../../core/metrics/metrics.js';
 import { logger } from '../../../core/logging/logger.js';
 
 export class RankingService {
-  constructor(private eventRepo: EventRepository) {}
+  constructor(
+    private eventRepo: EventRepository,
+    private claimRepo: ClaimRepository,
+  ) {}
 
-  /**
-   * Score and rank published events. Returns ordered event IDs.
-   * Called by FeedService to replace chronological sort with ranking.
-   */
   async rankPublishedEvents(
     rawEvents: Array<{
       id: string;
@@ -27,7 +22,7 @@ export class RankingService {
       tLast: Date | null;
       t0: Date | null;
       createdAt: Date;
-      versions: Array<{ headline: string | null }>;
+      versions: Array<{ id: string; headline: string | null; packetJson?: any }>;
     }>,
   ): Promise<ScoredEvent[]> {
     const now = new Date();
@@ -47,10 +42,18 @@ export class RankingService {
         createdAt: a.createdAt,
       }));
 
-      // Extract topic keys from latest version (stored in packetJson)
+      // Extract topic keys from latest version
       const latestVersion = raw.versions?.[0] ?? null;
       const packet = (latestVersion as any)?.packetJson ?? {};
       const topicKeys: string[] = Array.isArray(packet.topic_keys) ? packet.topic_keys : [];
+
+      // Load claims for Q formula
+      const versionId = (latestVersion as any)?.id ?? null;
+      let claims: Array<{ status: string }> = [];
+      if (versionId) {
+        const dbClaims = await this.claimRepo.findClaimsByVersion(raw.id, versionId);
+        claims = dbClaims.map((c: any) => ({ status: c.status }));
+      }
 
       eventsForScoring.push({
         id: raw.id,
@@ -60,6 +63,7 @@ export class RankingService {
         articles: scoringArticles,
         headline: latestVersion?.headline ?? null,
         topicKeys,
+        claims,
       });
     }
 
@@ -74,11 +78,7 @@ export class RankingService {
       const avgScore = top10.reduce((s, r) => s + r.score, 0) / top10.length;
       metrics.setGauge('ranking.avg_score_top10', avgScore);
 
-      // Multi-source ratio in top 10
-      const multiSourceCount = eventsForScoring
-        .filter((e) => top10.some((r) => r.eventId === e.id))
-        .filter((e) => new Set(e.articles.map((a) => a.mediaId)).size > 1)
-        .length;
+      const multiSourceCount = top10.filter((r) => r.uniqueMediaCount > 1).length;
       metrics.setGauge('ranking.top_feed_multi_source_ratio', multiSourceCount / top10.length);
     }
 

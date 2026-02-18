@@ -89,9 +89,7 @@ export function buildApp() {
   const articleRepo = new ArticleRepository(prisma);
   const mediaRepo = new MediaRepository(prisma);
 
-  // Services
-  const rankingService = new RankingService(eventRepo);
-  const feedService = new FeedService(feedRepo, rankingService);
+  // Services (feedService initialized after claimRepo for ranking)
   const auditService = new AuditService(auditRepo);
 
   // Event bus
@@ -163,6 +161,10 @@ export function buildApp() {
   const claimRepo = new ClaimRepository(prisma);
   const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService, llm);
   const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService, llm);
+
+  // Ranking (needs claimRepo for Q formula)
+  const rankingService = new RankingService(eventRepo, claimRepo);
+  const feedService = new FeedService(feedRepo, rankingService);
 
   // Phase 4: Bias → Topics → SubEvents
   const biasRepo = new BiasLabelRepository(prisma);

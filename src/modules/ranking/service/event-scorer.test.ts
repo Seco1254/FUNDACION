@@ -5,6 +5,7 @@ import {
   setHotTopics,
   EventForScoring,
   ArticleForScoring,
+  ClaimForScoring,
 } from './event-scorer.js';
 
 function makeArticle(overrides: Partial<ArticleForScoring> = {}): ArticleForScoring {
@@ -12,7 +13,7 @@ function makeArticle(overrides: Partial<ArticleForScoring> = {}): ArticleForScor
     id: 'art-1',
     url: 'https://razonpublica.com/nota-1',
     title: 'Nota de prueba',
-    snippet: 'Este es un fragmento de prueba con suficiente longitud para representar un artículo real de noticias colombianas sobre la reforma pensional.',
+    snippet: 'Este es un fragmento de prueba con suficiente longitud para representar un artículo real de noticias colombianas sobre la reforma pensional que se discute en el Congreso.',
     mediaId: 'media-1',
     publishedAt: new Date('2025-01-15T10:00:00Z'),
     createdAt: new Date('2025-01-15T10:00:00Z'),
@@ -29,6 +30,7 @@ function makeEvent(overrides: Partial<EventForScoring> = {}): EventForScoring {
     articles: [makeArticle()],
     headline: 'Reforma pensional aprobada',
     topicKeys: ['politics'],
+    claims: [],
     ...overrides,
   };
 }
@@ -46,98 +48,179 @@ describe('computeEventScore', () => {
     expect(result.junkExcluded).toBe(false);
   });
 
-  it('importance grows with more articles', () => {
-    const fewArticles = computeEventScore(makeEvent({ articles: [makeArticle()] }), now);
-    const manyArticles = computeEventScore(
+  // ── I: Importance ──
+
+  it('2 medios rankea > 1 medio con mismo n_arts', () => {
+    const singleMedia = computeEventScore(
       makeEvent({
-        articles: Array.from({ length: 8 }, (_, i) =>
-          makeArticle({ id: `art-${i}`, mediaId: `media-${i}` }),
+        articles: Array.from({ length: 4 }, (_, i) =>
+          makeArticle({ id: `art-${i}`, mediaId: 'media-A' }),
         ),
       }),
       now,
     );
-    expect(manyArticles.components.importance).toBeGreaterThan(fewArticles.components.importance);
+    const twoMedia = computeEventScore(
+      makeEvent({
+        articles: [
+          makeArticle({ id: 'a1', mediaId: 'media-A' }),
+          makeArticle({ id: 'a2', mediaId: 'media-A' }),
+          makeArticle({ id: 'a3', mediaId: 'media-B' }),
+          makeArticle({ id: 'a4', mediaId: 'media-B' }),
+        ],
+      }),
+      now,
+    );
+    expect(twoMedia.components.importance).toBeGreaterThan(singleMedia.components.importance);
   });
 
-  it('importance accounts for source diversity', () => {
-    const sameSource = computeEventScore(
+  it('per-media cap: 10 arts 1 media loses vs 3+3 from 2 media', () => {
+    const mono = computeEventScore(
       makeEvent({
-        articles: Array.from({ length: 5 }, (_, i) =>
-          makeArticle({ id: `art-${i}`, mediaId: 'same-media' }),
+        articles: Array.from({ length: 10 }, (_, i) =>
+          makeArticle({ id: `art-${i}`, mediaId: 'media-X' }),
         ),
       }),
       now,
     );
-    const diverseSources = computeEventScore(
+    const diverse = computeEventScore(
       makeEvent({
-        articles: Array.from({ length: 5 }, (_, i) =>
-          makeArticle({ id: `art-${i}`, mediaId: `media-${i}` }),
-        ),
+        articles: [
+          ...Array.from({ length: 3 }, (_, i) =>
+            makeArticle({ id: `a-${i}`, mediaId: 'media-A' }),
+          ),
+          ...Array.from({ length: 3 }, (_, i) =>
+            makeArticle({ id: `b-${i}`, mediaId: 'media-B' }),
+          ),
+        ],
       }),
       now,
     );
-    expect(diverseSources.components.importance).toBeGreaterThan(sameSource.components.importance);
+    expect(diverse.components.importance).toBeGreaterThan(mono.components.importance);
   });
 
-  it('momentum is high when articles are recent', () => {
-    const recentArticles = Array.from({ length: 3 }, (_, i) =>
-      makeArticle({
-        id: `art-${i}`,
-        publishedAt: new Date('2025-01-15T12:00:00Z'), // 2h before now
+  it('dominance >70% applies -0.05 penalty', () => {
+    const dominant = computeEventScore(
+      makeEvent({
+        articles: [
+          ...Array.from({ length: 8 }, (_, i) =>
+            makeArticle({ id: `a-${i}`, mediaId: 'media-A' }),
+          ),
+          ...Array.from({ length: 2 }, (_, i) =>
+            makeArticle({ id: `b-${i}`, mediaId: 'media-B' }),
+          ),
+        ],
       }),
+      now,
     );
-    const result = computeEventScore(makeEvent({ articles: recentArticles }), now);
-    expect(result.components.momentum).toBeGreaterThan(0);
+    expect(dominant.dominancePenalty).toBe(true);
+
+    const balanced = computeEventScore(
+      makeEvent({
+        articles: [
+          ...Array.from({ length: 5 }, (_, i) =>
+            makeArticle({ id: `a-${i}`, mediaId: 'media-A' }),
+          ),
+          ...Array.from({ length: 5 }, (_, i) =>
+            makeArticle({ id: `b-${i}`, mediaId: 'media-B' }),
+          ),
+        ],
+      }),
+      now,
+    );
+    expect(balanced.dominancePenalty).toBe(false);
+    expect(balanced.score).toBeGreaterThan(dominant.score);
   });
 
-  it('momentum is zero when no articles in 6h window', () => {
-    const oldArticles = [
-      makeArticle({ publishedAt: new Date('2025-01-14T10:00:00Z') }), // 28h before now
+  it('importance uses sigmoid(log(1+n_arts_eff)*log(1+n_unique_media))', () => {
+    const result = computeEventScore(makeEvent({ articles: [makeArticle()] }), now);
+    const expected = 1 / (1 + Math.exp(-(Math.log(2) * Math.log(2))));
+    expect(result.components.importance).toBeCloseTo(expected, 6);
+  });
+
+  // ── M: Momentum ──
+
+  it('momentum uses sigmoid(Δn_arts_6h + 2*Δn_unique_media_6h)', () => {
+    const recentArticles = [
+      makeArticle({ id: 'a1', mediaId: 'm1', publishedAt: new Date('2025-01-15T12:00:00Z') }),
+      makeArticle({ id: 'a2', mediaId: 'm2', publishedAt: new Date('2025-01-15T12:00:00Z') }),
+      makeArticle({ id: 'a3', mediaId: 'm1', publishedAt: new Date('2025-01-15T13:00:00Z') }),
     ];
-    const result = computeEventScore(makeEvent({ articles: oldArticles }), now);
-    expect(result.components.momentum).toBe(0);
+    const result = computeEventScore(makeEvent({ articles: recentArticles }), now);
+    const expected = 1 / (1 + Math.exp(-(3 + 2 * 2)));
+    expect(result.components.momentum).toBeCloseTo(expected, 3);
   });
+
+  it('junk >= 0.45 does NOT count in momentum', () => {
+    // url_pattern(0.35) + title_keyword_1(0.15) + short_snippet(0.10) = 0.60
+    const junkishArticle = makeArticle({
+      id: 'junkish',
+      url: 'https://example.com/patrocinado/nota',
+      title: 'Oferta de prueba',
+      snippet: 'Corto.',
+      publishedAt: new Date('2025-01-15T13:00:00Z'),
+    });
+    const normalArticle = makeArticle({
+      id: 'normal',
+      publishedAt: new Date('2025-01-15T13:00:00Z'),
+    });
+
+    const withJunk = computeEventScore(
+      makeEvent({ articles: [junkishArticle, normalArticle] }),
+      now,
+    );
+    const allNormal = computeEventScore(
+      makeEvent({ articles: [normalArticle, makeArticle({ id: 'n2', publishedAt: new Date('2025-01-15T13:00:00Z') })] }),
+      now,
+    );
+    expect(withJunk.updatesIn6h).toBeLessThan(allNormal.updatesIn6h);
+  });
+
+  // ── Q: Quality (claims-based) ──
+
+  it('Q = 0 when no claims', () => {
+    const result = computeEventScore(makeEvent({ claims: [] }), now);
+    expect(result.components.quality).toBe(0);
+  });
+
+  it('Q = claims_supported / claims_total', () => {
+    const claims: ClaimForScoring[] = [
+      { status: 'SUPPORTED' },
+      { status: 'SUPPORTED' },
+      { status: 'DISPUTED' },
+      { status: 'INSUFFICIENT' },
+    ];
+    const result = computeEventScore(makeEvent({ claims }), now);
+    expect(result.components.quality).toBeCloseTo(0.5, 6);
+  });
+
+  it('Q capped at 1', () => {
+    const result = computeEventScore(
+      makeEvent({ claims: [{ status: 'SUPPORTED' }, { status: 'SUPPORTED' }] }),
+      now,
+    );
+    expect(result.components.quality).toBe(1);
+  });
+
+  // ── R: Recency ──
 
   it('recency decays over time', () => {
     const recent = computeEventScore(
-      makeEvent({ publishedAt: new Date('2025-01-15T13:00:00Z') }), // 1h ago
+      makeEvent({ publishedAt: new Date('2025-01-15T13:00:00Z') }),
       now,
     );
     const old = computeEventScore(
-      makeEvent({ publishedAt: new Date('2025-01-13T10:00:00Z') }), // 2 days ago
+      makeEvent({ publishedAt: new Date('2025-01-13T10:00:00Z') }),
       now,
     );
     expect(recent.components.recency).toBeGreaterThan(old.components.recency);
   });
 
-  it('quality is higher with headline and long snippets', () => {
-    const withHeadline = computeEventScore(
-      makeEvent({
-        headline: 'Good headline',
-        articles: [makeArticle({ snippet: 'A'.repeat(500) })],
-      }),
-      now,
-    );
-    const noHeadline = computeEventScore(
-      makeEvent({
-        headline: null,
-        articles: [makeArticle({ snippet: 'Short' })],
-      }),
-      now,
-    );
-    expect(withHeadline.components.quality).toBeGreaterThan(noHeadline.components.quality);
-  });
+  // ── T: TopicBoost ──
 
   it('topic boost activates when event matches hot topics', () => {
     setHotTopics(['politics', 'economy']);
     const result = computeEventScore(makeEvent({ topicKeys: ['politics'] }), now);
     expect(result.components.topicBoost).toBeGreaterThan(0);
-  });
-
-  it('topic boost is zero when no hot topics match', () => {
-    setHotTopics(['sports']);
-    const result = computeEventScore(makeEvent({ topicKeys: ['politics'] }), now);
-    expect(result.components.topicBoost).toBe(0);
   });
 
   it('topic boost is zero when no hot topics set', () => {
@@ -146,20 +229,10 @@ describe('computeEventScore', () => {
     expect(result.components.topicBoost).toBe(0);
   });
 
-  it('junk penalty applies for ads-like articles', () => {
-    const junkArticle = makeArticle({
-      url: 'https://example.com/patrocinado/oferta',
-      title: 'Oferta gratis exclusiva',
-      snippet: 'Compra ahora con descuento',
-    });
-    const result = computeEventScore(makeEvent({ articles: [junkArticle] }), now);
-    expect(result.components.junkPenalty).toBeGreaterThan(0);
-  });
+  // ── J: JunkPenalty ──
 
-  it('excludes event when majority of articles are junk', () => {
-    // Each article needs to score ≥ 0.75 without authorOrSection
-    // url_pattern(0.35) + title_keywords x2(0.30) + short_snippet(0.10) + seo(0.20) = 0.95
-    const junkArticles = Array.from({ length: 3 }, (_, i) =>
+  it('junk >= 0.75 excludes all-junk event', () => {
+    const allJunk = Array.from({ length: 3 }, (_, i) =>
       makeArticle({
         id: `junk-${i}`,
         url: `https://example.com/patrocinado/tienda/oferta-${i}`,
@@ -167,9 +240,23 @@ describe('computeEventScore', () => {
         snippet: 'Haz clic aquí. Haz clic aquí para leer más.',
       }),
     );
-    const result = computeEventScore(makeEvent({ articles: junkArticles }), now);
+    const result = computeEventScore(makeEvent({ articles: allJunk }), now);
     expect(result.junkExcluded).toBe(true);
     expect(result.score).toBe(-1);
+  });
+
+  it('event with mix of junk and normal is NOT excluded', () => {
+    const articles = [
+      makeArticle({ id: 'normal' }),
+      makeArticle({
+        id: 'junk',
+        url: 'https://example.com/patrocinado/tienda/oferta',
+        title: 'Oferta exclusiva ¡no te pierdas este top 10 descuento!',
+        snippet: 'Haz clic aquí. Haz clic aquí para leer más.',
+      }),
+    ];
+    const result = computeEventScore(makeEvent({ articles }), now);
+    expect(result.junkExcluded).toBe(false);
   });
 
   it('all components are in [0, 1]', () => {
@@ -226,28 +313,27 @@ describe('rankEvents', () => {
     expect(ranked.length).toBe(1);
   });
 
-  it('breaks ties by source count then publishedAt', () => {
-    const evt1 = makeEvent({
-      id: 'evt-1',
+  it('tie-breaker 1: unique media desc', () => {
+    const moreMedia = makeEvent({
+      id: 'evt-more-media',
       publishedAt: new Date('2025-01-15T13:00:00Z'),
       articles: [
-        makeArticle({ id: 'a1', mediaId: 'm1' }),
-        makeArticle({ id: 'a2', mediaId: 'm2' }),
+        makeArticle({ id: 'a1', mediaId: 'm1', publishedAt: new Date('2025-01-15T13:00:00Z') }),
+        makeArticle({ id: 'a2', mediaId: 'm2', publishedAt: new Date('2025-01-15T13:00:00Z') }),
+        makeArticle({ id: 'a3', mediaId: 'm3', publishedAt: new Date('2025-01-15T13:00:00Z') }),
       ],
     });
-    const evt2 = makeEvent({
-      id: 'evt-2',
-      publishedAt: new Date('2025-01-15T13:30:00Z'),
+    const lessMedia = makeEvent({
+      id: 'evt-less-media',
+      publishedAt: new Date('2025-01-15T13:00:00Z'),
       articles: [
-        makeArticle({ id: 'a3', mediaId: 'm3' }),
-        makeArticle({ id: 'a4', mediaId: 'm4' }),
-        makeArticle({ id: 'a5', mediaId: 'm5' }),
+        makeArticle({ id: 'b1', mediaId: 'm1', publishedAt: new Date('2025-01-15T13:00:00Z') }),
+        makeArticle({ id: 'b2', mediaId: 'm1', publishedAt: new Date('2025-01-15T13:00:00Z') }),
+        makeArticle({ id: 'b3', mediaId: 'm1', publishedAt: new Date('2025-01-15T13:00:00Z') }),
       ],
     });
-    // evt2 has more sources, should rank higher if scores tie or are close
-    const ranked = rankEvents([evt1, evt2], now);
-    // evt2 should be first (more sources + more recent)
-    expect(ranked[0].eventId).toBe('evt-2');
+    const ranked = rankEvents([lessMedia, moreMedia], now);
+    expect(ranked[0].eventId).toBe('evt-more-media');
   });
 
   it('returns empty array for empty input', () => {

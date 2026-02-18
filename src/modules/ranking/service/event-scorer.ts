@@ -1,19 +1,36 @@
 /**
- * Multi-feature event ranking scorer.
+ * Multi-feature event ranking scorer — spec-exact implementation.
  *
  * score(e) = 0.40*I(e) + 0.22*M(e) + 0.18*R(e) + 0.08*Q(e) + 0.06*T(e) - 0.06*J(e)
  *
- * I = Importance  (article count, source diversity)
- * M = Momentum    (rate of new articles over last 6h)
- * R = Recency     (exponential decay from publishedAt)
- * Q = Quality     (avg snippet length, headline presence)
- * T = TopicBoost  (matches hot topics)
- * J = JunkPenalty (avg junk score of articles)
+ * I = sigmoid( log(1+n_arts_eff) * log(1+n_unique_media) )
+ *     n_arts_eff = sum over media min(articles_by_media, 3)
+ *     If one media dominates >70% of total articles → -0.05 penalty on final score
  *
- * All sub-scores are normalized to [0, 1].
+ * M = sigmoid( Δn_arts_6h + 2*Δn_unique_media_6h )
+ *     Articles with junk_score >= 0.45 do NOT count for momentum.
+ *
+ * R = exp(-0.693 * age_ms / HALF_LIFE_MS)    (12h half-life)
+ *
+ * Q = min(1, claims_supported / max(1, claims_total))
+ *     claims_supported = claims with status SUPPORTED
+ *     If no claims: Q = 0
+ *
+ * T = topic boost (configurable hot topics)
+ *
+ * J = avg(junk_score) across all articles (0..1)
+ *     junk_score >= 0.75 → article excluded from feed entirely
+ *     0.45–0.75 → penalizes ranking, doesn't count in momentum
+ *     < 0.45 → normal
+ *     Events where ALL non-excluded articles are gone → event excluded
+ *
+ * Tie-breakers (exact order):
+ *   1. unique media desc
+ *   2. updates in 6h desc
+ *   3. most recent publishedAt
  */
 
-import { computeJunkScore, JunkSignals, JUNK_EXCLUDE_THRESHOLD, JUNK_PENALTY_THRESHOLD } from './junk-scorer.js';
+import { computeJunkScore, JUNK_EXCLUDE_THRESHOLD, JUNK_PENALTY_THRESHOLD } from './junk-scorer.js';
 
 // ── Weights ──
 const W_IMPORTANCE = 0.40;
@@ -23,11 +40,11 @@ const W_QUALITY    = 0.08;
 const W_TOPIC      = 0.06;
 const W_JUNK       = 0.06;
 
-// ── Normalization constants ──
-const IMPORTANCE_ARTICLE_CAP = 15;  // 15+ articles = max importance
-const IMPORTANCE_SOURCE_CAP  = 5;   // 5+ unique sources = max source diversity
+// ── Constants ──
+const PER_MEDIA_CAP = 3;
+const DOMINANCE_THRESHOLD = 0.70;
+const DOMINANCE_PENALTY = 0.05;
 const MOMENTUM_WINDOW_MS = 6 * 60 * 60 * 1000; // 6 hours
-const MOMENTUM_CAP = 5; // 5+ articles in 6h = max momentum
 const RECENCY_HALF_LIFE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export interface ArticleForScoring {
@@ -40,6 +57,10 @@ export interface ArticleForScoring {
   createdAt: Date;
 }
 
+export interface ClaimForScoring {
+  status: string; // 'SUPPORTED' | 'DISPUTED' | 'INSUFFICIENT'
+}
+
 export interface EventForScoring {
   id: string;
   publishedAt: Date | null;
@@ -48,6 +69,7 @@ export interface EventForScoring {
   articles: ArticleForScoring[];
   headline: string | null;
   topicKeys: string[];
+  claims: ClaimForScoring[];
 }
 
 export interface ScoredEvent {
@@ -63,6 +85,9 @@ export interface ScoredEvent {
   };
   junkExcluded: boolean;
   avgJunkScore: number;
+  uniqueMediaCount: number;
+  updatesIn6h: number;
+  dominancePenalty: boolean;
 }
 
 /** Hot topics can be set externally; empty = no boost. */
@@ -72,36 +97,107 @@ export function setHotTopics(topics: string[]): void {
   hotTopics = new Set(topics);
 }
 
+/** Standard sigmoid: 1 / (1 + exp(-x)) */
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * Compute per-article junk scores and classify.
+ * Returns articles split into: included (junk < 0.75) and excluded (junk >= 0.75).
+ */
+function classifyArticles(articles: ArticleForScoring[]): {
+  included: Array<ArticleForScoring & { junkScore: number }>;
+  excluded: ArticleForScoring[];
+  totalJunk: number;
+} {
+  const included: Array<ArticleForScoring & { junkScore: number }> = [];
+  const excluded: ArticleForScoring[] = [];
+  let totalJunk = 0;
+
+  for (const a of articles) {
+    const junk = computeJunkScore({ url: a.url, title: a.title, snippet: a.snippet });
+    totalJunk += junk.score;
+    if (junk.score >= JUNK_EXCLUDE_THRESHOLD) {
+      excluded.push(a);
+    } else {
+      included.push({ ...a, junkScore: junk.score });
+    }
+  }
+
+  return { included, excluded, totalJunk };
+}
+
 export function computeEventScore(event: EventForScoring, now: Date = new Date()): ScoredEvent {
   const articles = event.articles;
+  const { included, excluded, totalJunk } = classifyArticles(articles);
+
+  // If ALL articles are excluded (junk >= 0.75), event does not appear
+  const junkExcluded = included.length === 0 && articles.length > 0;
+  const avgJunkScore = articles.length > 0 ? totalJunk / articles.length : 0;
+
+  if (junkExcluded) {
+    return {
+      eventId: event.id,
+      score: -1,
+      components: { importance: 0, momentum: 0, recency: 0, quality: 0, topicBoost: 0, junkPenalty: avgJunkScore },
+      junkExcluded: true,
+      avgJunkScore,
+      uniqueMediaCount: 0,
+      updatesIn6h: 0,
+      dominancePenalty: false,
+    };
+  }
 
   // ── I: Importance ──
-  const articleCount = articles.length;
-  const uniqueSources = new Set(articles.map((a) => a.mediaId)).size;
-  const articleFactor = Math.min(articleCount / IMPORTANCE_ARTICLE_CAP, 1);
-  const sourceFactor = Math.min(uniqueSources / IMPORTANCE_SOURCE_CAP, 1);
-  const importance = 0.6 * articleFactor + 0.4 * sourceFactor;
+  // n_arts_eff = sum over media min(articles_by_media, PER_MEDIA_CAP)
+  const articlesByMedia = new Map<string, number>();
+  for (const a of included) {
+    articlesByMedia.set(a.mediaId, (articlesByMedia.get(a.mediaId) ?? 0) + 1);
+  }
+  let nArtsEff = 0;
+  for (const count of articlesByMedia.values()) {
+    nArtsEff += Math.min(count, PER_MEDIA_CAP);
+  }
+  const nUniqueMedia = articlesByMedia.size;
+
+  const importance = sigmoid(Math.log(1 + nArtsEff) * Math.log(1 + nUniqueMedia));
+
+  // Dominance check: any single media >70% of ALL articles (not capped)
+  let dominancePenalty = false;
+  const totalArticlesByMedia = new Map<string, number>();
+  for (const a of articles) {
+    totalArticlesByMedia.set(a.mediaId, (totalArticlesByMedia.get(a.mediaId) ?? 0) + 1);
+  }
+  for (const count of totalArticlesByMedia.values()) {
+    if (articles.length > 0 && count / articles.length > DOMINANCE_THRESHOLD) {
+      dominancePenalty = true;
+      break;
+    }
+  }
 
   // ── M: Momentum ──
+  // Only count articles with junk_score < JUNK_PENALTY_THRESHOLD (0.45)
   const windowStart = now.getTime() - MOMENTUM_WINDOW_MS;
-  const recentArticles = articles.filter((a) => {
+  const momentumArticles = included.filter((a) => {
+    if (a.junkScore >= JUNK_PENALTY_THRESHOLD) return false; // junk 0.45+ doesn't count
     const ts = a.publishedAt?.getTime() ?? a.createdAt.getTime();
     return ts >= windowStart;
-  }).length;
-  const momentum = Math.min(recentArticles / MOMENTUM_CAP, 1);
+  });
+  const deltaArts6h = momentumArticles.length;
+  const deltaUniqueMedia6h = new Set(momentumArticles.map((a) => a.mediaId)).size;
+  const momentum = sigmoid(deltaArts6h + 2 * deltaUniqueMedia6h);
 
   // ── R: Recency ──
   const publishTs = event.publishedAt?.getTime() ?? event.t0?.getTime() ?? now.getTime();
   const ageMs = Math.max(0, now.getTime() - publishTs);
-  const recency = Math.exp(-0.693 * ageMs / RECENCY_HALF_LIFE_MS); // ln(2) ≈ 0.693
+  const recency = Math.exp(-0.693 * ageMs / RECENCY_HALF_LIFE_MS);
 
   // ── Q: Quality ──
-  const avgSnippetLen = articles.length > 0
-    ? articles.reduce((sum, a) => sum + a.snippet.length, 0) / articles.length
-    : 0;
-  const snippetQuality = Math.min(avgSnippetLen / 400, 1); // 400+ chars = max quality
-  const headlineBonus = event.headline ? 0.3 : 0;
-  const quality = Math.min(0.7 * snippetQuality + headlineBonus, 1);
+  // Q = min(1, claims_supported / max(1, claims_total))
+  const claimsTotal = event.claims.length;
+  const claimsSupported = event.claims.filter((c) => c.status === 'SUPPORTED').length;
+  const quality = claimsTotal === 0 ? 0 : Math.min(1, claimsSupported / Math.max(1, claimsTotal));
 
   // ── T: TopicBoost ──
   let topicBoost = 0;
@@ -110,28 +206,21 @@ export function computeEventScore(event: EventForScoring, now: Date = new Date()
     topicBoost = matches > 0 ? Math.min(matches / 2, 1) : 0;
   }
 
-  // ── J: JunkPenalty ──
-  let totalJunk = 0;
-  let junkArticleCount = 0;
-  for (const a of articles) {
-    const junk = computeJunkScore({ url: a.url, title: a.title, snippet: a.snippet });
-    totalJunk += junk.score;
-    if (junk.score >= JUNK_EXCLUDE_THRESHOLD) junkArticleCount++;
-  }
-  const avgJunkScore = articles.length > 0 ? totalJunk / articles.length : 0;
-  // If majority of articles are junk, exclude the event entirely
-  const junkExcluded = articles.length > 0 && (junkArticleCount / articles.length) > 0.5;
-  const junkPenalty = avgJunkScore >= JUNK_PENALTY_THRESHOLD ? avgJunkScore : 0;
+  // ── J: JunkPenalty ── avg junk_score of ALL articles (0..1)
+  const junkPenalty = avgJunkScore;
 
   // ── Final score ──
-  const score = junkExcluded
-    ? -1 // sentinel: excluded
-    : W_IMPORTANCE * importance
-      + W_MOMENTUM * momentum
-      + W_RECENCY * recency
-      + W_QUALITY * quality
-      + W_TOPIC * topicBoost
-      - W_JUNK * junkPenalty;
+  let score =
+    W_IMPORTANCE * importance
+    + W_MOMENTUM * momentum
+    + W_RECENCY * recency
+    + W_QUALITY * quality
+    + W_TOPIC * topicBoost
+    - W_JUNK * junkPenalty;
+
+  if (dominancePenalty) {
+    score -= DOMINANCE_PENALTY;
+  }
 
   return {
     eventId: event.id,
@@ -144,17 +233,22 @@ export function computeEventScore(event: EventForScoring, now: Date = new Date()
       topicBoost,
       junkPenalty,
     },
-    junkExcluded,
+    junkExcluded: false,
     avgJunkScore,
+    uniqueMediaCount: nUniqueMedia,
+    updatesIn6h: deltaArts6h,
+    dominancePenalty,
   };
 }
 
 /**
  * Rank a list of events by score (descending).
- * Excludes junk events. Applies tie-breakers:
- *   1. Higher score first
- *   2. More sources first
- *   3. More recent publishedAt first
+ * Excludes events where all articles have junk_score >= 0.75.
+ *
+ * Tie-breakers (exact order):
+ *   1. unique media desc
+ *   2. updates in 6h desc
+ *   3. most recent publishedAt
  */
 export function rankEvents(events: EventForScoring[], now?: Date): ScoredEvent[] {
   const scored = events.map((e) => ({
@@ -165,14 +259,23 @@ export function rankEvents(events: EventForScoring[], now?: Date): ScoredEvent[]
   // Filter out junk-excluded events
   const valid = scored.filter((s) => !s.result.junkExcluded);
 
-  // Sort descending by score, then by source count, then by publishedAt
+  // Sort: score desc, then tie-breakers
   valid.sort((a, b) => {
-    if (b.result.score !== a.result.score) return b.result.score - a.result.score;
-    // Tie-breaker 1: more unique sources
-    const aSources = new Set(a.event.articles.map((ar) => ar.mediaId)).size;
-    const bSources = new Set(b.event.articles.map((ar) => ar.mediaId)).size;
-    if (bSources !== aSources) return bSources - aSources;
-    // Tie-breaker 2: more recent publishedAt
+    // Primary: score desc
+    const scoreDiff = b.result.score - a.result.score;
+    if (Math.abs(scoreDiff) > 1e-9) return scoreDiff;
+
+    // Tie-breaker 1: unique media desc
+    if (b.result.uniqueMediaCount !== a.result.uniqueMediaCount) {
+      return b.result.uniqueMediaCount - a.result.uniqueMediaCount;
+    }
+
+    // Tie-breaker 2: updates in 6h desc
+    if (b.result.updatesIn6h !== a.result.updatesIn6h) {
+      return b.result.updatesIn6h - a.result.updatesIn6h;
+    }
+
+    // Tie-breaker 3: most recent publishedAt
     const aTs = a.event.publishedAt?.getTime() ?? 0;
     const bTs = b.event.publishedAt?.getTime() ?? 0;
     return bTs - aTs;

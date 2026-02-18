@@ -1,15 +1,21 @@
 /**
- * Pair-scoring for Linking v2.
+ * Pair-scoring for Linking v2 — spec-exact implementation.
  *
- * Given an article and a candidate event, produces a link score in [0, 1].
- * Two modes:
- *   1. Heuristic: embedding similarity + entity overlap + temporal proximity
- *   2. LLM-assisted: optional LLM call for borderline candidates (top 3)
+ * Composite score = 0.55*embedding + 0.25*entity + 0.20*temporal
  *
- * Thresholds:
- *   >= 0.62 → auto-link (high confidence)
- *   0.50–0.62 → link if LLM confirms (or heuristic fallback)
- *   < 0.50 → do not link
+ * Hard blocks (always force CREATE, even if score is high):
+ *   - action_incompatible: article action conflicts with event action
+ *   - city_mismatch: article city != event city (when both have high confidence)
+ *   - date_gap: event fact dates differ by >7 days
+ *
+ * Merge decision:
+ *   >= 0.62 AND no hard_block → assign (auto-link)
+ *   0.50–0.62 → only assign if event has >= 2 unique media
+ *   < 0.50 → create new event
+ *
+ * LLM response shape (when used):
+ *   { same_event: 0..1, hard_block: boolean, reason_codes: string[] }
+ *   hard_block from LLM is ALWAYS respected.
  */
 
 import { cosineSimilarity, computeCentroid } from './similarity.js';
@@ -19,21 +25,7 @@ import { metrics } from '../../../core/metrics/metrics.js';
 
 export const THETA_AUTO_LINK = 0.62;
 export const THETA_MAYBE_LINK = 0.50;
-
-export interface CandidateScore {
-  eventId: string;
-  embeddingSim: number;
-  entityOverlap: number;
-  temporalProximity: number;
-  compositeScore: number;
-}
-
-export interface PairScoringResult {
-  bestMatch: { eventId: string; score: number } | null;
-  scores: CandidateScore[];
-  action: 'LINK' | 'CREATE';
-  llmUsed: boolean;
-}
+const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ── Weights for composite score ──
 const W_EMBEDDING = 0.55;
@@ -43,21 +35,108 @@ const W_TEMPORAL = 0.20;
 // ── Temporal decay: 3 days half-life ──
 const TEMPORAL_HALF_LIFE_MS = 3 * 24 * 60 * 60 * 1000;
 
+export interface CandidateScore {
+  eventId: string;
+  embeddingSim: number;
+  entityOverlap: number;
+  temporalProximity: number;
+  compositeScore: number;
+  hardBlock: boolean;
+  hardBlockReasons: string[];
+}
+
+export interface PairScoringResult {
+  bestMatch: { eventId: string; score: number } | null;
+  scores: CandidateScore[];
+  action: 'LINK' | 'CREATE';
+  llmUsed: boolean;
+}
+
+// ── Hard block input ──
+export interface HardBlockContext {
+  /** Action/category of the article (e.g., 'protest', 'election', 'accident') */
+  articleAction?: string | null;
+  /** City mentioned in the article */
+  articleCity?: string | null;
+  /** Confidence of city extraction (0-1) */
+  articleCityConfidence?: number;
+  /** Date of the fact described in the article */
+  articleFactDate?: Date | null;
+}
+
+export interface EventCandidateContext {
+  /** Dominant action/category of the event */
+  eventAction?: string | null;
+  /** Dominant city of the event */
+  eventCity?: string | null;
+  /** Confidence of city extraction (0-1) */
+  eventCityConfidence?: number;
+  /** Earliest fact date across event articles */
+  eventFactDateEarliest?: Date | null;
+  /** Latest fact date across event articles */
+  eventFactDateLatest?: Date | null;
+}
+
+/**
+ * Check hard block conditions between article and event.
+ */
+export function checkHardBlock(
+  article: HardBlockContext,
+  event: EventCandidateContext,
+): { blocked: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+
+  // 1. Action incompatible
+  if (
+    article.articleAction && event.eventAction
+    && article.articleAction !== event.eventAction
+  ) {
+    reasons.push('action_incompatible');
+  }
+
+  // 2. City mismatch (both high confidence)
+  const CITY_CONFIDENCE_THRESHOLD = 0.7;
+  if (
+    article.articleCity && event.eventCity
+    && article.articleCity.toLowerCase() !== event.eventCity.toLowerCase()
+    && (article.articleCityConfidence ?? 0) >= CITY_CONFIDENCE_THRESHOLD
+    && (event.eventCityConfidence ?? 0) >= CITY_CONFIDENCE_THRESHOLD
+  ) {
+    reasons.push('city_mismatch');
+  }
+
+  // 3. Date gap > 7 days
+  if (article.articleFactDate && (event.eventFactDateEarliest || event.eventFactDateLatest)) {
+    const artDateMs = article.articleFactDate.getTime();
+    const earliest = event.eventFactDateEarliest?.getTime() ?? artDateMs;
+    const latest = event.eventFactDateLatest?.getTime() ?? earliest;
+
+    // Check if article date is more than 7 days from the event's date range
+    let gap = 0;
+    if (artDateMs < earliest) {
+      gap = earliest - artDateMs;
+    } else if (artDateMs > latest) {
+      gap = artDateMs - latest;
+    }
+    if (gap > DATE_GAP_MS) {
+      reasons.push('date_gap');
+    }
+  }
+
+  return { blocked: reasons.length > 0, reasons };
+}
+
 /**
  * Extract simple named entities from text.
- * Heuristic: words starting with uppercase (after sentence start filtering),
- * multi-word proper nouns, and quoted terms.
  */
 export function extractEntities(text: string): Set<string> {
   const entities = new Set<string>();
-  // Match capitalized multi-word sequences (e.g., "Juan Manuel Santos", "Congreso de la República")
   const capitalized = text.match(/[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+(?:\s+(?:(?:de|del|la|el|los|las|y|en)\s+)*[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+)*/g);
   if (capitalized) {
     for (const match of capitalized) {
       entities.add(match.toLowerCase().trim());
     }
   }
-  // Also extract quoted terms
   const quoted = text.match(/"([^"]{3,50})"/g);
   if (quoted) {
     for (const match of quoted) {
@@ -67,10 +146,7 @@ export function extractEntities(text: string): Set<string> {
   return entities;
 }
 
-/**
- * Compute entity overlap ratio (Jaccard-like).
- */
-function entityOverlap(articleEntities: Set<string>, eventEntities: Set<string>): number {
+function entityOverlapScore(articleEntities: Set<string>, eventEntities: Set<string>): number {
   if (articleEntities.size === 0 || eventEntities.size === 0) return 0;
   let intersect = 0;
   for (const e of articleEntities) {
@@ -80,19 +156,15 @@ function entityOverlap(articleEntities: Set<string>, eventEntities: Set<string>)
   return union > 0 ? intersect / union : 0;
 }
 
-/**
- * Compute temporal proximity score based on how close the article is to the event's time window.
- */
 function temporalProximity(articleTime: Date | null, eventT0: Date | null, eventTLast: Date | null): number {
-  if (!articleTime) return 0.5; // unknown = neutral
+  if (!articleTime) return 0.5;
   const artTs = articleTime.getTime();
   const t0 = eventT0?.getTime() ?? artTs;
   const tLast = eventTLast?.getTime() ?? t0;
 
-  // Distance from the event's time window
   let distance: number;
   if (artTs >= t0 && artTs <= tLast) {
-    distance = 0; // within window
+    distance = 0;
   } else if (artTs < t0) {
     distance = t0 - artTs;
   } else {
@@ -108,6 +180,7 @@ export interface ArticleForPairing {
   snippet: string;
   embeddingVec: number[];
   publishedAt: Date | null;
+  hardBlockContext?: HardBlockContext;
 }
 
 export interface EventCandidate {
@@ -115,13 +188,15 @@ export interface EventCandidate {
   t0: Date | null;
   tLast: Date | null;
   articleVecs: number[][];
-  articleTexts: string[]; // title+snippet for entity extraction
+  articleTexts: string[];
   articleCount: number;
+  uniqueMediaCount: number;
+  hardBlockContext?: EventCandidateContext;
 }
 
 /**
  * Score an article against a list of candidate events.
- * Returns the best match and all scores.
+ * Includes hard block evaluation per candidate.
  */
 export function scoreCandidates(
   article: ArticleForPairing,
@@ -135,23 +210,25 @@ export function scoreCandidates(
   for (const candidate of candidates) {
     if (candidate.articleVecs.length === 0) continue;
 
-    // Embedding similarity
     const centroid = computeCentroid(candidate.articleVecs);
     const embeddingSim = cosineSimilarity(article.embeddingVec, centroid);
 
-    // Entity overlap
     const eventText = candidate.articleTexts.join(' ');
     const eventEntities = extractEntities(eventText);
-    const entOverlap = entityOverlap(articleEntities, eventEntities);
+    const entOverlap = entityOverlapScore(articleEntities, eventEntities);
 
-    // Temporal proximity
     const tempProx = temporalProximity(article.publishedAt, candidate.t0, candidate.tLast);
 
-    // Composite score
     const compositeScore =
       W_EMBEDDING * embeddingSim +
       W_ENTITY * entOverlap +
       W_TEMPORAL * tempProx;
+
+    // Hard block check
+    const hardBlockCheck = checkHardBlock(
+      article.hardBlockContext ?? {},
+      candidate.hardBlockContext ?? {},
+    );
 
     scores.push({
       eventId: candidate.id,
@@ -159,17 +236,22 @@ export function scoreCandidates(
       entityOverlap: entOverlap,
       temporalProximity: tempProx,
       compositeScore,
+      hardBlock: hardBlockCheck.blocked,
+      hardBlockReasons: hardBlockCheck.reasons,
     });
   }
 
-  // Sort by composite score descending
   scores.sort((a, b) => b.compositeScore - a.compositeScore);
-
   return scores;
 }
 
 /**
  * Decide whether to link or create, using heuristic scores and optional LLM.
+ *
+ * Decision rules:
+ *   >= 0.62 AND no hard_block → LINK
+ *   0.50–0.62 AND no hard_block AND event has >= 2 unique media → LINK
+ *   otherwise → CREATE
  */
 export async function decideLinkAction(
   article: ArticleForPairing,
@@ -182,9 +264,19 @@ export async function decideLinkAction(
     return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
   }
 
-  const top = scores[0];
+  // Only consider non-hard-blocked candidates
+  const eligible = scores.filter((s) => !s.hardBlock);
 
-  // Auto-link if above high-confidence threshold
+  if (eligible.length === 0) {
+    metrics.incCounter('linking.hard_block_total');
+    metrics.incCounter('linking.create_total');
+    return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
+  }
+
+  const top = eligible[0];
+  const topCandidate = candidates.find((c) => c.id === top.eventId);
+
+  // >= 0.62 → auto-link
   if (top.compositeScore >= THETA_AUTO_LINK) {
     metrics.incCounter('linking.auto_link_total');
     return {
@@ -195,25 +287,32 @@ export async function decideLinkAction(
     };
   }
 
-  // Borderline: try LLM for top 3 candidates
-  if (top.compositeScore >= THETA_MAYBE_LINK && llm) {
-    const top3 = scores.slice(0, 3);
-    const llmResult = await llmPairScore(article, candidates, top3, llm);
-    if (llmResult) {
-      metrics.incCounter('linking.llm_link_total');
-      return {
-        bestMatch: { eventId: llmResult.eventId, score: llmResult.score },
-        scores,
-        action: 'LINK',
-        llmUsed: true,
-      };
+  // 0.50–0.62 range
+  if (top.compositeScore >= THETA_MAYBE_LINK) {
+    // Try LLM first if available
+    if (llm) {
+      const top3 = eligible.slice(0, 3);
+      const llmResult = await llmPairScore(article, candidates, top3, llm);
+      if (llmResult) {
+        if (llmResult.hardBlock) {
+          // LLM says hard_block → always respect
+          metrics.incCounter('linking.llm_hard_block_total');
+          metrics.incCounter('linking.create_total');
+          return { bestMatch: null, scores, action: 'CREATE', llmUsed: true };
+        }
+        metrics.incCounter('linking.llm_link_total');
+        return {
+          bestMatch: { eventId: llmResult.eventId, score: llmResult.score },
+          scores,
+          action: 'LINK',
+          llmUsed: true,
+        };
+      }
     }
-  }
 
-  // Below threshold or LLM rejected
-  if (top.compositeScore >= THETA_MAYBE_LINK && !llm) {
-    // Heuristic fallback: link if entity overlap is meaningful
-    if (top.entityOverlap >= 0.15) {
+    // Heuristic fallback: only link if event has >= 2 unique media
+    const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
+    if (uniqueMedia >= 2) {
       metrics.incCounter('linking.heuristic_link_total');
       return {
         bestMatch: { eventId: top.eventId, score: top.compositeScore },
@@ -224,19 +323,21 @@ export async function decideLinkAction(
     }
   }
 
+  // Below threshold
   metrics.incCounter('linking.create_total');
   return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
 }
 
 /**
- * LLM pair scoring for borderline candidates.
+ * LLM pair scoring — returns spec-exact response shape.
+ * LLM is asked for: { same_event: 0..1, hard_block: boolean, reason_codes: string[] }
  */
 async function llmPairScore(
   article: ArticleForPairing,
   candidates: EventCandidate[],
   top3: CandidateScore[],
   llm: LlmClient,
-): Promise<{ eventId: string; score: number } | null> {
+): Promise<{ eventId: string; score: number; hardBlock: boolean; reasonCodes: string[] } | null> {
   try {
     const candidateDescs = top3.map((s, i) => {
       const cand = candidates.find((c) => c.id === s.eventId);
@@ -244,34 +345,58 @@ async function llmPairScore(
       return `Candidate ${i + 1} (${s.eventId}): score=${s.compositeScore.toFixed(3)}, sample="${sample.slice(0, 200)}"`;
     }).join('\n');
 
-    const prompt = `You are an event-linking classifier. Determine if this news article belongs to one of the candidate events.
+    const prompt = `You are an event-linking classifier for Colombian news. Determine if this article belongs to one of the candidate events.
 
 Article: "${article.title}" — "${article.snippet.slice(0, 300)}"
 
 Candidates:
 ${candidateDescs}
 
-Respond with JSON: {"match": null} or {"match": {"event_id": "...", "confidence": 0.0-1.0}}
-Only match if the article clearly reports on the SAME real-world event as the candidate.`;
+Respond with JSON: { "same_event": <0.0-1.0>, "hard_block": <true|false>, "reason_codes": [<strings>], "best_candidate_id": "<event_id or null>" }
+
+Rules:
+- same_event: confidence that article covers the same real-world event (0=different, 1=identical)
+- hard_block: true if the article CANNOT belong to any candidate (different action, city, or dates differ >7d)
+- reason_codes: e.g. ["action_incompatible"], ["city_mismatch"], ["date_gap"], or []
+- best_candidate_id: the event_id of the best match, or null if no match`;
 
     const response = await llm.completeJson<{
-      match: { event_id: string; confidence: number } | null;
+      same_event: number;
+      hard_block: boolean;
+      reason_codes: string[];
+      best_candidate_id: string | null;
     }>([{ role: 'user', content: prompt }]);
 
-    if (response.data.match && response.data.match.confidence >= 0.6) {
-      logger.info({
-        article_id: article.id,
-        matched_event: response.data.match.event_id,
-        confidence: response.data.match.confidence,
-        latency_ms: response.meta.latency_ms,
-      }, 'llm_pair_score_match');
+    const data = response.data;
+
+    logger.info({
+      article_id: article.id,
+      same_event: data.same_event,
+      hard_block: data.hard_block,
+      reason_codes: data.reason_codes,
+      best_candidate_id: data.best_candidate_id,
+      latency_ms: response.meta.latency_ms,
+    }, 'llm_pair_score_result');
+
+    // Hard block from LLM is always respected
+    if (data.hard_block) {
       return {
-        eventId: response.data.match.event_id,
-        score: response.data.match.confidence,
+        eventId: '',
+        score: data.same_event,
+        hardBlock: true,
+        reasonCodes: data.reason_codes,
       };
     }
 
-    logger.info({ article_id: article.id }, 'llm_pair_score_no_match');
+    if (data.best_candidate_id && data.same_event >= 0.6) {
+      return {
+        eventId: data.best_candidate_id,
+        score: data.same_event,
+        hardBlock: false,
+        reasonCodes: data.reason_codes,
+      };
+    }
+
     return null;
   } catch (err) {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'llm_pair_score_failed');
