@@ -4,6 +4,14 @@ import { AuditLogWriter } from '../../../core/event_bus/dispatcher.js';
 import { ClaimRepository } from '../../claims/repo/claim-repo.js';
 import { VersionRepository } from '../../versions/repo/version-repo.js';
 import { logger } from '../../../core/logging/logger.js';
+import type { LlmClient } from '../../../core/llm/client.js';
+import {
+  buildDisputeDetectionPrompt,
+  DISPUTE_DETECTION_SYSTEM,
+  buildOverviewPrompt,
+  OVERVIEW_SYSTEM,
+} from '../../../core/llm/prompts.js';
+import type { ClaimInput, OverviewInput } from '../../../core/llm/prompts.js';
 
 export interface OverviewBullet {
   claim_id: string;
@@ -39,12 +47,160 @@ export interface OverviewResult {
 }
 
 export class OverviewGenerator {
+  private llm: LlmClient | null;
+
   constructor(
     private claimRepo: ClaimRepository,
     private versionRepo: VersionRepository,
     private eventBus: EventBus,
     private auditWriter: AuditLogWriter,
-  ) {}
+    llm?: LlmClient | null,
+  ) {
+    this.llm = llm ?? null;
+  }
+
+  /**
+   * LLM-powered dispute detection + AI overview.
+   * Returns enriched packet fields or null on failure (caller falls back to heuristic).
+   */
+  private async generateWithLlm(
+    claimsWithQuotes: any[],
+    eventId: string,
+  ): Promise<{
+    overview: any;
+    ai_overview: any;
+    mode: 'llm';
+  } | null> {
+    if (!this.llm?.isAvailable()) return null;
+    if (claimsWithQuotes.length === 0) return null;
+
+    try {
+      // ── Step 1: Dispute Detection ──────────────────────────────
+      const claimInputs: ClaimInput[] = claimsWithQuotes.map((c: any) => {
+        const quotes: any[] = c.quotes ?? [];
+        const topQuote = quotes[0]?.quoteText ?? '';
+        const sourceUrls = quotes.map((q: any) => q.article?.url ?? '').filter(Boolean);
+        const mediaKeys = quotes.map((q: any) => q.article?.media?.mediaKey ?? 'unknown');
+        const uniqueMediaKeys = [...new Set(mediaKeys)];
+
+        return {
+          claim_id: c.id,
+          claim_text: c.claimText,
+          claim_type: c.claimType,
+          source_urls: sourceUrls,
+          media_keys: uniqueMediaKeys,
+          top_quote: topQuote,
+        };
+      });
+
+      const disputePrompt = buildDisputeDetectionPrompt(claimInputs);
+      const { data: disputeData } = await this.llm.completeJson<{
+        disputes: Array<{
+          topic: string;
+          point_a: { claim_text: string; source_url: string };
+          point_b: { claim_text: string; source_url: string };
+          why_disputed: string;
+          confidence: number;
+        }>;
+        consensus: Array<{
+          claim_text: string;
+          why_consensus: string;
+          confidence: number;
+          evidence: Array<{ source_url: string; quote: string }>;
+        }>;
+      }>([{ role: 'user', content: disputePrompt }], DISPUTE_DETECTION_SYSTEM);
+
+      const disputes = Array.isArray(disputeData.disputes) ? disputeData.disputes : [];
+      const consensus = Array.isArray(disputeData.consensus) ? disputeData.consensus : [];
+
+      logger.info(
+        { eventId, disputes: disputes.length, consensus: consensus.length },
+        'dispute_detection_completed',
+      );
+
+      // ── Step 2: AI Overview ────────────────────────────────────
+      const allQuotes: any[] = claimsWithQuotes.flatMap((c: any) => (c.quotes ?? []).map((q: any) => ({
+        quote: q.quoteText ?? '',
+        media_key: q.article?.media?.mediaKey ?? 'unknown',
+        url: q.article?.url ?? '',
+      })));
+      const uniqueSources = new Set(allQuotes.map((q: any) => q.media_key));
+
+      const overviewInput: OverviewInput = {
+        consensus: consensus.map((c) => ({
+          claim_text: c.claim_text,
+          why_consensus: c.why_consensus,
+          confidence: Math.max(0, Math.min(1, c.confidence ?? 0)),
+        })),
+        disputes: disputes.map((d) => ({
+          topic: d.topic,
+          why_disputed: d.why_disputed,
+          confidence: Math.max(0, Math.min(1, d.confidence ?? 0)),
+        })),
+        top_quotes: allQuotes.slice(0, 10),
+        claims_count: claimsWithQuotes.length,
+        sources_count: uniqueSources.size,
+      };
+
+      const overviewPrompt = buildOverviewPrompt(overviewInput);
+      const { data: aiOverview } = await this.llm.completeJson<{
+        overview: string;
+        what_happened: string[];
+        context: string[];
+        in_dispute: string[];
+        confidence_label: string;
+        why: string;
+      }>([{ role: 'user', content: overviewPrompt }], OVERVIEW_SYSTEM);
+
+      // Gate: if insufficient evidence → label "No concluyente"
+      const validLabels = ['Alta', 'Media', 'Baja', 'No concluyente'];
+      const confidenceLabel = validLabels.includes(aiOverview.confidence_label)
+        ? aiOverview.confidence_label
+        : 'No concluyente';
+
+      logger.info(
+        { eventId, confidence_label: confidenceLabel, mode: 'llm' },
+        'ai_overview_generated',
+      );
+
+      // Build the heuristic overview too, for the sections field
+      const heuristicOverview = this.buildOverview(claimsWithQuotes);
+
+      return {
+        overview: {
+          gate_status: heuristicOverview.gate_status,
+          sections: heuristicOverview.sections,
+        },
+        ai_overview: {
+          overview: aiOverview.overview ?? '',
+          what_happened: Array.isArray(aiOverview.what_happened) ? aiOverview.what_happened : [],
+          context: Array.isArray(aiOverview.context) ? aiOverview.context : [],
+          in_dispute: Array.isArray(aiOverview.in_dispute) ? aiOverview.in_dispute : [],
+          confidence_label: confidenceLabel,
+          why: aiOverview.why ?? '',
+          disputes: disputes.map((d) => ({
+            topic: d.topic,
+            point_a: d.point_a,
+            point_b: d.point_b,
+            why_disputed: d.why_disputed,
+            confidence: d.confidence,
+          })),
+          consensus: consensus.map((c) => ({
+            claim_text: c.claim_text,
+            why_consensus: c.why_consensus,
+            confidence: c.confidence,
+          })),
+        },
+        mode: 'llm',
+      };
+    } catch (err) {
+      logger.error(
+        { eventId, error: err instanceof Error ? err.message : String(err) },
+        'llm_overview_generation_failed',
+      );
+      return null;
+    }
+  }
 
   handler(): EventHandler {
     return async (envelope: EventEnvelope): Promise<void> => {
@@ -60,48 +216,95 @@ export class OverviewGenerator {
         logger.info({ event_id, version_id }, 'no_claims_for_overview');
       }
 
-      const overview = this.buildOverview(claimsWithQuotes);
+      // Try LLM path first; fallback to heuristic
+      const llmResult = await this.generateWithLlm(claimsWithQuotes, event_id);
 
-      // Update packet_json in the version
       const version = await this.versionRepo.findById(version_id);
-      if (version) {
-        const existingPacket = (version.packetJson as any) ?? {};
+      const existingPacket = (version?.packetJson as any) ?? {};
+      let computedGateStatus: 'PASS' | 'FAIL';
+
+      if (llmResult) {
+        // LLM succeeded: merge heuristic sections + AI overview into packet
+        const heuristicOverview = llmResult.overview;
+        computedGateStatus = heuristicOverview.gate_status;
         const updatedPacket = {
           ...existingPacket,
-          overview: {
-            gate_status: overview.gate_status,
-            sections: overview.sections,
+          overview: heuristicOverview,
+          ai_overview: llmResult.ai_overview,
+          claims_count: claimsWithQuotes.length,
+          quotes_count: claimsWithQuotes.reduce((sum: number, c: any) => sum + ((c.quotes ?? []).length), 0),
+          quality_flags: {
+            evidence_rate: claimsWithQuotes.length > 0
+              ? claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length / claimsWithQuotes.length
+              : 0,
+            supported_count: claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length,
+            disputed_count: claimsWithQuotes.filter((c: any) => c.status === 'DISPUTED').length,
           },
-          claims_count: overview.claims_count,
-          quotes_count: overview.quotes_count,
-          quality_flags: overview.quality_flags,
+          overview_mode: 'llm',
         };
 
-        await this.versionRepo.update(version_id, {
-          packetJson: updatedPacket,
-          gateStatus: overview.gate_status,
+        if (version) {
+          await this.versionRepo.update(version_id, {
+            packetJson: updatedPacket,
+            gateStatus: computedGateStatus,
+          });
+        }
+
+        await this.auditWriter.write({
+          entity_type: 'OVERVIEW',
+          entity_id: event_id,
+          action: 'OVERVIEW_GENERATED',
+          trace_id: traceId,
+          data: {
+            version_id,
+            gate_status: computedGateStatus,
+            claims_count: claimsWithQuotes.length,
+            mode: 'llm',
+          },
+        });
+      } else {
+        // Heuristic fallback
+        const overview = this.buildOverview(claimsWithQuotes);
+        computedGateStatus = overview.gate_status;
+
+        if (version) {
+          const updatedPacket = {
+            ...existingPacket,
+            overview: {
+              gate_status: overview.gate_status,
+              sections: overview.sections,
+            },
+            claims_count: overview.claims_count,
+            quotes_count: overview.quotes_count,
+            quality_flags: overview.quality_flags,
+          };
+
+          await this.versionRepo.update(version_id, {
+            packetJson: updatedPacket,
+            gateStatus: overview.gate_status,
+          });
+        }
+
+        await this.auditWriter.write({
+          entity_type: 'OVERVIEW',
+          entity_id: event_id,
+          action: 'OVERVIEW_GENERATED',
+          trace_id: traceId,
+          data: {
+            version_id,
+            gate_status: overview.gate_status,
+            claims_count: overview.claims_count,
+            quotes_count: overview.quotes_count,
+          },
         });
       }
-
-      await this.auditWriter.write({
-        entity_type: 'OVERVIEW',
-        entity_id: event_id,
-        action: 'OVERVIEW_GENERATED',
-        trace_id: traceId,
-        data: {
-          version_id,
-          gate_status: overview.gate_status,
-          claims_count: overview.claims_count,
-          quotes_count: overview.quotes_count,
-        },
-      });
 
       await this.eventBus.publish({
         event_name: 'OverviewGenerated',
         event_id: ulid(),
         occurred_at: new Date().toISOString(),
         trace: { trace_id: traceId, span_id: ulid(), source_module: 'overview' },
-        payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: overview.gate_status },
+        payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: computedGateStatus },
       });
     };
   }

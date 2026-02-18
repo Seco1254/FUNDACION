@@ -40,6 +40,8 @@ import { TopicAssigner } from './modules/topics/service/topic-assigner.js';
 import { SubEventBuilder } from './modules/subevents/service/subevent-builder.js';
 import { biasRoutes } from './api/routes/bias.js';
 import { metricsRoutes } from './api/routes/metrics.js';
+import { LlmClient } from './core/llm/index.js';
+import { debugAiRoutes } from './api/routes/debug-ai.js';
 
 // Phase 5: Production infrastructure
 import { Cache } from './core/cache/cache.js';
@@ -129,10 +131,18 @@ export function buildApp() {
   const lifecycleManager = new LifecycleManager(eventRepo, eventBus, auditService, scheduler, clock);
   const versioningHandler = new VersioningHandler(eventRepo, versionRepo, mediaRepo, eventBus);
 
-  // Phase 3: Claims → Overview
+  // Phase 3: Claims → Overview (with optional LLM)
+  const llmClient = new LlmClient();
+  const llm = llmClient.isAvailable() ? llmClient : null;
+  if (llm) {
+    logger.info('llm_client_available');
+  } else {
+    logger.info('llm_client_unavailable_heuristic_mode');
+  }
+
   const claimRepo = new ClaimRepository(prisma);
-  const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService);
-  const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService);
+  const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService, llm);
+  const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService, llm);
 
   // Phase 4: Bias → Topics → SubEvents
   const biasRepo = new BiasLabelRepository(prisma);
@@ -167,6 +177,7 @@ export function buildApp() {
   app.register(biasRoutes(eventRepo, biasRepo, cache));
   app.register(metricsRoutes);
   app.register(debugScrapeRoutes(scrapeOrchestrator));
+  app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
 
   return app;
 }

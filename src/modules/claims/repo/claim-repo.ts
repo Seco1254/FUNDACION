@@ -64,4 +64,19 @@ export class ClaimRepository {
   async countClaimsByVersion(eventId: string, versionId: string): Promise<number> {
     return this.prisma.claim.count({ where: { eventId, versionId } });
   }
+
+  async deleteClaimsByVersion(eventId: string, versionId: string): Promise<number> {
+    // Delete quotes first (FK constraint), then claims
+    const claims = await this.prisma.claim.findMany({
+      where: { eventId, versionId },
+      select: { id: true },
+    });
+    const claimIds = claims.map((c) => c.id);
+
+    if (claimIds.length > 0) {
+      await this.prisma.quote.deleteMany({ where: { claimId: { in: claimIds } } });
+    }
+    const result = await this.prisma.claim.deleteMany({ where: { eventId, versionId } });
+    return result.count;
+  }
 }
