@@ -128,11 +128,18 @@ export class EventRepository {
     }) as Promise<EventEntity[]>;
   }
 
+<<<<<<< HEAD
   async findPendingPublish(): Promise<Array<{ id: string; publishAt: Date | null }>> {
     return this.prisma.event.findMany({
       where: { state: 'PENDING_PUBLISH' as any, publishAt: { not: null } },
       select: { id: true, publishAt: true },
     });
+=======
+  async findPendingPublish(): Promise<EventEntity[]> {
+    return this.prisma.event.findMany({
+      where: { state: 'PENDING_PUBLISH' as any },
+    }) as Promise<EventEntity[]>;
+>>>>>>> upstream/claude/setup-backend-foundation-zHJiv
   }
 
   async findByIdWithDetails(id: string) {
