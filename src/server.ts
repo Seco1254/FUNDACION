@@ -42,6 +42,7 @@ import { biasRoutes } from './api/routes/bias.js';
 import { metricsRoutes } from './api/routes/metrics.js';
 import { LlmClient } from './core/llm/index.js';
 import { debugAiRoutes } from './api/routes/debug-ai.js';
+import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
 // Phase 5: Production infrastructure
 import { Cache } from './core/cache/cache.js';
@@ -162,6 +163,10 @@ export function buildApp() {
   eventBus.subscribe('OverviewGenerated', 'TopicAssigner', topicAssigner.handler());
   eventBus.subscribe('OverviewGenerated', 'BiasProfiler', biasProfiler.handler());
   eventBus.subscribe('TopicHeatmapBuilt', 'SubEventBuilder', subEventBuilder.handler());
+
+  // Phase 6: Auto-run AI enrichment on publish
+  const aiPublishedHandler = createPublishedHandler(versionRepo, claimRepo, claimExtractor, overviewGenerator);
+  eventBus.subscribe('EventPublished', 'AiPipeline.onPublished', aiPublishedHandler);
 
   // Phase 5: Cache invalidation via event bus
   registerCacheInvalidation(eventBus, cache);

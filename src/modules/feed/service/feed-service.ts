@@ -23,13 +23,16 @@ export class FeedService {
 
     const feedItems: FeedItem[] = items.map((row: any) => {
       const latestVersion = row.versions?.[0] ?? null;
+      // Expose AI teaser via cover_image_url (only unused nullable string in contract)
+      const packet = (latestVersion?.packetJson as any) ?? {};
+      const teaser: string | null = packet.ai_teaser || null;
       return {
         event_id: row.id,
         state: row.state,
         headline: latestVersion?.headline ?? null,
         t_last: row.tLast?.toISOString() ?? null,
         published_at: row.publishedAt?.toISOString() ?? null,
-        cover_image_url: null,
+        cover_image_url: teaser,
       };
     });
 

@@ -21,12 +21,12 @@ export function debugAiRoutes(
 ): FastifyPluginCallback {
   return (app: FastifyInstance, _opts, done) => {
     /**
-     * POST /v1/debug/ai/run?event_id=...
+     * POST /v1/debug/ai/run?event_id=...&force=1
      *
-     * Manually trigger the LLM-powered claim extraction + overview pipeline
-     * for a given event. Useful for debugging and testing.
+     * Manually trigger the LLM-powered claim extraction + overview pipeline.
+     * force=1: ignore dedupe hashes, clear AI fields, re-generate everything.
      */
-    app.post<{ Querystring: { event_id: string } }>(
+    app.post<{ Querystring: { event_id: string; force?: string } }>(
       '/v1/debug/ai/run',
       async (request, reply) => {
         const eventId = (request.query as any).event_id;
@@ -34,13 +34,13 @@ export function debugAiRoutes(
           return reply.status(400).send({ error: 'event_id query parameter required' });
         }
 
-        // Validate event exists
+        const force = (request.query as any).force === '1';
+
         const event = await eventRepo.findById(eventId);
         if (!event) {
           return reply.status(404).send({ error: 'Event not found' });
         }
 
-        // Find latest version
         const version = await versionRepo.findLatestByEventId(eventId);
         if (!version) {
           return reply.status(404).send({ error: 'No version found for event' });
@@ -51,15 +51,28 @@ export function debugAiRoutes(
           event_id: eventId,
           version_id: version.id,
           llm_available: llm?.isAvailable() ?? false,
+          force,
         };
+
+        if (force) {
+          // Selective cleanup: delete claims, clear AI-specific packet_json fields
+          await claimRepo.deleteClaimsByVersion(eventId, version.id);
+
+          const packet = (version.packetJson as any) ?? {};
+          delete packet.ai_overview;
+          delete packet.ai_teaser;
+          delete packet.overview_mode;
+          delete packet._ai_hashes;
+          delete packet.ai_run_version_id;
+          await versionRepo.update(version.id, { packetJson: packet });
+
+          results.cleanup = 'claims_deleted_ai_fields_cleared';
+        }
 
         // Step 1: Run claim extraction
         const extractor = new ClaimQuoteExtractor(
           eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditWriter, llm,
         );
-
-        // Clear existing claims for re-run
-        await claimRepo.deleteClaimsByVersion(eventId, version.id);
 
         const extractorEnvelope = {
           event_name: 'EventVersionCommitted',
@@ -95,8 +108,10 @@ export function debugAiRoutes(
 
         results.overview = packet.overview ?? null;
         results.ai_overview = packet.ai_overview ?? null;
+        results.ai_teaser = packet.ai_teaser ?? null;
         results.overview_mode = packet.overview_mode ?? 'heuristic';
         results.quality_flags = packet.quality_flags ?? null;
+        results._ai_hashes = packet._ai_hashes ?? null;
 
         return reply.send({ ok: true, ...results });
       },

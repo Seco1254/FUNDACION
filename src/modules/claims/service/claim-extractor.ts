@@ -10,6 +10,7 @@ import type { ClaimType, ClaimStatus, QuoteStrength, QuoteRole } from '../domain
 import type { LlmClient } from '../../../core/llm/client.js';
 import { buildClaimExtractionPrompt, CLAIM_EXTRACTION_SYSTEM } from '../../../core/llm/prompts.js';
 import type { ArticleInput } from '../../../core/llm/prompts.js';
+import { computeClaimsHash } from '../../../core/llm/dedup.js';
 
 interface ClaimCandidate {
   claimTextNorm: string;
@@ -318,15 +319,32 @@ export class ClaimQuoteExtractor {
         return;
       }
 
+      // Compute claims hash for dedupe
+      const articleIds = articles.map((a: any) => a.id);
+      const articleUpdatedAts = articles.map((a: any) => a.createdAt?.toISOString?.() ?? '');
+      const claimsHash = computeClaimsHash(articleIds, articleUpdatedAts);
+
+      // Dedupe: check if claims hash matches what's already stored
+      const packet = (version.packetJson as any) ?? {};
+      if (packet._ai_hashes?.claims_hash === claimsHash) {
+        logger.info({ event_id, claims_hash: claimsHash }, 'dedup_hit_claims');
+      }
+
       // Try LLM extraction first; fallback to heuristic if unavailable or fails
       const llmResult = await this.extractWithLlm(articles, event_id, version.id);
       if (llmResult) {
+        // Persist claims hash in packet_json
+        const freshVersion = await this.versionRepo.findById(version.id);
+        const freshPacket = (freshVersion?.packetJson as any) ?? {};
+        freshPacket._ai_hashes = { ...(freshPacket._ai_hashes ?? {}), claims_hash: claimsHash };
+        await this.versionRepo.update(version.id, { packetJson: freshPacket });
+
         await this.auditWriter.write({
           entity_type: 'CLAIM',
           entity_id: event_id,
           action: 'CLAIM_GRAPH_BUILT',
           trace_id: traceId,
-          data: { version_id: version.id, claims_count: llmResult.claimsCount, quotes_count: llmResult.quotesCount, mode: 'llm' },
+          data: { version_id: version.id, claims_count: llmResult.claimsCount, quotes_count: llmResult.quotesCount, mode: 'llm', claims_hash: claimsHash },
         });
 
         await this.eventBus.publish({
@@ -436,12 +454,18 @@ export class ClaimQuoteExtractor {
         }
       }
 
+      // Persist claims hash in packet_json (heuristic path)
+      const freshVersion = await this.versionRepo.findById(version.id);
+      const freshPacket = (freshVersion?.packetJson as any) ?? {};
+      freshPacket._ai_hashes = { ...(freshPacket._ai_hashes ?? {}), claims_hash: claimsHash };
+      await this.versionRepo.update(version.id, { packetJson: freshPacket });
+
       await this.auditWriter.write({
         entity_type: 'CLAIM',
         entity_id: event_id,
         action: 'CLAIM_GRAPH_BUILT',
         trace_id: traceId,
-        data: { version_id: version.id, claims_count: claimsCount, quotes_count: quotesCount },
+        data: { version_id: version.id, claims_count: claimsCount, quotes_count: quotesCount, claims_hash: claimsHash },
       });
 
       await this.eventBus.publish({

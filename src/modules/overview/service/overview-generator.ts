@@ -12,6 +12,13 @@ import {
   OVERVIEW_SYSTEM,
 } from '../../../core/llm/prompts.js';
 import type { ClaimInput, OverviewInput } from '../../../core/llm/prompts.js';
+import { computeOverviewHash } from '../../../core/llm/dedup.js';
+import {
+  validateOverviewEvidence,
+  validateOverviewContent,
+  buildInsufficientOverview,
+} from '../../../core/llm/gates.js';
+import { deriveTeaser } from '../../../core/llm/teaser.js';
 
 export interface OverviewBullet {
   claim_id: string;
@@ -61,6 +68,7 @@ export class OverviewGenerator {
 
   /**
    * LLM-powered dispute detection + AI overview.
+   * Includes anti-hallucination gates and teaser derivation.
    * Returns enriched packet fields or null on failure (caller falls back to heuristic).
    */
   private async generateWithLlm(
@@ -69,10 +77,29 @@ export class OverviewGenerator {
   ): Promise<{
     overview: any;
     ai_overview: any;
+    ai_teaser: string;
     mode: 'llm';
   } | null> {
     if (!this.llm?.isAvailable()) return null;
     if (claimsWithQuotes.length === 0) return null;
+
+    // ── Gate: evidence check BEFORE calling LLM ──────────────────
+    const allQuotesRaw: any[] = claimsWithQuotes.flatMap((c: any) => c.quotes ?? []);
+    const allMediaKeys = new Set(
+      allQuotesRaw.map((q: any) => q.article?.media?.mediaKey ?? 'unknown').filter((k: string) => k !== 'unknown'),
+    );
+    const evidenceCheck = validateOverviewEvidence(allMediaKeys.size, allQuotesRaw.length);
+    if (!evidenceCheck.valid) {
+      logger.info({ eventId, reasons: evidenceCheck.reasons }, 'ai_overview_gate_blocked');
+      const heuristicOverview = this.buildOverview(claimsWithQuotes);
+      const insufficient = buildInsufficientOverview(evidenceCheck.reasons);
+      return {
+        overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
+        ai_overview: { ...insufficient, quality_gate_reasons: evidenceCheck.reasons },
+        ai_teaser: '',
+        mode: 'llm',
+      };
+    }
 
     try {
       // ── Step 1: Dispute Detection ──────────────────────────────
@@ -152,18 +179,33 @@ export class OverviewGenerator {
         why: string;
       }>([{ role: 'user', content: overviewPrompt }], OVERVIEW_SYSTEM);
 
-      // Gate: if insufficient evidence → label "No concluyente"
+      // ── Gate: validate LLM output content ──────────────────────
+      const contentCheck = validateOverviewContent(aiOverview);
+      if (!contentCheck.valid) {
+        logger.info({ eventId, reasons: contentCheck.reasons }, 'ai_overview_content_gate_blocked');
+        const heuristicOverview = this.buildOverview(claimsWithQuotes);
+        const insufficient = buildInsufficientOverview(contentCheck.reasons);
+        return {
+          overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
+          ai_overview: { ...insufficient, quality_gate_reasons: contentCheck.reasons },
+          ai_teaser: '',
+          mode: 'llm',
+        };
+      }
+
       const validLabels = ['Alta', 'Media', 'Baja', 'No concluyente'];
       const confidenceLabel = validLabels.includes(aiOverview.confidence_label)
         ? aiOverview.confidence_label
         : 'No concluyente';
 
+      const whatHappened = Array.isArray(aiOverview.what_happened) ? aiOverview.what_happened : [];
+      const aiTeaser = deriveTeaser(whatHappened);
+
       logger.info(
-        { eventId, confidence_label: confidenceLabel, mode: 'llm' },
+        { eventId, confidence_label: confidenceLabel, teaser_len: aiTeaser.length, mode: 'llm' },
         'ai_overview_generated',
       );
 
-      // Build the heuristic overview too, for the sections field
       const heuristicOverview = this.buildOverview(claimsWithQuotes);
 
       return {
@@ -173,7 +215,7 @@ export class OverviewGenerator {
         },
         ai_overview: {
           overview: aiOverview.overview ?? '',
-          what_happened: Array.isArray(aiOverview.what_happened) ? aiOverview.what_happened : [],
+          what_happened: whatHappened,
           context: Array.isArray(aiOverview.context) ? aiOverview.context : [],
           in_dispute: Array.isArray(aiOverview.in_dispute) ? aiOverview.in_dispute : [],
           confidence_label: confidenceLabel,
@@ -191,6 +233,7 @@ export class OverviewGenerator {
             confidence: c.confidence,
           })),
         },
+        ai_teaser: aiTeaser,
         mode: 'llm',
       };
     } catch (err) {
@@ -216,31 +259,56 @@ export class OverviewGenerator {
         logger.info({ event_id, version_id }, 'no_claims_for_overview');
       }
 
-      // Try LLM path first; fallback to heuristic
-      const llmResult = await this.generateWithLlm(claimsWithQuotes, event_id);
-
       const version = await this.versionRepo.findById(version_id);
       const existingPacket = (version?.packetJson as any) ?? {};
+
+      // ── Dedupe: compute overview hash, skip LLM if input unchanged ──
+      const existingHashes = existingPacket._ai_hashes ?? {};
+      const claimsHash = existingHashes.claims_hash ?? '';
+      const newOverviewHash = computeOverviewHash(version_id, claimsHash);
+
+      if (existingHashes.overview_hash === newOverviewHash && existingPacket.ai_overview) {
+        logger.info({ event_id, version_id, overview_hash: newOverviewHash }, 'dedup_hit_overview');
+        // Still emit OverviewGenerated for downstream subscribers
+        await this.eventBus.publish({
+          event_name: 'OverviewGenerated',
+          event_id: ulid(),
+          occurred_at: new Date().toISOString(),
+          trace: { trace_id: traceId, span_id: ulid(), source_module: 'overview' },
+          payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: existingPacket.overview?.gate_status ?? 'FAIL' },
+        });
+        return;
+      }
+
+      // Try LLM path first; fallback to heuristic
+      const llmResult = await this.generateWithLlm(claimsWithQuotes, event_id);
       let computedGateStatus: 'PASS' | 'FAIL';
 
       if (llmResult) {
-        // LLM succeeded: merge heuristic sections + AI overview into packet
         const heuristicOverview = llmResult.overview;
         computedGateStatus = heuristicOverview.gate_status;
+
+        const totalQuotes = claimsWithQuotes.reduce((sum: number, c: any) => sum + ((c.quotes ?? []).length), 0);
+        const supportedCount = claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length;
+        const disputedCount = claimsWithQuotes.filter((c: any) => c.status === 'DISPUTED').length;
+
         const updatedPacket = {
           ...existingPacket,
           overview: heuristicOverview,
           ai_overview: llmResult.ai_overview,
+          ai_teaser: llmResult.ai_teaser,
           claims_count: claimsWithQuotes.length,
-          quotes_count: claimsWithQuotes.reduce((sum: number, c: any) => sum + ((c.quotes ?? []).length), 0),
+          quotes_count: totalQuotes,
           quality_flags: {
-            evidence_rate: claimsWithQuotes.length > 0
-              ? claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length / claimsWithQuotes.length
-              : 0,
-            supported_count: claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length,
-            disputed_count: claimsWithQuotes.filter((c: any) => c.status === 'DISPUTED').length,
+            evidence_rate: claimsWithQuotes.length > 0 ? supportedCount / claimsWithQuotes.length : 0,
+            supported_count: supportedCount,
+            disputed_count: disputedCount,
           },
           overview_mode: 'llm',
+          _ai_hashes: {
+            ...existingHashes,
+            overview_hash: newOverviewHash,
+          },
         };
 
         if (version) {
@@ -260,6 +328,7 @@ export class OverviewGenerator {
             gate_status: computedGateStatus,
             claims_count: claimsWithQuotes.length,
             mode: 'llm',
+            overview_hash: newOverviewHash,
           },
         });
       } else {
