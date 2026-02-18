@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node scripts/check-env.js && tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node scripts/check-dist.js && node dist/server.js",
+    "start": "node scripts/check-env.js && node scripts/check-dist.js && node dist/server.js",
     "start:clean": "node scripts/clean-start.js",
     "test": "vitest run",
     "test:watch": "vitest",

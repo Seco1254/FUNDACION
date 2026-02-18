@@ -1,3 +1,4 @@
+import './env.js'; // Must be first — loads .env before Prisma/config reads process.env
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { logger } from './core/logging/logger.js';
@@ -176,9 +177,22 @@ async function start() {
 
   try {
     await app.listen({ port, host: '0.0.0.0' });
-    logger.info({ port }, 'server_started');
+    logger.info({ port, url: `http://localhost:${port}` }, 'server_started');
   } catch (err) {
-    logger.error(err, 'server_start_failed');
+    const code = err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === 'EADDRINUSE') {
+      logger.error(
+        { port },
+        [
+          `port_in_use: Port ${port} is already in use.`,
+          `  Try one of:`,
+          `    PORT=${port + 1} npm start`,
+          `    lsof -ti:${port} | xargs kill -9`,
+        ].join('\n'),
+      );
+    } else {
+      logger.error(err, 'server_start_failed');
+    }
     process.exit(1);
   }
 }
