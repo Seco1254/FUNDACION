@@ -161,10 +161,11 @@ REGLAS ESTRICTAS:
 - NO inventes información que no esté en la evidencia.
 - Si la evidencia es insuficiente, di "No concluyente" y explica por qué.
 - Cada bullet debe estar respaldado por al menos una cita.
-- overview: 2-4 frases resumen.
-- what_happened: máximo 5 bullets de hechos verificados.
-- context: máximo 3 bullets de contexto/antecedentes.
-- in_dispute: máximo 3 bullets de puntos en disputa.
+- overview: 3-5 frases resumen (párrafo completo, no telegráfico).
+- what_happened: 3-5 bullets de hechos verificados. Cada bullet debe ser una oración completa con contexto.
+- context: 3-5 bullets de contexto/antecedentes relevantes.
+- in_dispute: 2-4 bullets de puntos en disputa (si los hay).
+- Total mínimo: ~150 palabras entre todas las secciones. NO seas escueto.
 
 Responde EXCLUSIVAMENTE con JSON válido:`;
 }
@@ -176,9 +177,9 @@ Responde SOLO con JSON válido. No incluyas texto fuera del JSON.
 
 Schema esperado:
 {
-  "overview": "string (2-4 frases resumen)",
-  "what_happened": ["bullet 1", "bullet 2"],
-  "context": ["bullet 1", "bullet 2"],
+  "overview": "string (3-5 frases resumen, párrafo completo)",
+  "what_happened": ["bullet 1", "bullet 2", "bullet 3"],
+  "context": ["bullet 1", "bullet 2", "bullet 3"],
   "in_dispute": ["bullet 1", "bullet 2"],
   "confidence_label": "Alta|Media|Baja|No concluyente",
   "why": "string (1-2 frases explicando confianza y cobertura)"

@@ -36,6 +36,7 @@ export default function ForYouScreen() {
   const loadFeed = useCallback(async (cursor?: string, isRefresh = false) => {
     try {
       const data = await api.getFeed(cursor);
+      if (__DEV__) console.debug(`[feed] fetched count=${data.items.length} cursor=${cursor ?? 'first'} ts=${new Date().toISOString()}`);
       await cache.setFeed(data, cursor);
 
       if (isRefresh || !cursor) {
@@ -145,15 +146,21 @@ export default function ForYouScreen() {
       <FlatList
         data={items}
         keyExtractor={(item) => item.event_id}
-        renderItem={({ item }) => (
-          <View style={{ minHeight: CARD_HEIGHT, justifyContent: 'center' }}>
-            <EventCard
-              item={item}
-              onPress={() => router.push(`/event/${item.event_id}`)}
-              onLongPress={() => handleLongPress(item)}
-            />
-          </View>
-        )}
+        renderItem={({ item, index }) => {
+          const feedIds = items.map((i) => i.event_id).join(',');
+          return (
+            <View style={{ minHeight: CARD_HEIGHT, justifyContent: 'center' }}>
+              <EventCard
+                item={item}
+                onPress={() => router.push({
+                  pathname: '/event/[eventId]',
+                  params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
+                })}
+                onLongPress={() => handleLongPress(item)}
+              />
+            </View>
+          );
+        }}
         snapToAlignment="start"
         decelerationRate="fast"
         pagingEnabled

@@ -1,6 +1,17 @@
 import { FeedRepository } from '../repo/feed-repo.js';
-import { FeedItem, FeedResponse } from '../domain/types.js';
+import { FeedItem, FeedItemOverview, FeedResponse } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
+
+function extractAiOverview(packet: any): FeedItemOverview | null {
+  const ai = packet?.ai_overview;
+  if (!ai) return null;
+  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
+  const ctx = Array.isArray(ai.context) ? ai.context : [];
+  const disp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
+  const label = typeof ai.confidence_label === 'string' ? ai.confidence_label : 'No concluyente';
+  if (wh.length === 0 && ctx.length === 0) return null;
+  return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+}
 
 const PAGE_SIZE = 20;
 
@@ -53,6 +64,7 @@ export class FeedService {
         t_last: row.tLast?.toISOString() ?? null,
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
+        ai_overview: extractAiOverview(packet),
       };
     });
 
@@ -93,6 +105,7 @@ export class FeedService {
         t_last: row.tLast?.toISOString() ?? null,
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
+        ai_overview: extractAiOverview(packet),
       };
     });
 
