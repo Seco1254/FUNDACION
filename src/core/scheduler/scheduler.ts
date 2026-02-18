@@ -13,6 +13,9 @@ export class Scheduler {
   private jobs: Map<string, ScheduledJob> = new Map();
   private clock: Clock;
   private executor: JobExecutor;
+  private _running = false;
+  private _lastTickAt: Date | null = null;
+  private _lastTickExecuted = 0;
 
   constructor(clock: Clock, executor: JobExecutor) {
     this.clock = clock;
@@ -40,24 +43,52 @@ export class Scheduler {
     return Array.from(this.jobs.values());
   }
 
-  async runDueJobs(): Promise<number> {
-    const now = this.clock.now();
-    let executed = 0;
+  get lastTickAt(): Date | null {
+    return this._lastTickAt;
+  }
 
-    for (const [key, job] of this.jobs.entries()) {
-      if (job.runAt <= now) {
-        try {
-          await this.executor(job);
-          this.jobs.delete(key);
-          executed++;
-          logger.info({ jobKey: key }, 'scheduler_job_executed');
-        } catch (err) {
-          logger.error(
-            { jobKey: key, error: err instanceof Error ? err.message : String(err) },
-            'scheduler_job_failed',
-          );
+  get lastTickExecuted(): number {
+    return this._lastTickExecuted;
+  }
+
+  get running(): boolean {
+    return this._running;
+  }
+
+  async runDueJobs(): Promise<number> {
+    if (this._running) {
+      logger.info('scheduler_tick_skipped_already_running');
+      return 0;
+    }
+
+    this._running = true;
+    const now = this.clock.now();
+    this._lastTickAt = now;
+    let executed = 0;
+    const dueCount = Array.from(this.jobs.values()).filter((j) => j.runAt <= now).length;
+
+    logger.info({ queued: this.jobs.size, due: dueCount, now: now.toISOString() }, 'scheduler_tick_start');
+
+    try {
+      for (const [key, job] of this.jobs.entries()) {
+        if (job.runAt <= now) {
+          const jobStart = Date.now();
+          try {
+            await this.executor(job);
+            this.jobs.delete(key);
+            executed++;
+            logger.info({ jobKey: key, duration_ms: Date.now() - jobStart }, 'scheduler_job_executed');
+          } catch (err) {
+            logger.error(
+              { jobKey: key, duration_ms: Date.now() - jobStart, error: err instanceof Error ? err.message : String(err) },
+              'scheduler_job_failed',
+            );
+          }
         }
       }
+    } finally {
+      this._running = false;
+      this._lastTickExecuted = executed;
     }
 
     return executed;

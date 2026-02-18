@@ -24,6 +24,7 @@ import { PolicyGuard } from './modules/ingestion/service/policy-guard.js';
 import { productionFetchHtml } from './modules/ingestion/service/fetch-html.js';
 import { getScraperForMedia } from './modules/ingestion/scrapers/registry.js';
 import { debugScrapeRoutes } from './api/routes/debug-scrape.js';
+import { debugSchedulerRoutes } from './api/routes/debug-scheduler.js';
 import { EmbeddingService } from './modules/embedding/service/embedding-service.js';
 import { EventLinkerV2 } from './modules/event_linker/service/event-linker-v2.js';
 import { LifecycleManager } from './modules/lifecycle/service/lifecycle-manager.js';
@@ -54,6 +55,9 @@ import { registerMetricSubscribers } from './core/metrics/subscribers.js';
 import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
 import { withTimeout } from './core/async/with-timeout.js';
 import { RankingService } from './modules/ranking/service/ranking-service.js';
+
+const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '30000', 10);
+const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
 
 export function buildApp() {
   const app = Fastify({
@@ -203,13 +207,11 @@ export function buildApp() {
   app.register(biasRoutes(eventRepo, biasRepo, cache));
   app.register(metricsRoutes);
   app.register(debugScrapeRoutes(scrapeOrchestrator));
+  app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator };
 }
-
-const SCHEDULER_TICK_MS = 30_000;
-const SCRAPE_INTERVAL_MS = 15 * 60 * 1000;
 
 async function start() {
   const { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator } = buildApp();
@@ -260,13 +262,17 @@ async function start() {
   const nextScrape = new Date(Date.now() + SCRAPE_INTERVAL_MS);
   scheduler.register('scrape:tick', nextScrape, {});
 
-  // Scheduler tick: check and execute due jobs every 30s, re-register recurring jobs
+  // Scheduler tick: check and execute due jobs every SCHEDULER_TICK_MS
   setInterval(async () => {
     try {
       const executed = await scheduler.runDueJobs();
       if (executed > 0) {
-        logger.info({ executed }, 'scheduler_tick');
-        // Re-register recurring scrape
+        logger.info({ executed }, 'scheduler_tick_completed');
+      }
+      // Always re-register recurring scrape if missing
+      const jobs = scheduler.list();
+      const hasScrape = jobs.some((j) => j.jobKey === 'scrape:tick');
+      if (!hasScrape) {
         const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
         scheduler.register('scrape:tick', next, {});
       }

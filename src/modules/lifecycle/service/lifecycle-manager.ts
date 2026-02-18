@@ -6,7 +6,7 @@ import { Scheduler } from '../../../core/scheduler/scheduler.js';
 import { Clock } from '../../../core/time/clock.js';
 import { logger } from '../../../core/logging/logger.js';
 
-const PUBLISH_DELAY_MS = 5 * 60 * 1000;
+const PUBLISH_DELAY_MS = parseInt(process.env.PUBLISH_DELAY_MS ?? String(5 * 60 * 1000), 10);
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class LifecycleManager {
@@ -78,12 +78,28 @@ export class LifecycleManager {
   }
 
   async executePublish(eventId: string): Promise<void> {
+    const startMs = Date.now();
     const now = this.clock.now();
     const event = await this.eventRepo.findById(eventId);
-    if (!event) return;
 
-    if (event.state === 'CLOSED') return;
-    if (event.publishAt && now < event.publishAt) return;
+    if (!event) {
+      logger.info({ event_id: eventId }, 'publish_skip_not_found');
+      return;
+    }
+    if (event.state === 'CLOSED') {
+      logger.info({ event_id: eventId, state: event.state }, 'publish_skip_closed');
+      return;
+    }
+    if (event.state === 'PUBLISHED') {
+      logger.info({ event_id: eventId, state: event.state }, 'publish_skip_already_published');
+      return;
+    }
+    if (event.publishAt && now < event.publishAt) {
+      logger.info({ event_id: eventId, publish_at: event.publishAt.toISOString(), now: now.toISOString() }, 'publish_skip_not_due');
+      return;
+    }
+
+    logger.info({ event_id: eventId, previous_state: event.state }, 'publish_start');
 
     await this.eventRepo.update(eventId, {
       state: 'PUBLISHED',
@@ -107,6 +123,8 @@ export class LifecycleManager {
       trace: { trace_id: traceId, span_id: ulid(), source_module: 'lifecycle' },
       payload: { event_id: eventId, published_at: now.toISOString() },
     });
+
+    logger.info({ event_id: eventId, duration_ms: Date.now() - startMs }, 'publish_complete');
   }
 
   async executeRefresh(eventId: string): Promise<void> {
