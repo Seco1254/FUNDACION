@@ -1,4 +1,4 @@
-export { ParsedArticle, MediaScraper, FetchHtml, ScraperLookup } from './domain/types.js';
+export type { ParsedArticle, MediaScraper, FetchHtml, ScraperLookup } from './domain/types.js';
 export { ScrapeOrchestrator } from './service/scrape-orchestrator.js';
 export { FetcherParser } from './service/fetcher-parser.js';
 export { PolicyGuard } from './service/policy-guard.js';

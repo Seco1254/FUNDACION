@@ -1,1 +1,2 @@
-export { Scheduler, ScheduledJob, JobExecutor } from './scheduler.js';
+export { Scheduler } from './scheduler.js';
+export type { ScheduledJob, JobExecutor } from './scheduler.js';

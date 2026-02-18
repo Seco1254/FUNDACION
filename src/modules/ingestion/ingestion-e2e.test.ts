@@ -220,12 +220,13 @@ describe('Ingestion E2E pipeline (no internet)', () => {
     };
 
     for (const event of published) {
-      const schema = schemaMap[event.event_name];
+      const eventName = event.event_name;
+      const schema = schemaMap[eventName];
       if (schema) {
         const validate = ajv.compile(schema);
         const valid = validate(event);
         if (!valid) {
-          console.error(`Schema validation failed for ${event.event_name}:`, validate.errors);
+          console.error(`Schema validation failed for ${eventName}:`, validate.errors);
         }
         expect(valid).toBe(true);
       }
