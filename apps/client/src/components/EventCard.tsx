@@ -9,11 +9,12 @@ interface Props {
   item: FeedItem;
   onPress: () => void;
   onLongPress?: () => void;
+  onRetryOverview?: () => void;
 }
 
 const PREVIEW_MAX_BULLETS = 3;
 
-export function EventCard({ item, onPress, onLongPress }: Props) {
+export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props) {
   const updatedAt = relativeTime(item.t_last);
   const [expanded, setExpanded] = useState(false);
   const ov = item.ai_overview;
@@ -81,7 +82,19 @@ export function EventCard({ item, onPress, onLongPress }: Props) {
         </View>
       ) : (
         <View style={styles.overviewPlaceholder}>
-          <Text style={styles.placeholderText}>Generando resumen…</Text>
+          <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
+          <Text style={styles.placeholderSubtitle}>
+            El análisis de fuentes está en proceso.
+          </Text>
+          {onRetryOverview && (
+            <Pressable
+              onPress={(e) => { e.stopPropagation(); onRetryOverview(); }}
+              style={styles.retryBtn}
+              hitSlop={8}
+            >
+              <Text style={styles.retryText}>Reintentar</Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -111,6 +124,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 2,
+    flex: 1,
   },
   topRow: {
     flexDirection: 'row',
@@ -152,6 +166,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     padding: spacing.md,
     gap: spacing.xs,
+    flex: 1,
   },
   overviewLabel: {
     fontSize: font.xs,
@@ -183,16 +198,37 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: spacing.xs,
   },
-  // Placeholder
+  // Placeholder — no overview yet
   overviewPlaceholder: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.md,
-    padding: spacing.md,
+    padding: spacing.xl,
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+    justifyContent: 'center',
   },
-  placeholderText: {
+  placeholderTitle: {
+    fontSize: font.md,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  placeholderSubtitle: {
     fontSize: font.sm,
     color: colors.textMuted,
-    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  retryBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    marginTop: spacing.xs,
+  },
+  retryText: {
+    color: '#FFFFFF',
+    fontSize: font.sm,
+    fontWeight: '600',
   },
   footer: {
     flexDirection: 'row',
