@@ -17,17 +17,22 @@ export class ScrapeOrchestrator {
     private scraperLookup: ScraperLookup,
   ) {}
 
-  async run(): Promise<{ discovered: number; skipped: number }> {
+  async run(): Promise<{ discovered: number; skipped: number; summary: Record<string, { discovered: number; skipped: number; fetch_fail: number }> }> {
     const traceId = ulid();
     const media = await this.mediaRepo.findAllAllowlisted();
     let discovered = 0;
     let skipped = 0;
     const seenUrls = new Set<string>();
+    const summary: Record<string, { discovered: number; skipped: number; fetch_fail: number }> = {};
 
     for (const m of media) {
       const scraper = this.scraperLookup(m.mediaKey);
 
       if (scraper.listPageUrls.length === 0) continue;
+
+      if (!summary[m.mediaKey]) {
+        summary[m.mediaKey] = { discovered: 0, skipped: 0, fetch_fail: 0 };
+      }
 
       for (const listUrl of scraper.listPageUrls) {
         let html: string;
@@ -36,6 +41,7 @@ export class ScrapeOrchestrator {
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
           logger.error({ mediaKey: m.mediaKey, listUrl, error: error.message }, 'list_page_fetch_failed');
+          summary[m.mediaKey].fetch_fail++;
           await this.auditWriter.write({
             entity_type: 'ARTICLE',
             entity_id: m.mediaKey,
@@ -51,6 +57,7 @@ export class ScrapeOrchestrator {
         for (const url of urls) {
           if (seenUrls.has(url)) {
             skipped++;
+            summary[m.mediaKey].skipped++;
             continue;
           }
           seenUrls.add(url);
@@ -58,6 +65,7 @@ export class ScrapeOrchestrator {
           const existing = await this.articleRepo.findByUrl(url);
           if (existing) {
             skipped++;
+            summary[m.mediaKey].skipped++;
             continue;
           }
 
@@ -79,10 +87,20 @@ export class ScrapeOrchestrator {
 
           await this.eventBus.publish(envelope);
           discovered++;
+          summary[m.mediaKey].discovered++;
         }
       }
     }
 
-    return { discovered, skipped };
+    // Log per-media scrape summary
+    for (const [key, stats] of Object.entries(summary)) {
+      logger.info(
+        { mediaKey: key, discovered: stats.discovered, skipped: stats.skipped, fetch_fail: stats.fetch_fail },
+        'scrape_media_summary',
+      );
+    }
+    logger.info({ total_discovered: discovered, total_skipped: skipped, media_count: Object.keys(summary).length }, 'scrape_run_complete');
+
+    return { discovered, skipped, summary };
   }
 }

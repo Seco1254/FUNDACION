@@ -98,6 +98,20 @@ export class FetcherParser {
         return;
       }
 
+      // Policy: block if title is missing or content is empty
+      if (!parsed.title || parsed.title.trim().length === 0) {
+        logger.info({ url, reason: 'PARSE_FAIL' }, 'article_missing_title');
+        const blockedEnvelope: EventEnvelope = {
+          event_name: 'ArticlePolicyBlocked',
+          event_id: ulid(),
+          occurred_at: new Date().toISOString(),
+          trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
+          payload: { url, reason_code: 'PARSE_FAIL' },
+        };
+        await this.eventBus.publish(blockedEnvelope);
+        return;
+      }
+
       const snippet = parsed.snippet.slice(0, MAX_SNIPPET_CHARS);
 
       let article;
