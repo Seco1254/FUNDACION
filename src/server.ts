@@ -25,7 +25,7 @@ import { productionFetchHtml } from './modules/ingestion/service/fetch-html.js';
 import { getScraperForMedia } from './modules/ingestion/scrapers/registry.js';
 import { debugScrapeRoutes } from './api/routes/debug-scrape.js';
 import { EmbeddingService } from './modules/embedding/service/embedding-service.js';
-import { EventLinker } from './modules/event_linker/service/event-linker.js';
+import { EventLinkerV2 } from './modules/event_linker/service/event-linker-v2.js';
 import { LifecycleManager } from './modules/lifecycle/service/lifecycle-manager.js';
 import { VersioningHandler } from './modules/versioning/service/versioning-handler.js';
 import { VersionRepository } from './modules/versions/repo/version-repo.js';
@@ -54,6 +54,7 @@ import { registerMetricSubscribers } from './core/metrics/subscribers.js';
 
 import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
 import { withTimeout } from './core/async/with-timeout.js';
+import { RankingService } from './modules/ranking/service/ranking-service.js';
 
 export function buildApp() {
   const app = Fastify({
@@ -89,8 +90,7 @@ export function buildApp() {
   const articleRepo = new ArticleRepository(prisma);
   const mediaRepo = new MediaRepository(prisma);
 
-  // Services
-  const feedService = new FeedService(feedRepo);
+  // Services (feedService initialized after claimRepo for ranking)
   const auditService = new AuditService(auditRepo);
 
   // Event bus
@@ -115,7 +115,6 @@ export function buildApp() {
   const versionRepo = new VersionRepository(prisma);
 
   const embeddingService = new EmbeddingService(articleRepo, eventBus, auditService);
-  const eventLinker = new EventLinker(articleRepo, eventRepo, eventBus, auditService, clock);
   const schedulerScrapeTimeoutMs = parseInt(process.env.SCRAPE_TIMEOUT_MS ?? '60000', 10);
   const scheduler = new Scheduler(clock, async (job) => {
     if (job.jobKey === 'scrape:tick') {
@@ -157,9 +156,16 @@ export function buildApp() {
     logger.info('llm_client_unavailable_heuristic_mode');
   }
 
+  // EventLinker v2 (with optional LLM pair scoring)
+  const eventLinker = new EventLinkerV2(articleRepo, eventRepo, eventBus, auditService, clock, llm);
+
   const claimRepo = new ClaimRepository(prisma);
   const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService, llm);
   const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService, llm);
+
+  // Ranking (needs claimRepo for Q formula)
+  const rankingService = new RankingService(eventRepo, claimRepo);
+  const feedService = new FeedService(feedRepo, rankingService);
 
   // Phase 4: Bias → Topics → SubEvents
   const biasRepo = new BiasLabelRepository(prisma);
@@ -170,7 +176,7 @@ export function buildApp() {
   const subEventBuilder = new SubEventBuilder(topicRepo, claimRepo, versionRepo, eventBus, auditService);
 
   eventBus.subscribe('ArticlePolicyOk', 'EmbeddingService', embeddingService.handler());
-  eventBus.subscribe('ArticleEmbedded', 'EventLinker', eventLinker.handler());
+  eventBus.subscribe('ArticleEmbedded', 'EventLinkerV2', eventLinker.handler());
   eventBus.subscribe('EventCreated', 'LifecycleManager.handleEventCreated', lifecycleManager.handleEventCreated());
   eventBus.subscribe('ArticleLinkedToEvent', 'LifecycleManager.handleArticleLinked', lifecycleManager.handleArticleLinked());
   eventBus.subscribe('EventUpdateTriggered', 'VersioningHandler', versioningHandler.handler());

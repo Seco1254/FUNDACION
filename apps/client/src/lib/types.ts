@@ -2,6 +2,13 @@
 
 export type EventState = 'DETECTED' | 'PENDING_PUBLISH' | 'PUBLISHED' | 'UPDATING' | 'DORMANT' | 'CLOSED';
 
+export interface FeedItemOverview {
+  what_happened: string[];
+  context: string[];
+  in_dispute: string[];
+  confidence_label: string;
+}
+
 export interface FeedItem {
   event_id: string;
   state: EventState;
@@ -9,6 +16,8 @@ export interface FeedItem {
   t_last: string | null;
   published_at: string | null;
   cover_image_url: string | null;
+  ai_overview?: FeedItemOverview | null;
+  source_count?: number;
 }
 
 export interface FeedResponse {

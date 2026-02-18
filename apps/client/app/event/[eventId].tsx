@@ -9,7 +9,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api, ApiError } from '../../src/lib/api';
 import { cache, relativeTime } from '../../src/lib/cache';
 import { history } from '../../src/lib/history';
@@ -32,7 +32,19 @@ import type {
 type Status = 'loading' | 'error' | 'ok' | 'offline';
 
 export default function EventDetailScreen() {
-  const { eventId } = useLocalSearchParams<{ eventId: string }>();
+  const { eventId, feedEventIds: feedEventIdsParam, feedIndex: feedIndexParam } = useLocalSearchParams<{
+    eventId: string;
+    feedEventIds?: string;
+    feedIndex?: string;
+  }>();
+  const router = useRouter();
+
+  // Peek navigation: list of event IDs from the feed
+  const feedEventIds: string[] = feedEventIdsParam ? feedEventIdsParam.split(',') : [];
+  const currentIndex = feedIndexParam ? parseInt(feedIndexParam, 10) : -1;
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex >= 0 && currentIndex < feedEventIds.length - 1;
+
   const [data, setData] = useState<EventDetailResponse | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [cachedAt, setCachedAt] = useState<string | null>(null);
@@ -42,8 +54,13 @@ export default function EventDetailScreen() {
   const [biasData, setBiasData] = useState<BiasEndpointResponse | null>(null);
   const [biasLoading, setBiasLoading] = useState(false);
 
+  // Peek: headlines for prev/next
+  const [prevHeadline, setPrevHeadline] = useState<string | null>(null);
+  const [nextHeadline, setNextHeadline] = useState<string | null>(null);
+
   const loadEvent = useCallback(async () => {
     if (!eventId) return;
+    if (__DEV__) console.debug(`[detail] fetching event_id=${eventId}`);
     try {
       const result = await api.getEvent(eventId);
       setData(result);
@@ -51,7 +68,6 @@ export default function EventDetailScreen() {
       setCachedAt(null);
       await cache.setEvent(eventId, result);
 
-      // Track in history
       await history.add({
         event_id: eventId,
         headline: result.latest_version?.headline ?? null,
@@ -71,6 +87,35 @@ export default function EventDetailScreen() {
   }, [eventId]);
 
   useEffect(() => { loadEvent(); }, [loadEvent]);
+
+  // Load peek headlines from cache
+  useEffect(() => {
+    (async () => {
+      if (hasPrev) {
+        const prevId = feedEventIds[currentIndex - 1];
+        const c = await cache.getEvent(prevId);
+        setPrevHeadline(c?.data.latest_version?.headline ?? null);
+      }
+      if (hasNext) {
+        const nextId = feedEventIds[currentIndex + 1];
+        const c = await cache.getEvent(nextId);
+        setNextHeadline(c?.data.latest_version?.headline ?? null);
+      }
+    })();
+  }, [feedEventIds, currentIndex, hasPrev, hasNext]);
+
+  const navigateTo = useCallback((idx: number) => {
+    const eid = feedEventIds[idx];
+    if (!eid) return;
+    router.replace({
+      pathname: '/event/[eventId]',
+      params: {
+        eventId: eid,
+        feedEventIds: feedEventIds.join(','),
+        feedIndex: String(idx),
+      },
+    });
+  }, [feedEventIds, router]);
 
   const loadBias = useCallback(async (mediaKey: string) => {
     if (!eventId) return;
@@ -113,141 +158,171 @@ export default function EventDetailScreen() {
     ? media_tabs.find((t) => t.media_key === selectedMediaKey)
     : null;
 
-  // Find bias for selected media
   const selectedMediaBias = selectedMediaKey
     ? data.bias.media_level.find((b) => {
-        // Try matching by media_id through articles
         const tab = media_tabs.find((t) => t.media_key === selectedMediaKey);
         return tab && b.media_id;
       }) ?? data.bias.media_level[0]
     : null;
 
+  // Extract confidence_label from packet_json ai_overview
+  const aiOverview = (latest_version?.packet_json as any)?.ai_overview;
+  const confidenceLabel: string | null = aiOverview?.confidence_label ?? null;
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
-      {status === 'offline' && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineText}>
-            Sin conexión{cachedAt ? ` · ${cachedAt}` : ''}
+    <View style={styles.container}>
+      {/* Peek bar: previous event */}
+      {hasPrev && (
+        <Pressable onPress={() => navigateTo(currentIndex - 1)} style={styles.peekBarTop}>
+          <Text style={styles.peekArrow}>▲</Text>
+          <Text style={styles.peekText} numberOfLines={1}>
+            Anterior: {prevHeadline ?? 'Evento anterior'}
           </Text>
-        </View>
+        </Pressable>
       )}
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <PillTag state={event.state} />
-          <ConfidenceBadge gateStatus={latest_version?.gate_status} />
-        </View>
-        <Text style={styles.headline}>
-          {latest_version?.headline ?? 'Evento en desarrollo...'}
-        </Text>
-        <View style={styles.metaRow}>
-          {media_tabs.length > 0 && (
-            <Text style={styles.metaText}>
-              {media_tabs.length} fuente{media_tabs.length !== 1 ? 's' : ''}
+      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        {status === 'offline' && (
+          <View style={styles.offlineBanner}>
+            <Text style={styles.offlineText}>
+              Sin conexión{cachedAt ? ` · ${cachedAt}` : ''}
             </Text>
-          )}
-          {event.t_last && (
-            <Text style={styles.metaText}>
-              Actualizado {relativeTime(event.t_last)}
-            </Text>
-          )}
-        </View>
-      </View>
+          </View>
+        )}
 
-      {/* Overview */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Resumen</Text>
-        <OverviewBlock overview={overview} />
-      </View>
-
-      {/* Heatmap mini */}
-      {topics_heatmap.length > 0 && (
-        <View style={styles.section}>
-          <TopicHeatmapMini bins={topics_heatmap} onViewFull={() => setHeatmapModal(true)} />
-        </View>
-      )}
-
-      {/* Sub-events */}
-      {subevents.length > 0 && (
-        <View style={styles.section}>
-          <SubEventTimeline subevents={subevents} />
-        </View>
-      )}
-
-      {/* Media Tabs */}
-      {media_tabs.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Fuentes</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
-            <Pressable
-              onPress={() => setSelectedMediaKey(null)}
-              style={[styles.tabBtn, !selectedMediaKey && styles.tabBtnActive]}
-            >
-              <Text style={[styles.tabBtnText, !selectedMediaKey && styles.tabBtnTextActive]}>
-                Resumen
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerRow}>
+            <PillTag state={event.state} />
+            <ConfidenceBadge gateStatus={latest_version?.gate_status} />
+          </View>
+          <Text style={styles.headline}>
+            {latest_version?.headline ?? 'Evento en desarrollo...'}
+          </Text>
+          <View style={styles.metaRow}>
+            {media_tabs.length > 0 && (
+              <Text style={styles.metaText}>
+                {media_tabs.length} fuente{media_tabs.length !== 1 ? 's' : ''}
               </Text>
-            </Pressable>
-            {media_tabs.map((tab) => (
+            )}
+            {event.t_last && (
+              <Text style={styles.metaText}>
+                Actualizado {relativeTime(event.t_last)}
+              </Text>
+            )}
+          </View>
+        </View>
+
+        {/* Overview — structured sections */}
+        <View style={styles.section}>
+          <View style={styles.overviewHeader}>
+            <Text style={styles.sectionTitle}>Resumen (IA)</Text>
+            {confidenceLabel && (
+              <View style={styles.confidenceBadge}>
+                <Text style={styles.confidenceText}>{confidenceLabel}</Text>
+              </View>
+            )}
+          </View>
+          <OverviewBlock overview={overview} onRetry={loadEvent} />
+        </View>
+
+        {/* Heatmap mini */}
+        {topics_heatmap.length > 0 && (
+          <View style={styles.section}>
+            <TopicHeatmapMini bins={topics_heatmap} onViewFull={() => setHeatmapModal(true)} />
+          </View>
+        )}
+
+        {/* Sub-events */}
+        {subevents.length > 0 && (
+          <View style={styles.section}>
+            <SubEventTimeline subevents={subevents} />
+          </View>
+        )}
+
+        {/* Media Tabs */}
+        {media_tabs.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Fuentes</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
               <Pressable
-                key={tab.media_key}
-                onPress={() => setSelectedMediaKey(tab.media_key)}
-                style={[styles.tabBtn, selectedMediaKey === tab.media_key && styles.tabBtnActive]}
+                onPress={() => setSelectedMediaKey(null)}
+                style={[styles.tabBtn, !selectedMediaKey && styles.tabBtnActive]}
               >
-                <Text style={[styles.tabBtnText, selectedMediaKey === tab.media_key && styles.tabBtnTextActive]}>
-                  {tab.media_key}
+                <Text style={[styles.tabBtnText, !selectedMediaKey && styles.tabBtnTextActive]}>
+                  Resumen
                 </Text>
               </Pressable>
-            ))}
-          </ScrollView>
+              {media_tabs.map((tab) => (
+                <Pressable
+                  key={tab.media_key}
+                  onPress={() => setSelectedMediaKey(tab.media_key)}
+                  style={[styles.tabBtn, selectedMediaKey === tab.media_key && styles.tabBtnActive]}
+                >
+                  <Text style={[styles.tabBtnText, selectedMediaKey === tab.media_key && styles.tabBtnTextActive]}>
+                    {tab.media_key}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
 
-          {/* Selected media tab content */}
-          {selectedTab ? (
-            <MediaTabContent
-              tab={selectedTab}
-              biasLabel={selectedMediaBias}
-              onOpenBias={() => openBiasModal(selectedTab.media_key)}
-            />
-          ) : (
-            <MediaSummary tabs={media_tabs} onSelectMedia={setSelectedMediaKey} />
-          )}
-        </View>
-      )}
-
-      {/* Heatmap full modal */}
-      <Modal visible={heatmapModal} animationType="slide" presentationStyle="pageSheet">
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Mapa de calor</Text>
-            <Pressable onPress={() => setHeatmapModal(false)}>
-              <Text style={styles.modalClose}>Cerrar</Text>
-            </Pressable>
-          </View>
-          <HeatmapFull bins={topics_heatmap} />
-        </View>
-      </Modal>
-
-      {/* Bias rationale modal */}
-      <Modal visible={!!biasModal} animationType="slide" presentationStyle="pageSheet">
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>¿Por qué esta etiqueta?</Text>
-            <Pressable onPress={() => { setBiasModal(null); setBiasData(null); }}>
-              <Text style={styles.modalClose}>Cerrar</Text>
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={styles.biasContent}>
-            {biasLoading ? (
-              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />
-            ) : biasData ? (
-              <BiasRationaleContent data={biasData} />
+            {selectedTab ? (
+              <MediaTabContent
+                tab={selectedTab}
+                biasLabel={selectedMediaBias}
+                onOpenBias={() => openBiasModal(selectedTab.media_key)}
+              />
             ) : (
-              <Text style={styles.biasEmpty}>No se pudo cargar el análisis.</Text>
+              <MediaSummary tabs={media_tabs} onSelectMedia={setSelectedMediaKey} />
             )}
-          </ScrollView>
-        </View>
-      </Modal>
-    </ScrollView>
+          </View>
+        )}
+
+        {/* Heatmap full modal */}
+        <Modal visible={heatmapModal} animationType="slide" presentationStyle="pageSheet">
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Mapa de calor</Text>
+              <Pressable onPress={() => setHeatmapModal(false)}>
+                <Text style={styles.modalClose}>Cerrar</Text>
+              </Pressable>
+            </View>
+            <HeatmapFull bins={topics_heatmap} />
+          </View>
+        </Modal>
+
+        {/* Bias rationale modal */}
+        <Modal visible={!!biasModal} animationType="slide" presentationStyle="pageSheet">
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>¿Por qué esta etiqueta?</Text>
+              <Pressable onPress={() => { setBiasModal(null); setBiasData(null); }}>
+                <Text style={styles.modalClose}>Cerrar</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.biasContent}>
+              {biasLoading ? (
+                <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />
+              ) : biasData ? (
+                <BiasRationaleContent data={biasData} />
+              ) : (
+                <Text style={styles.biasEmpty}>No se pudo cargar el análisis.</Text>
+              )}
+            </ScrollView>
+          </View>
+        </Modal>
+      </ScrollView>
+
+      {/* Peek bar: next event */}
+      {hasNext && (
+        <Pressable onPress={() => navigateTo(currentIndex + 1)} style={styles.peekBarBottom}>
+          <Text style={styles.peekText} numberOfLines={1}>
+            Siguiente: {nextHeadline ?? 'Próximo evento'}
+          </Text>
+          <Text style={styles.peekArrow}>▼</Text>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -270,12 +345,11 @@ function MediaTabContent({ tab, biasLabel, onOpenBias }: {
         />
         {showBiasMenu && (
           <Pressable onPress={onOpenBias} style={styles.biasMenuBtn}>
-            <Text style={styles.biasMenuText}>⋯ ¿Por qué?</Text>
+            <Text style={styles.biasMenuText}>¿Por qué?</Text>
           </Pressable>
         )}
       </View>
 
-      {/* Highlights */}
       {tab.highlights.length > 0 && (
         <View style={styles.highlightsSection}>
           <Text style={styles.highlightsTitle}>Citas destacadas</Text>
@@ -285,7 +359,6 @@ function MediaTabContent({ tab, biasLabel, onOpenBias }: {
         </View>
       )}
 
-      {/* Articles */}
       <View style={styles.articlesSection}>
         <Text style={styles.articlesTitle}>Extractos</Text>
         <Text style={styles.microcopy}>
@@ -337,7 +410,6 @@ function MediaSummary({ tabs, onSelectMedia }: {
 
 function BiasRationaleContent({ data }: { data: BiasEndpointResponse }) {
   const ml = data.media_level;
-  const isInconcluso = ml?.label_primary === 'INCONCLUSO';
 
   return (
     <View style={styles.biasRationale}>
@@ -380,7 +452,6 @@ function BiasRationaleContent({ data }: { data: BiasEndpointResponse }) {
         <Text style={styles.biasEmpty}>Sin datos de análisis para esta fuente.</Text>
       )}
 
-      {/* Article level */}
       {data.article_level.length > 0 && (
         <View style={styles.biasArticles}>
           <Text style={styles.biasArticlesTitle}>Por artículo:</Text>
@@ -423,6 +494,7 @@ function formatBiasLabel(label: string): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
+  scrollView: { flex: 1 },
   scrollContent: { paddingBottom: 40 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   errorText: { fontSize: font.md, color: colors.textSecondary, marginBottom: spacing.md },
@@ -430,6 +502,40 @@ const styles = StyleSheet.create({
   retryText: { color: '#FFFFFF', fontSize: font.md, fontWeight: '600' },
   offlineBanner: { backgroundColor: colors.warningLight, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   offlineText: { fontSize: font.xs, color: colors.warning, textAlign: 'center', fontWeight: '500' },
+
+  // Peek bars
+  peekBarTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceAlt,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  peekBarBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceAlt,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  peekArrow: {
+    fontSize: font.xs,
+    color: colors.accent,
+    fontWeight: '700',
+  },
+  peekText: {
+    flex: 1,
+    fontSize: font.sm,
+    color: colors.accent,
+    fontWeight: '500',
+  },
 
   // Header
   header: { padding: spacing.lg, gap: spacing.sm },
@@ -441,6 +547,18 @@ const styles = StyleSheet.create({
   // Sections
   section: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   sectionTitle: { fontSize: font.lg, fontWeight: '600', color: colors.text, marginBottom: spacing.sm },
+  overviewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+  confidenceBadge: {
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+  },
+  confidenceText: {
+    fontSize: font.xs,
+    fontWeight: '500',
+    color: colors.textSecondary,
+  },
 
   // Media tabs
   tabScroll: { marginBottom: spacing.md },
