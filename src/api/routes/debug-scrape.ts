@@ -31,7 +31,9 @@ export function debugScrapeRoutes(orchestrator: ScrapeOrchestrator): FastifyPlug
 
       try {
         const result = await withTimeout(
-          orchestrator.run(),
+          orchestrator.run((progress) => {
+            scrapeLock.setInflight(progress.media_key, progress.stage, progress.url);
+          }),
           SCRAPE_TIMEOUT_MS,
           { stage: 'orchestrator_run' },
         );
@@ -57,16 +59,33 @@ export function debugScrapeRoutes(orchestrator: ScrapeOrchestrator): FastifyPlug
 
         if (err instanceof TimeoutError) {
           metrics.incCounter('scrape.timeout_total');
+          // Capture inflight state before release so it appears in the 504 body.
+          const inflightStatus = scrapeLock.getStatus();
           scrapeLock.release({ error: err.message });
 
-          logger.error({ trace_id: traceId, stage: err.stage, media_key: err.mediaKey, timeout_ms: err.timeoutMs, duration_ms: durationMs }, 'scrape_timeout');
+          logger.error(
+            {
+              trace_id: traceId,
+              stage: err.stage,
+              media_key: err.mediaKey,
+              inflight_media_key: inflightStatus.inflight_media_key,
+              inflight_stage: inflightStatus.inflight_stage,
+              inflight_url: inflightStatus.inflight_url,
+              timeout_ms: err.timeoutMs,
+              duration_ms: durationMs,
+            },
+            'scrape_timeout',
+          );
 
           return reply.status(504).send({
             ok: false,
             error: 'SCRAPE_TIMEOUT',
             trace_id: traceId,
             stage: err.stage,
-            media_key: err.mediaKey,
+            media_key: err.mediaKey ?? inflightStatus.inflight_media_key,
+            inflight_stage: inflightStatus.inflight_stage,
+            inflight_url: inflightStatus.inflight_url,
+            duration_ms: durationMs,
             timeout_ms: err.timeoutMs,
           });
         }
