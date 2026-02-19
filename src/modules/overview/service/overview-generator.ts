@@ -292,6 +292,10 @@ export class OverviewGenerator {
         const supportedCount = claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length;
         const disputedCount = claimsWithQuotes.filter((c: any) => c.status === 'DISPUTED').length;
 
+        const llmOverviewStatus: { state: string; reason: string | null } = heuristicOverview.gate_status === 'PASS'
+          ? { state: 'ready', reason: null }
+          : { state: 'blocked', reason: 'Evidencia insuficiente' };
+
         const updatedPacket = {
           ...existingPacket,
           overview: heuristicOverview,
@@ -304,6 +308,7 @@ export class OverviewGenerator {
             supported_count: supportedCount,
             disputed_count: disputedCount,
           },
+          overview_status: llmOverviewStatus,
           overview_mode: 'llm',
           _ai_hashes: {
             ...existingHashes,
@@ -336,8 +341,13 @@ export class OverviewGenerator {
         const overview = this.buildOverview(claimsWithQuotes);
         computedGateStatus = overview.gate_status;
 
+        const heuristicAiOverview = this.buildHeuristicAiOverview(claimsWithQuotes, overview.gate_status);
+        const overviewStatus: { state: string; reason: string | null } = overview.gate_status === 'PASS'
+          ? { state: 'ready', reason: null }
+          : { state: 'blocked', reason: 'Pocos datos confirmados' };
+
         if (version) {
-          const updatedPacket = {
+          const updatedPacket: Record<string, unknown> = {
             ...existingPacket,
             overview: {
               gate_status: overview.gate_status,
@@ -346,7 +356,16 @@ export class OverviewGenerator {
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
             quality_flags: overview.quality_flags,
+            overview_status: overviewStatus,
+            overview_mode: 'heuristic',
+            _ai_hashes: {
+              ...existingHashes,
+              overview_hash: newOverviewHash,
+            },
           };
+          if (heuristicAiOverview) {
+            updatedPacket.ai_overview = heuristicAiOverview;
+          }
 
           await this.versionRepo.update(version_id, {
             packetJson: updatedPacket,
@@ -364,6 +383,7 @@ export class OverviewGenerator {
             gate_status: overview.gate_status,
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
+            overview_status: overviewStatus.state,
           },
         });
       }
@@ -375,6 +395,48 @@ export class OverviewGenerator {
         trace: { trace_id: traceId, span_id: ulid(), source_module: 'overview' },
         payload: { event_id, version_id, version_index: version?.versionIndex ?? 0, gate_status: computedGateStatus },
       });
+    };
+  }
+
+  /**
+   * Build a lightweight heuristic ai_overview from raw claims.
+   * Used when LLM is unavailable so the feed always has something to show.
+   * Returns null when there are no claims with supporting quotes to display.
+   */
+  private buildHeuristicAiOverview(
+    claimsWithQuotes: any[],
+    gateStatus: 'PASS' | 'FAIL',
+  ): Record<string, unknown> | null {
+    const whatHappened: string[] = [];
+    const contextBullets: string[] = [];
+    const inDispute: string[] = [];
+
+    for (const claim of claimsWithQuotes) {
+      const hasQuotes = (claim.quotes ?? []).length > 0;
+      if (!hasQuotes) continue;
+
+      if (claim.status === 'DISPUTED') {
+        inDispute.push(claim.claimText);
+      } else if (claim.status === 'SUPPORTED') {
+        if (claim.claimType === 'FACT' || claim.claimType === 'QUANT') {
+          whatHappened.push(claim.claimText);
+        } else {
+          contextBullets.push(claim.claimText);
+        }
+      }
+    }
+
+    const total = whatHappened.length + contextBullets.length + inDispute.length;
+    if (total === 0) return null;
+
+    const mainText = whatHappened[0] ?? contextBullets[0] ?? inDispute[0] ?? '';
+    return {
+      overview: mainText,
+      what_happened: whatHappened.slice(0, 5),
+      context: contextBullets.slice(0, 3),
+      in_dispute: inDispute.slice(0, 3),
+      confidence_label: gateStatus === 'PASS' ? 'Media' : 'Baja',
+      why: 'Síntesis automática basada en declaraciones encontradas',
     };
   }
 

@@ -19,6 +19,8 @@ export function EventCard({ item, onPress, onLongPress }: Props) {
   const ov = item.ai_overview;
   const hasOverview = ov && (ov.what_happened.length > 0 || ov.context.length > 0);
   const hasDispute = ov && ov.in_dispute.length > 0;
+  // 'blocked' = processed but insufficient data; undefined = not yet processed (pending)
+  const isBlocked = !hasOverview && item.overview_status?.state === 'blocked';
 
   // Collect preview bullets: what_happened first, then context
   const allBullets: string[] = [];
@@ -78,6 +80,11 @@ export function EventCard({ item, onPress, onLongPress }: Props) {
           {ov!.confidence_label && (
             <Text style={styles.confidenceLabel}>{ov!.confidence_label}</Text>
           )}
+        </View>
+      ) : isBlocked ? (
+        <View style={styles.overviewPlaceholder}>
+          <Text style={styles.placeholderText}>Datos insuficientes por ahora</Text>
+          <Text style={styles.placeholderHint}>Se necesitan más fuentes para generar un resumen.</Text>
         </View>
       ) : (
         <View style={styles.overviewPlaceholder}>
@@ -193,6 +200,11 @@ const styles = StyleSheet.create({
     fontSize: font.sm,
     color: colors.textMuted,
     fontStyle: 'italic',
+  },
+  placeholderHint: {
+    fontSize: font.xs,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   footer: {
     flexDirection: 'row',

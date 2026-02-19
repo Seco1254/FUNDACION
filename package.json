@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/check-env.js && node scripts/check-db.js && tsx watch src/server.ts",
+    "dev:api": "PUBLISH_DELAY_MS=30000 tsx watch src/server.ts",
+    "dev:client": "cd apps/client && npx expo start",
+    "dev:all": "concurrently --names api,client --prefix-colors blue,green \"npm run dev:api\" \"npm run dev:client\"",
     "build": "tsc",
     "start": "node scripts/check-env.js && node scripts/check-dist.js && node scripts/check-db.js && node dist/server.js",
     "start:clean": "node scripts/clean-start.js",
@@ -16,9 +19,11 @@
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/db/seeds/seed.ts",
-    "db:reset": "prisma migrate reset --force",
+    "db:reset": "prisma migrate reset --force && tsx src/db/seeds/seed.ts",
+    "reset:db": "prisma migrate reset --force && tsx src/db/seeds/seed.ts",
     "db:generate": "prisma generate",
-    "scrape:once": "tsx src/scripts/scrape-once.ts"
+    "scrape:once": "tsx src/scripts/scrape-once.ts",
+    "smoke": "curl -sf http://localhost:3000/health | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.exit(d.ok ? 0 : 1)\" && echo 'smoke OK'"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
@@ -31,14 +36,15 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "concurrently": "^9.2.1",
     "eslint": "^9.0.0",
     "prettier": "^3.4.0",
     "prisma": "^6.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0"
+    "vitest": "^3.0.0"
   },
   "prisma": {
     "schema": "src/db/prisma/schema.prisma",

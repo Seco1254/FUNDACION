@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -117,6 +117,24 @@ export default function EventDetailScreen() {
     });
   }, [feedEventIds, router]);
 
+  // Swipe navigation: detect boundary drags to navigate between events
+  const scrollY = useRef(0);
+  const handleScrollEndDrag = useCallback(
+    ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number }; velocity?: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+      const { contentOffset, velocity, contentSize, layoutMeasurement } = nativeEvent;
+      const atTop = contentOffset.y < 5;
+      const maxScroll = contentSize.height - layoutMeasurement.height;
+      const atBottom = maxScroll <= 0 || contentOffset.y > maxScroll - 5;
+      const vy = velocity?.y ?? 0;
+      if (atTop && vy > 0.1 && hasPrev) {
+        navigateTo(currentIndex - 1);
+      } else if (atBottom && vy < -0.1 && hasNext) {
+        navigateTo(currentIndex + 1);
+      }
+    },
+    [hasPrev, hasNext, currentIndex, navigateTo],
+  );
+
   const loadBias = useCallback(async (mediaKey: string) => {
     if (!eventId) return;
     setBiasLoading(true);
@@ -181,7 +199,13 @@ export default function EventDetailScreen() {
         </Pressable>
       )}
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        scrollEventThrottle={16}
+        onScroll={({ nativeEvent }) => { scrollY.current = nativeEvent.contentOffset.y; }}
+        onScrollEndDrag={handleScrollEndDrag}
+      >
         {status === 'offline' && (
           <View style={styles.offlineBanner}>
             <Text style={styles.offlineText}>

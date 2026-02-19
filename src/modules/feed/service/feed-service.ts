@@ -1,5 +1,5 @@
 import { FeedRepository } from '../repo/feed-repo.js';
-import { FeedItem, FeedItemOverview, FeedResponse } from '../domain/types.js';
+import { FeedItem, FeedItemOverview, FeedResponse, OverviewStatus } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
@@ -11,6 +11,18 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
   const label = typeof ai.confidence_label === 'string' ? ai.confidence_label : 'No concluyente';
   if (wh.length === 0 && ctx.length === 0) return null;
   return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+}
+
+/**
+ * Extract overview_status from the packet.
+ * Falls back to inferring from gate_status for events processed before this field existed.
+ */
+function extractOverviewStatus(packet: any): OverviewStatus | undefined {
+  if (packet?.overview_status?.state) return packet.overview_status as OverviewStatus;
+  const gateStatus = packet?.overview?.gate_status;
+  if (!gateStatus) return undefined;
+  if (gateStatus === 'PASS') return { state: 'ready', reason: null };
+  return { state: 'blocked', reason: 'Pocos datos confirmados' };
 }
 
 const PAGE_SIZE = 20;
@@ -65,6 +77,7 @@ export class FeedService {
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
+        overview_status: extractOverviewStatus(packet),
       };
     });
 
@@ -106,6 +119,7 @@ export class FeedService {
         published_at: row.publishedAt?.toISOString() ?? null,
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
+        overview_status: extractOverviewStatus(packet),
       };
     });
 

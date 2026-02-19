@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -134,6 +134,9 @@ export default function ForYouScreen() {
     );
   }
 
+  // Stable comma-joined ID list for navigation — recomputed only when items change
+  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
+
   return (
     <View style={styles.container}>
       {status === 'offline' && (
@@ -146,24 +149,21 @@ export default function ForYouScreen() {
       <FlatList
         data={items}
         keyExtractor={(item) => item.event_id}
-        renderItem={({ item, index }) => {
-          const feedIds = items.map((i) => i.event_id).join(',');
-          return (
-            <View style={{ minHeight: CARD_HEIGHT, justifyContent: 'center' }}>
-              <EventCard
-                item={item}
-                onPress={() => router.push({
-                  pathname: '/event/[eventId]',
-                  params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
-                })}
-                onLongPress={() => handleLongPress(item)}
-              />
-            </View>
-          );
-        }}
+        renderItem={({ item, index }) => (
+          <View style={{ height: CARD_HEIGHT, justifyContent: 'center' }}>
+            <EventCard
+              item={item}
+              onPress={() => router.push({
+                pathname: '/event/[eventId]',
+                params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
+              })}
+              onLongPress={() => handleLongPress(item)}
+            />
+          </View>
+        )}
+        snapToInterval={CARD_HEIGHT}
         snapToAlignment="start"
         decelerationRate="fast"
-        pagingEnabled
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
         }

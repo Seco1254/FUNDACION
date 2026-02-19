@@ -9,6 +9,11 @@ export interface FeedItemOverview {
   confidence_label: string;
 }
 
+export interface OverviewStatus {
+  state: string;
+  reason: string | null;
+}
+
 export interface FeedItem {
   event_id: string;
   state: EventState;
@@ -17,6 +22,7 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
+  overview_status?: OverviewStatus;
   source_count?: number;
 }
 
