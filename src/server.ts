@@ -59,6 +59,8 @@ import { RankingService } from './modules/ranking/service/ranking-service.js';
 
 const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '30000', 10);
 const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
+const CLOSE_CHECK_INTERVAL_MS = parseInt(process.env.CLOSE_CHECK_INTERVAL_MS ?? String(6 * 60 * 60 * 1000), 10);
+const REFRESH_INTERVAL_MS = parseInt(process.env.REFRESH_INTERVAL_MS ?? String(30 * 60 * 1000), 10);
 
 export function buildApp() {
   const app = Fastify({
@@ -259,9 +261,11 @@ async function start() {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'startup_rehydration_failed');
   }
 
-  // Register periodic scrape job
-  const nextScrape = addMs(clock.now(), SCRAPE_INTERVAL_MS);
-  scheduler.register('scrape:tick', nextScrape, {});
+  // Register periodic jobs: scrape, lifecycle close check, refresh scheduling
+  const now = clock.now();
+  scheduler.register('scrape:tick', addMs(now, SCRAPE_INTERVAL_MS), {});
+  scheduler.register('lifecycle:close', addMs(now, CLOSE_CHECK_INTERVAL_MS), {});
+  scheduler.register('lifecycle:scheduleRefreshes', addMs(now, REFRESH_INTERVAL_MS), {});
 
   // Scheduler tick: check and execute due jobs every SCHEDULER_TICK_MS
   setInterval(async () => {
@@ -270,12 +274,17 @@ async function start() {
       if (executed > 0) {
         logger.info({ executed }, 'scheduler_tick_completed');
       }
-      // Always re-register recurring scrape if missing
+      // Re-register recurring jobs if missing after execution
       const jobs = scheduler.list();
-      const hasScrape = jobs.some((j) => j.jobKey === 'scrape:tick');
-      if (!hasScrape) {
-        const next = addMs(clock.now(), SCRAPE_INTERVAL_MS);
-        scheduler.register('scrape:tick', next, {});
+      const tickNow = clock.now();
+      if (!jobs.some((j) => j.jobKey === 'scrape:tick')) {
+        scheduler.register('scrape:tick', addMs(tickNow, SCRAPE_INTERVAL_MS), {});
+      }
+      if (!jobs.some((j) => j.jobKey === 'lifecycle:close')) {
+        scheduler.register('lifecycle:close', addMs(tickNow, CLOSE_CHECK_INTERVAL_MS), {});
+      }
+      if (!jobs.some((j) => j.jobKey === 'lifecycle:scheduleRefreshes')) {
+        scheduler.register('lifecycle:scheduleRefreshes', addMs(tickNow, REFRESH_INTERVAL_MS), {});
       }
     } catch (err) {
       logger.error({ error: err instanceof Error ? err.message : String(err) }, 'scheduler_tick_failed');

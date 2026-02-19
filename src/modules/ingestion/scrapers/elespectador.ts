@@ -28,6 +28,13 @@ export class ElEspectadorScraper implements MediaScraper {
   }
 
   private isArticleUrl(url: string): boolean {
-    return /^https:\/\/www\.elespectador\.com\/[\w-]+\/[\w-]+\/$/.test(url);
+    // Reject noise paths: querystrings, fragments, file extensions, feed/author/tag pages
+    if (/[?#]/.test(url)) return false;
+    if (/\.(xml|rss|json|pdf|jpg|png|gif|svg)(\/?$)/i.test(url)) return false;
+    if (/\/(outboundfeeds|autor|tag|rss|feed|autor-invitado)\//i.test(url)) return false;
+
+    // Accept 2-4 path segments with optional trailing slash
+    // e.g. /politica/slug/, /deportes/futbol-mundial/slug, /seccion/sub/sub2/slug
+    return /^https:\/\/www\.elespectador\.com\/([\w-]+\/){1,3}[\w-]+\/?$/.test(url);
   }
 }
