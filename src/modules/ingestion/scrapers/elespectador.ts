@@ -1,29 +1,20 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
 import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
 
-// Use the Google Discover RSS feed — static HTML returns almost no article links (SPA)
-const LIST_PAGE_URL = 'https://www.elespectador.com/arc/outboundfeeds/discover/?outputType=xml';
+const LIST_PAGE_URL = 'https://www.elespectador.com/';
 
 export class ElEspectadorScraper implements MediaScraper {
   listPageUrls = [LIST_PAGE_URL];
 
   extractUrls(html: string): string[] {
-    // Parse RSS XML: extract <link> and <guid> elements
     const urls: string[] = [];
-
-    // <link>https://...</link> in RSS items
-    const linkRegex = /<link>(https:\/\/www\.elespectador\.com\/[^<]+)<\/link>/gi;
+    const hrefRegex = /href=["'](https:\/\/www\.elespectador\.com\/[^"']+)["']/gi;
     let match;
-    while ((match = linkRegex.exec(html)) !== null) {
-      if (this.isArticleUrl(match[1])) urls.push(match[1]);
+    while ((match = hrefRegex.exec(html)) !== null) {
+      if (this.isArticleUrl(match[1])) {
+        urls.push(match[1]);
+      }
     }
-
-    // <guid isPermaLink="true">https://...</guid>
-    const guidRegex = /<guid[^>]*>(https:\/\/www\.elespectador\.com\/[^<]+)<\/guid>/gi;
-    while ((match = guidRegex.exec(html)) !== null) {
-      if (this.isArticleUrl(match[1])) urls.push(match[1]);
-    }
-
     return [...new Set(urls)];
   }
 
@@ -37,11 +28,13 @@ export class ElEspectadorScraper implements MediaScraper {
   }
 
   private isArticleUrl(url: string): boolean {
-    // Must have at least 2 path segments, no query strings (except feed URL itself)
-    const path = url.replace('https://www.elespectador.com', '');
-    if (!path || path.length < 5) return false;
-    if (path.includes('arc/outboundfeeds')) return false;
-    if (path.includes('podcast')) return false;
-    return /^\/[\w-]+(\/[\w-]+)+\/?$/.test(path);
+    // Reject noise paths: querystrings, fragments, file extensions, feed/author/tag pages
+    if (/[?#]/.test(url)) return false;
+    if (/\.(xml|rss|json|pdf|jpg|png|gif|svg)(\/?$)/i.test(url)) return false;
+    if (/\/(outboundfeeds|autor|tag|rss|feed|autor-invitado)\//i.test(url)) return false;
+
+    // Accept 2-4 path segments with optional trailing slash
+    // e.g. /politica/slug/, /deportes/futbol-mundial/slug, /seccion/sub/sub2/slug
+    return /^https:\/\/www\.elespectador\.com\/([\w-]+\/){1,3}[\w-]+\/?$/.test(url);
   }
 }

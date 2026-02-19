@@ -60,13 +60,37 @@ describe('ElEspectadorScraper', () => {
     expect(scraper.listPageUrls[0]).toContain('elespectador.com');
   });
 
-  it('extracts 3 article URLs from list page fixture', () => {
+  it('extracts 5 article URLs from list page fixture (2-seg + 3-seg)', () => {
     const html = loadFixture('elespectador-list.html');
     const urls = scraper.extractUrls(html);
-    expect(urls).toHaveLength(3);
+    expect(urls).toHaveLength(5);
+    // 2-segment with trailing slash
     expect(urls[0]).toContain('nueva-ley-de-educacion-aprobada');
     expect(urls[1]).toContain('banco-central-baja-tasas-interes');
     expect(urls[2]).toContain('seleccion-colombia-clasifica-mundial');
+    // 3-segment without trailing slash
+    expect(urls[3]).toContain('nuevo-campeon-liga-betplay');
+    expect(urls[4]).toContain('resultados-primera-vuelta');
+  });
+
+  it('filters out noise URLs (xml, outboundfeeds, querystrings, tags)', () => {
+    const noiseHtml = `
+      <a href="https://www.elespectador.com/outboundfeeds/rss/">RSS</a>
+      <a href="https://www.elespectador.com/sitemap.xml">Sitemap</a>
+      <a href="https://www.elespectador.com/politica/slug?page=2">QS</a>
+      <a href="https://www.elespectador.com/tag/colombia/">Tag</a>
+      <a href="https://www.elespectador.com/politica/">Section</a>
+    `;
+    expect(scraper.extractUrls(noiseHtml)).toHaveLength(0);
+  });
+
+  it('accepts URLs with and without trailing slash', () => {
+    const html = `
+      <a href="https://www.elespectador.com/politica/slug-one/">With slash</a>
+      <a href="https://www.elespectador.com/politica/slug-two">Without slash</a>
+    `;
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
   });
 
   it('parses article page fixture', () => {
