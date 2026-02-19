@@ -4,6 +4,7 @@ import { AuditLogWriter } from '../../../core/event_bus/dispatcher.js';
 import { EventRepository } from '../../events/repo/event-repo.js';
 import { Scheduler } from '../../../core/scheduler/scheduler.js';
 import { Clock } from '../../../core/time/clock.js';
+import { addMs } from '../../../core/time/runtime-time.js';
 import { logger } from '../../../core/logging/logger.js';
 
 const PUBLISH_DELAY_MS = parseInt(process.env.PUBLISH_DELAY_MS ?? String(5 * 60 * 1000), 10);
@@ -26,7 +27,7 @@ export class LifecycleManager {
       };
       const traceId = envelope.trace.trace_id;
       const now = this.clock.now();
-      const publishAt = new Date(now.getTime() + PUBLISH_DELAY_MS);
+      const publishAt = addMs(now, PUBLISH_DELAY_MS);
 
       await this.eventRepo.update(event_id, {
         state: 'PENDING_PUBLISH',
@@ -145,7 +146,7 @@ export class LifecycleManager {
 
   async runCloseCheck(): Promise<number> {
     const now = this.clock.now();
-    const before = new Date(now.getTime() - SEVEN_DAYS_MS);
+    const before = addMs(now, -SEVEN_DAYS_MS);
     const staleEvents = await this.eventRepo.findStaleEvents(before);
     let closed = 0;
 

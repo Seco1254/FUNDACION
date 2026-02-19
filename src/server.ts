@@ -15,6 +15,7 @@ import { AuditRepository } from './modules/audit/repo/audit-repo.js';
 import { AuditService } from './modules/audit/service/audit-service.js';
 import { EventBus } from './core/event_bus/dispatcher.js';
 import { RealClock } from './core/time/clock.js';
+import { addMs } from './core/time/runtime-time.js';
 import { Scheduler } from './core/scheduler/scheduler.js';
 import { ArticleRepository } from './modules/articles/repo/article-repo.js';
 import { MediaRepository } from './modules/media/repo/media-repo.js';
@@ -210,11 +211,11 @@ export function buildApp() {
   app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
 
-  return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator };
+  return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }
 
 async function start() {
-  const { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator } = buildApp();
+  const { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock } = buildApp();
   const port = parseInt(process.env.PORT ?? '3000', 10);
 
   try {
@@ -241,7 +242,7 @@ async function start() {
   // Rehydrate: publish any PENDING_PUBLISH events whose publishAt has passed
   try {
     const pending = await eventRepo.findPendingPublish();
-    const now = new Date();
+    const now = clock.now();
     let rehydrated = 0;
     for (const evt of pending) {
       if (!evt.publishAt || evt.publishAt <= now) {
@@ -259,7 +260,7 @@ async function start() {
   }
 
   // Register periodic scrape job
-  const nextScrape = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+  const nextScrape = addMs(clock.now(), SCRAPE_INTERVAL_MS);
   scheduler.register('scrape:tick', nextScrape, {});
 
   // Scheduler tick: check and execute due jobs every SCHEDULER_TICK_MS
@@ -273,7 +274,7 @@ async function start() {
       const jobs = scheduler.list();
       const hasScrape = jobs.some((j) => j.jobKey === 'scrape:tick');
       if (!hasScrape) {
-        const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+        const next = addMs(clock.now(), SCRAPE_INTERVAL_MS);
         scheduler.register('scrape:tick', next, {});
       }
     } catch (err) {

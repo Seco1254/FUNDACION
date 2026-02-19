@@ -1,10 +1,12 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
 import { Scheduler } from '../../core/scheduler/scheduler.js';
+import { getRuntimeNow, getRuntimeTzDebug } from '../../core/time/runtime-time.js';
 
 export function debugSchedulerRoutes(scheduler: Scheduler, tickMs: number): FastifyPluginCallback {
   return (app: FastifyInstance, _opts, done) => {
     app.get('/v1/debug/scheduler/status', async (_request, reply) => {
-      const now = new Date();
+      const now = getRuntimeNow();
+      const tzDebug = getRuntimeTzDebug();
       const jobs = scheduler.list();
 
       // Sort by runAt ascending, take first 5
@@ -19,6 +21,9 @@ export function debugSchedulerRoutes(scheduler: Scheduler, tickMs: number): Fast
       return reply.send({
         tick_ms: tickMs,
         now: now.toISOString(),
+        now_local: tzDebug.localIso,
+        runtime_tz: tzDebug.tz,
+        runtime_tz_offset_min: tzDebug.tzOffsetMin,
         queued_jobs_count: jobs.length,
         next_5_jobs: next5,
         last_tick_at: scheduler.lastTickAt?.toISOString() ?? null,
