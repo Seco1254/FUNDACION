@@ -59,6 +59,8 @@ import { RankingService } from './modules/ranking/service/ranking-service.js';
 
 const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '30000', 10);
 const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
+const CLOSE_CHECK_INTERVAL_MS = parseInt(process.env.CLOSE_CHECK_INTERVAL_MS ?? String(6 * 60 * 60 * 1000), 10);
+const REFRESH_INTERVAL_MS = parseInt(process.env.REFRESH_INTERVAL_MS ?? String(30 * 60 * 1000), 10);
 
 export function buildApp() {
   const app = Fastify({
@@ -263,6 +265,10 @@ async function start() {
   const nextScrape = addMs(clock.now(), SCRAPE_INTERVAL_MS);
   scheduler.register('scrape:tick', nextScrape, {});
 
+  // Register lifecycle recurring jobs
+  scheduler.register('lifecycle:close', addMs(clock.now(), CLOSE_CHECK_INTERVAL_MS), {});
+  scheduler.register('lifecycle:scheduleRefreshes', addMs(clock.now(), REFRESH_INTERVAL_MS), {});
+
   // Scheduler tick: check and execute due jobs every SCHEDULER_TICK_MS
   setInterval(async () => {
     try {
@@ -270,12 +276,16 @@ async function start() {
       if (executed > 0) {
         logger.info({ executed }, 'scheduler_tick_completed');
       }
-      // Always re-register recurring scrape if missing
+      // Always re-register recurring jobs if consumed/missing
       const jobs = scheduler.list();
-      const hasScrape = jobs.some((j) => j.jobKey === 'scrape:tick');
-      if (!hasScrape) {
-        const next = addMs(clock.now(), SCRAPE_INTERVAL_MS);
-        scheduler.register('scrape:tick', next, {});
+      if (!jobs.some((j) => j.jobKey === 'scrape:tick')) {
+        scheduler.register('scrape:tick', addMs(clock.now(), SCRAPE_INTERVAL_MS), {});
+      }
+      if (!jobs.some((j) => j.jobKey === 'lifecycle:close')) {
+        scheduler.register('lifecycle:close', addMs(clock.now(), CLOSE_CHECK_INTERVAL_MS), {});
+      }
+      if (!jobs.some((j) => j.jobKey === 'lifecycle:scheduleRefreshes')) {
+        scheduler.register('lifecycle:scheduleRefreshes', addMs(clock.now(), REFRESH_INTERVAL_MS), {});
       }
     } catch (err) {
       logger.error({ error: err instanceof Error ? err.message : String(err) }, 'scheduler_tick_failed');

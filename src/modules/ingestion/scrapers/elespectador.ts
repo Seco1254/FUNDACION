@@ -1,20 +1,29 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
 import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
 
-const LIST_PAGE_URL = 'https://www.elespectador.com/';
+// Use the Google Discover RSS feed — static HTML returns almost no article links (SPA)
+const LIST_PAGE_URL = 'https://www.elespectador.com/arc/outboundfeeds/discover/?outputType=xml';
 
 export class ElEspectadorScraper implements MediaScraper {
   listPageUrls = [LIST_PAGE_URL];
 
   extractUrls(html: string): string[] {
+    // Parse RSS XML: extract <link> and <guid> elements
     const urls: string[] = [];
-    const hrefRegex = /href=["'](https:\/\/www\.elespectador\.com\/[^"']+)["']/gi;
+
+    // <link>https://...</link> in RSS items
+    const linkRegex = /<link>(https:\/\/www\.elespectador\.com\/[^<]+)<\/link>/gi;
     let match;
-    while ((match = hrefRegex.exec(html)) !== null) {
-      if (this.isArticleUrl(match[1])) {
-        urls.push(match[1]);
-      }
+    while ((match = linkRegex.exec(html)) !== null) {
+      if (this.isArticleUrl(match[1])) urls.push(match[1]);
     }
+
+    // <guid isPermaLink="true">https://...</guid>
+    const guidRegex = /<guid[^>]*>(https:\/\/www\.elespectador\.com\/[^<]+)<\/guid>/gi;
+    while ((match = guidRegex.exec(html)) !== null) {
+      if (this.isArticleUrl(match[1])) urls.push(match[1]);
+    }
+
     return [...new Set(urls)];
   }
 
@@ -28,6 +37,11 @@ export class ElEspectadorScraper implements MediaScraper {
   }
 
   private isArticleUrl(url: string): boolean {
-    return /^https:\/\/www\.elespectador\.com\/[\w-]+\/[\w-]+\/$/.test(url);
+    // Must have at least 2 path segments, no query strings (except feed URL itself)
+    const path = url.replace('https://www.elespectador.com', '');
+    if (!path || path.length < 5) return false;
+    if (path.includes('arc/outboundfeeds')) return false;
+    if (path.includes('podcast')) return false;
+    return /^\/[\w-]+(\/[\w-]+)+\/?$/.test(path);
   }
 }
