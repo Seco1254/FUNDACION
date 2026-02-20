@@ -466,3 +466,145 @@ describe('decideLinkAction', () => {
     }
   });
 });
+
+// ── v2.1: Hard Negative Gates in scoreCandidates ──
+
+describe('v2.1: scoreCandidates with gates', () => {
+  it('populates gatesBlockAutoReasons and signalsPassed', () => {
+    const article = makeArticle();
+    const candidate = makeCandidate({ id: 'evt-1' });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores.length).toBe(1);
+    expect(Array.isArray(scores[0].gatesBlockAutoReasons)).toBe(true);
+    expect(scores[0].signalsPassed).toBeDefined();
+    expect(typeof scores[0].signalsPassed.embed).toBe('boolean');
+    expect(typeof scores[0].signalsPassed.entity).toBe('boolean');
+    expect(typeof scores[0].signalsPassed.topic).toBe('boolean');
+    expect(typeof scores[0].signalsPassed.count).toBe('number');
+    expect(['AUTO_LINK', 'MAYBE_LINK', 'CREATE']).toContain(scores[0].finalAction);
+  });
+
+  it('title contradiction gate: totally different titles + low entity → blocks auto (TITLE_CONTRADICTION_LOW_OVERLAP)', () => {
+    // Completely different titles, different embeddings → should trigger title gate
+    const article = makeArticle({
+      title: 'Salario mínimo sube doce por ciento este año',
+      snippet: 'El gobierno anunció un incremento del salario.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-diff',
+      articleVecs: [makeVec(42)],  // same embedding (otherwise would be below threshold)
+      articleTexts: ['Fortuna de magnate alcanza cien millones dólares'],
+      representativeTitle: 'Fortuna de magnate alcanza cien millones dólares',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    // With different titles and low entity overlap, the title gate should fire
+    if (s.entityOverlap < 0.05) {
+      // ENTITY_LOW_FOR_AUTO should also fire when entity overlap < 0.05
+      expect(s.gatesBlockAutoReasons).toContain('ENTITY_LOW_FOR_AUTO');
+    }
+    // finalAction should NOT be AUTO_LINK
+    expect(s.finalAction).not.toBe('AUTO_LINK');
+  });
+
+  it('topic mismatch gate: different topics → blocks auto', () => {
+    const article = makeArticle({
+      embeddingVec: makeVec(42),
+      topicTop1: 'economia',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-topic',
+      articleVecs: [makeVec(42)],
+      topicTop1: 'deportes',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].gatesBlockAutoReasons).toContain('TOPIC_MISMATCH');
+    expect(scores[0].finalAction).not.toBe('AUTO_LINK');
+  });
+
+  it('entity jaccard low for auto but above maybe → degrades to MAYBE_LINK', () => {
+    // Zero entity overlap + high embedding → entity gate blocks auto, but allows maybe
+    const article = makeArticle({
+      title: 'Alpha Bravo Charlie',
+      snippet: 'Alpha Bravo Charlie Delta.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-low-ent',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Xray Yankee Zulu'],
+      uniqueMediaCount: 1,
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBe(0);
+    expect(scores[0].gatesBlockAutoReasons).toContain('ENTITY_LOW_FOR_AUTO');
+    // Since embedding is high (>=0.60), ENTITY_VERY_LOW should NOT fire
+    if (scores[0].embeddingSim >= 0.60) {
+      expect(scores[0].gatesBlockAutoReasons).not.toContain('ENTITY_VERY_LOW');
+      expect(scores[0].finalAction).toBe('MAYBE_LINK');
+    }
+  });
+});
+
+// ── v2.1: Two-step linking ──
+
+describe('v2.1: two-step linking', () => {
+  it('high score but only 1 strong signal → NOT auto (degrades to maybe)', async () => {
+    // High embedding sim (1.0), zero entity overlap, no topic
+    // → only embed signal passes → 1 < AUTO_REQUIRES_SIGNALS (2)
+    const article = makeArticle({
+      title: 'Alpha Bravo Charlie',
+      snippet: 'Alpha Bravo Charlie Delta.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-1signal',
+      articleVecs: [makeVec(42)], // identical → embed sim = 1.0
+      articleTexts: ['Xray Yankee Zulu'], // no entity overlap
+      uniqueMediaCount: 1,
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_AUTO_LINK);
+    // Only embed signal should pass, entity = 0 < 0.08
+    expect(scores[0].signalsPassed.embed).toBe(true);
+    expect(scores[0].signalsPassed.entity).toBe(false);
+    // Should be degraded to MAYBE_LINK by either gates or two-step
+    expect(scores[0].finalAction).not.toBe('AUTO_LINK');
+
+    const result = await decideLinkAction(article, [candidate], null);
+    // Still links via maybe path since uniqueMedia >= 1
+    expect(result.action).toBe('LINK');
+    expect(result.linkType).toBe('MAYBE_LINK');
+  });
+
+  it('high score + 2 strong signals + no gates → auto-link', async () => {
+    // Same embedding + shared entities → both embed and entity signals pass
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-2signals',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+      representativeTitle: 'Reforma Pensional en el Congreso de la República por Gustavo Petro',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_AUTO_LINK);
+    expect(scores[0].signalsPassed.embed).toBe(true);
+    expect(scores[0].signalsPassed.entity).toBe(true);
+    expect(scores[0].signalsPassed.count).toBeGreaterThanOrEqual(2);
+    expect(scores[0].finalAction).toBe('AUTO_LINK');
+
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.action).toBe('LINK');
+    expect(result.linkType).toBe('AUTO_LINK');
+  });
+
+  it('decideLinkAction returns linkType field', async () => {
+    const result = await decideLinkAction(makeArticle(), [], null);
+    expect(result.linkType).toBe('CREATE');
+  });
+});

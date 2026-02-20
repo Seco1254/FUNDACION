@@ -108,6 +108,12 @@ export class EventRepository {
     });
   }
 
+  async unlinkArticle(eventId: string, articleId: string): Promise<void> {
+    await this.prisma.eventArticle.delete({
+      where: { eventId_articleId: { eventId, articleId } },
+    });
+  }
+
   async findCandidateEvents(since: Date): Promise<EventEntity[]> {
     return this.prisma.event.findMany({
       where: {
