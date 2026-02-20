@@ -18,6 +18,11 @@ export class ArticleRepository {
     title: string;
     snippet: string;
     textNorm?: string | null;
+    textContentLen?: number | null;
+    textContentSource?: string | null;
+    extractionFailReason?: string | null;
+    paywallDetected?: boolean;
+    usableForOverview?: boolean;
     publishedAt?: Date | null;
     status?: string;
   }): Promise<ArticleEntity> {
@@ -28,6 +33,11 @@ export class ArticleRepository {
         title: data.title,
         snippet: data.snippet,
         textNorm: data.textNorm ?? null,
+        textContentLen: data.textContentLen ?? null,
+        textContentSource: data.textContentSource ?? null,
+        extractionFailReason: data.extractionFailReason ?? null,
+        paywallDetected: data.paywallDetected ?? false,
+        usableForOverview: data.usableForOverview ?? false,
         publishedAt: data.publishedAt ?? null,
         status: (data.status as any) ?? 'DISCOVERED',
       },

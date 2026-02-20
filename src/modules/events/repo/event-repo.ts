@@ -66,6 +66,24 @@ export class EventRepository {
           orderBy: { versionIndex: 'desc' },
           take: 1,
         },
+        eventArticles: {
+          include: {
+            article: {
+              select: {
+                id: true,
+                mediaId: true,
+                url: true,
+                status: true,
+                textContentLen: true,
+                textContentSource: true,
+                extractionFailReason: true,
+                paywallDetected: true,
+                usableForOverview: true,
+                media: { select: { id: true, mediaKey: true, name: true } },
+              },
+            },
+          },
+        },
       },
     });
   }

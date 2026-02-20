@@ -11,7 +11,7 @@ import { AscolbiScraper } from './ascolbi.js';
 import { AciurScraper } from './aciur.js';
 import { StubScraper } from './stub-scraper.js';
 import { getScraperForMedia } from './registry.js';
-import { extractArticleBody } from './html-utils.js';
+import { extractArticleBody, extractAmpUrl, extractMetaDescription, detectPaywall } from './html-utils.js';
 
 function loadFixture(name: string): string {
   return readFileSync(resolve(process.cwd(), `test/fixtures/${name}`), 'utf-8');
@@ -394,5 +394,88 @@ describe('extractArticleBody', () => {
     </main></body></html>`;
     const text = extractArticleBody(html);
     expect(text).toContain('Contenido dentro de main');
+  });
+});
+
+describe('extractAmpUrl', () => {
+  it('extracts AMP URL from link rel=amphtml', () => {
+    const html = '<html><head><link rel="amphtml" href="https://amp.example.com/article"></head></html>';
+    expect(extractAmpUrl(html)).toBe('https://amp.example.com/article');
+  });
+
+  it('handles reversed attribute order (href before rel)', () => {
+    const html = '<html><head><link href="https://amp.example.com/art" rel="amphtml"></head></html>';
+    expect(extractAmpUrl(html)).toBe('https://amp.example.com/art');
+  });
+
+  it('returns null when no AMP link exists', () => {
+    const html = '<html><head><link rel="canonical" href="https://example.com"></head></html>';
+    expect(extractAmpUrl(html)).toBeNull();
+  });
+});
+
+describe('extractMetaDescription', () => {
+  it('prefers og:description', () => {
+    const html = `<html><head>
+      <meta property="og:description" content="OG desc">
+      <meta name="description" content="Plain desc">
+      <meta name="twitter:description" content="Twitter desc">
+    </head></html>`;
+    expect(extractMetaDescription(html)).toBe('OG desc');
+  });
+
+  it('falls back to description when og:description is missing', () => {
+    const html = '<html><head><meta name="description" content="Plain desc"></head></html>';
+    expect(extractMetaDescription(html)).toBe('Plain desc');
+  });
+
+  it('falls back to twitter:description as last resort', () => {
+    const html = '<html><head><meta name="twitter:description" content="Tweet desc"></head></html>';
+    expect(extractMetaDescription(html)).toBe('Tweet desc');
+  });
+
+  it('returns null when no meta description exists', () => {
+    const html = '<html><head><title>No desc</title></head></html>';
+    expect(extractMetaDescription(html)).toBeNull();
+  });
+});
+
+describe('detectPaywall', () => {
+  it('returns true when paywall keywords + sparse content (< 3 real paragraphs)', () => {
+    const html = `<html><body>
+      <div class="content-lock"><p>Suscríbase para continuar.</p></div>
+      <article><p>${'A'.repeat(50)}</p></article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(true);
+  });
+
+  it('returns false when no paywall keywords even with sparse content', () => {
+    const html = `<html><body><article><p>${'A'.repeat(50)}</p></article></body></html>`;
+    expect(detectPaywall(html)).toBe(false);
+  });
+
+  it('returns false when paywall keywords exist but content is rich (>= 3 paragraphs, no keywords in article)', () => {
+    // paywall keyword in sidebar but article has plenty of paragraphs and no paywall text
+    const paragraphs = Array.from({ length: 5 }, (_, i) =>
+      `<p>Párrafo número ${i} con contenido suficiente para pasar el filtro de longitud.</p>`
+    ).join('');
+    const html = `<html><body>
+      <aside><div class="paywall">Premium</div></aside>
+      <article>${paragraphs}</article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(false);
+  });
+
+  it('returns true when paywall keywords appear inside <article> container', () => {
+    const paragraphs = Array.from({ length: 5 }, (_, i) =>
+      `<p>Párrafo número ${i} con contenido suficiente para pasar el filtro de longitud.</p>`
+    ).join('');
+    const html = `<html><body>
+      <article>
+        ${paragraphs}
+        <div class="content-lock">Contenido exclusivo para suscriptores</div>
+      </article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(true);
   });
 });

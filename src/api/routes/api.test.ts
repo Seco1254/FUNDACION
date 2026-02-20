@@ -19,6 +19,35 @@ function loadSchema(name: string) {
 }
 
 // Mock dependencies for unit tests (no DB)
+const mockFeedServiceWithItems = {
+  getFeed: async () => ({
+    items: [
+      {
+        event_id: 'ev-feed-1',
+        state: 'PUBLISHED',
+        headline: 'Test headline',
+        t_last: '2026-02-19T12:00:00.000Z',
+        published_at: '2026-02-19T11:00:00.000Z',
+        cover_image_url: null,
+        ai_overview: null,
+        overview_status: 'unavailable',
+        overview_mode: 'heuristic',
+        sources: [
+          { source_id: 'm1', name: 'El Tiempo', domain: 'www.eltiempo.com', article_count: 2 },
+          { source_id: 'm2', name: 'El Espectador', domain: 'www.elespectador.com', article_count: 1 },
+        ],
+        article_count: 3,
+        unique_sources_count: 2,
+        usable_articles_count: 1,
+        total_usable_text_len: 1450,
+        evidence_level: 'medium',
+        why_no_overview: 'unique_sources=2, usable_articles=1, total_text=1450, fail_reasons=paywall,too_short',
+      },
+    ],
+    next_cursor: null,
+  }),
+} as unknown as FeedService;
+
 const mockFeedService = {
   getFeed: async () => ({ items: [], next_cursor: null }),
 } as unknown as FeedService;
@@ -81,11 +110,16 @@ const mockEventRepo = {
           article: {
             id: 'art-1',
             mediaId: 'media-1',
-            media: { id: 'media-1', mediaKey: 'eltiempo' },
+            media: { id: 'media-1', mediaKey: 'eltiempo', name: 'El Tiempo' },
             title: 'Reforma tributaria',
             snippet: 'El gobierno aprobó la reforma',
             url: 'https://eltiempo.com/1',
             publishedAt: new Date('2025-06-15T11:00:00Z'),
+            textContentLen: 1500,
+            textContentSource: 'body',
+            extractionFailReason: null,
+            paywallDetected: false,
+            usableForOverview: true,
           },
         }],
       };
@@ -217,6 +251,41 @@ describe('API contract tests', () => {
       expect(valid).toBe(true);
     });
 
+    it('feed items include sources[], evidence_level, and why_no_overview', async () => {
+      // Use a separate app with mock that returns items
+      const richApp = Fastify();
+      await richApp.register(feedRoutes(mockFeedServiceWithItems));
+      await richApp.ready();
+
+      const response = await richApp.inject({ method: 'GET', url: '/v1/feed?tab=global' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Schema validation
+      const schema = loadSchema('feed');
+      const validate = ajv.compile(schema);
+      const valid = validate(body);
+      if (!valid) console.error(validate.errors);
+      expect(valid).toBe(true);
+
+      // Check new fields on the item
+      const item = body.items[0];
+      expect(item.sources).toHaveLength(2);
+      expect(item.sources[0]).toHaveProperty('source_id');
+      expect(item.sources[0]).toHaveProperty('name');
+      expect(item.sources[0]).toHaveProperty('domain');
+      expect(item.sources[0]).toHaveProperty('article_count');
+      expect(item.article_count).toBe(3);
+      expect(item.unique_sources_count).toBe(2);
+      expect(item.usable_articles_count).toBe(1);
+      expect(item.evidence_level).toBe('medium');
+      expect(item.overview_status).toBe('unavailable');
+      expect(item.why_no_overview).toContain('unique_sources=2');
+      expect(item.why_no_overview).toContain('fail_reasons=');
+
+      await richApp.close();
+    });
+
     it('feed does NOT include bias field', async () => {
       const response = await app.inject({ method: 'GET', url: '/v1/feed?tab=global' });
       const body = response.json();
@@ -279,6 +348,28 @@ describe('API contract tests', () => {
       expect(quePaso.bullets[0].citation_refs).toHaveLength(1);
       expect(quePaso.bullets[0].citation_refs[0]).toHaveProperty('quote_id', 'q1');
       expect(quePaso.bullets[0].citation_refs[0]).toHaveProperty('url', 'https://eltiempo.com/1');
+    });
+
+    it('includes article diagnostics and evidence fields in event detail', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v1/events/with-overview' });
+      const body = response.json();
+
+      // Event-level evidence fields
+      expect(body.article_count).toBe(1);
+      expect(body.unique_sources_count).toBe(1);
+      expect(body.usable_articles_count).toBe(1);
+      expect(body.total_usable_text_len).toBe(1500);
+      expect(body.evidence_level).toBe('low'); // 1 source, 1500 text → low
+      // overview_status is 'pending' (no ai_overview in packetJson), so why_no_overview is populated
+      expect(body.why_no_overview).toContain('status=pending');
+
+      // Article-level diagnostics in media_tabs
+      const tab = body.media_tabs[0];
+      expect(tab.articles[0]).toHaveProperty('text_content_len', 1500);
+      expect(tab.articles[0]).toHaveProperty('text_content_source', 'body');
+      expect(tab.articles[0]).toHaveProperty('paywall_detected', false);
+      expect(tab.articles[0]).toHaveProperty('usable_for_overview', true);
+      expect(tab.articles[0]).toHaveProperty('extraction_fail_reason', null);
     });
 
     it('includes bias/topics/heatmap/subevents in event detail', async () => {

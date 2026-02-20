@@ -5,7 +5,11 @@ import { AuditLogWriter } from '../../../core/event_bus/dispatcher.js';
 import { ArticleRepository } from '../../articles/repo/article-repo.js';
 import { MediaRepository } from '../../media/repo/media-repo.js';
 import { FetchHtml, ScraperLookup } from '../domain/types.js';
-import { MAX_SNIPPET_CHARS } from './constants.js';
+import { MAX_SNIPPET_CHARS, TEXT_MIN_LEN, MIN_LEN_META } from './constants.js';
+import {
+  detectPaywall, extractAmpUrl, extractArticleBody,
+  extractMetaDescription,
+} from '../scrapers/html-utils.js';
 import { logger } from '../../../core/logging/logger.js';
 
 export class FetcherParser {
@@ -113,7 +117,65 @@ export class FetcherParser {
       }
 
       const snippet = parsed.snippet.slice(0, MAX_SNIPPET_CHARS);
-      const textNorm = parsed.textContent || null;
+
+      // --- Text acquisition ladder ---
+      // 1) Body extraction (from scraper's extractArticleBody)
+      let bestText = parsed.textContent || '';
+      let textContentSource: string = bestText.length > 0 ? 'body' : 'none';
+
+      // 2) AMP fallback: if body text too short, try AMP page
+      if (bestText.length < TEXT_MIN_LEN) {
+        const ampUrl = extractAmpUrl(html);
+        if (ampUrl) {
+          try {
+            const ampHtml = await this.fetchHtml(ampUrl);
+            const ampText = extractArticleBody(ampHtml);
+            if (ampText.length > bestText.length) {
+              bestText = ampText;
+              textContentSource = 'amp';
+            }
+          } catch {
+            // AMP fetch failed, continue with what we have
+          }
+        }
+      }
+
+      // 3) Meta fallback: og:description / description / twitter:description
+      if (bestText.length < MIN_LEN_META) {
+        const metaText = extractMetaDescription(html);
+        if (metaText && metaText.length > bestText.length) {
+          bestText = metaText;
+          textContentSource = 'meta';
+        }
+      }
+
+      // 4) None
+      if (bestText.length === 0) {
+        textContentSource = 'none';
+      }
+
+      const textNorm = bestText || null;
+      const textContentLen = bestText.length;
+
+      // Paywall detection
+      const paywallDetected = detectPaywall(html);
+
+      // Extraction fail reason
+      let extractionFailReason: string | null = null;
+      if (paywallDetected) extractionFailReason = 'paywall';
+      else if (textContentLen === 0) extractionFailReason = 'empty';
+      else if (
+        ['body', 'amp', 'rss'].includes(textContentSource) && textContentLen < TEXT_MIN_LEN
+      ) extractionFailReason = 'too_short';
+      else if (textContentSource === 'meta' && textContentLen < MIN_LEN_META) {
+        extractionFailReason = 'too_short';
+      }
+
+      // Flexible usability threshold
+      const usableForOverview = !paywallDetected && (
+        (['body', 'amp', 'rss'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
+        (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
+      );
 
       let article;
       try {
@@ -123,6 +185,11 @@ export class FetcherParser {
           title: parsed.title,
           snippet,
           textNorm,
+          textContentLen,
+          textContentSource,
+          extractionFailReason,
+          paywallDetected,
+          usableForOverview,
           publishedAt: parsed.publishedAt,
           status: 'NORMALIZED',
         });

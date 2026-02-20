@@ -15,9 +15,30 @@
           "headline": { "type": ["string", "null"] },
           "t_last": { "type": ["string", "null"] },
           "published_at": { "type": ["string", "null"] },
-          "cover_image_url": { "type": ["string", "null"] }
-        },
-        "additionalProperties": false
+          "cover_image_url": { "type": ["string", "null"] },
+          "ai_overview": {},
+          "overview_status": { "type": "string", "enum": ["ready", "unavailable", "pending"] },
+          "overview_mode": { "type": ["string", "null"] },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["source_id", "name", "domain", "article_count"],
+              "properties": {
+                "source_id": { "type": "string" },
+                "name": { "type": "string" },
+                "domain": { "type": "string" },
+                "article_count": { "type": "integer" }
+              }
+            }
+          },
+          "article_count": { "type": "integer" },
+          "unique_sources_count": { "type": "integer" },
+          "usable_articles_count": { "type": "integer" },
+          "total_usable_text_len": { "type": "integer" },
+          "evidence_level": { "type": "string", "enum": ["high", "medium", "low", "none"] },
+          "why_no_overview": { "type": ["string", "null"] }
+        }
       }
     },
     "next_cursor": { "type": ["string", "null"] }

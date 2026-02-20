@@ -1,6 +1,7 @@
 import { FeedRepository } from '../repo/feed-repo.js';
-import { FeedItem, FeedItemOverview, FeedResponse } from '../domain/types.js';
+import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
+import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -26,6 +27,73 @@ function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' 
   const ctx = Array.isArray(ai.context) ? ai.context : [];
   if (wh.length > 0 || ctx.length > 0) return 'ready';
   return 'unavailable';
+}
+
+/**
+ * Compute event-level observability fields from the included articles.
+ */
+function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
+  const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const articleCount = articles.length;
+
+  const mediaMap = new Map<string, { id: string; name: string; domain: string; count: number }>();
+  for (const a of articles) {
+    const key = a.media?.mediaKey ?? 'unknown';
+    const existing = mediaMap.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      let domain = key;
+      try { domain = new URL(a.url).hostname; } catch { /* keep key */ }
+      mediaMap.set(key, {
+        id: a.media?.id ?? '',
+        name: a.media?.name ?? key,
+        domain,
+        count: 1,
+      });
+    }
+  }
+
+  const sources: FeedItemSource[] = [...mediaMap.values()].map((v) => ({
+    source_id: v.id,
+    name: v.name,
+    domain: v.domain,
+    article_count: v.count,
+  }));
+
+  const uniqueSourcesCount = mediaMap.size;
+  const usableArticles = articles.filter((a: any) => a.usableForOverview);
+  const usableArticlesCount = usableArticles.length;
+  const totalUsableTextLen = usableArticles.reduce(
+    (sum: number, a: any) => sum + (a.textContentLen ?? 0), 0,
+  );
+
+  const overviewStatus = deriveOverviewStatus(packet);
+  const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
+  const overviewMode: string | null = packet.overview_mode ?? null;
+
+  const failReasons = articles
+    .map((a: any) => a.extractionFailReason)
+    .filter(Boolean) as string[];
+
+  const whyNoOverview = buildWhyNoOverview({
+    overviewStatus,
+    uniqueSourcesCount,
+    usableArticlesCount,
+    totalUsableTextLen,
+    articleFailReasons: failReasons,
+  });
+
+  return {
+    sources,
+    article_count: articleCount,
+    unique_sources_count: uniqueSourcesCount,
+    usable_articles_count: usableArticlesCount,
+    total_usable_text_len: totalUsableTextLen,
+    evidence_level: evidenceLevel,
+    overview_mode: overviewMode,
+    why_no_overview: whyNoOverview,
+  };
 }
 
 const PAGE_SIZE = 20;
@@ -81,6 +149,7 @@ export class FeedService {
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
         overview_status: deriveOverviewStatus(packet),
+        ...enrichFeedItem(row, packet),
       };
     });
 
@@ -123,6 +192,7 @@ export class FeedService {
         cover_image_url: teaser,
         ai_overview: extractAiOverview(packet),
         overview_status: deriveOverviewStatus(packet),
+        ...enrichFeedItem(row, packet),
       };
     });
 

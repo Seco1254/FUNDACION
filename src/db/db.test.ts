@@ -19,7 +19,9 @@ describeDb('DB integration tests', () => {
   });
 
   beforeEach(async () => {
-    // Clean tables in order
+    // Clean tables in FK-dependency order (children before parents)
+    await prisma.quote.deleteMany();
+    await prisma.claim.deleteMany();
     await prisma.eventArticle.deleteMany();
     await prisma.eventVersion.deleteMany();
     await prisma.auditLog.deleteMany();

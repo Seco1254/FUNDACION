@@ -78,6 +78,93 @@ const BOILERPLATE_PATTERNS = [
 const NOISE_TAGS_RE = /<(?:header|footer|nav|aside|script|style|noscript|iframe|form|button|svg|figure|figcaption)[^>]*>[\s\S]*?<\/(?:header|footer|nav|aside|script|style|noscript|iframe|form|button|svg|figure|figcaption)>/gi;
 const COMMENT_RE = /<!--[\s\S]*?-->/g;
 
+const PAYWALL_PATTERNS = [
+  /content-lock/i,
+  /paywall/i,
+  /suscr[íi]base para continuar/i,
+  /contenido premium/i,
+  /contenido exclusivo para suscriptores/i,
+  /reg[íi]strate para continuar/i,
+  /solo para suscriptores/i,
+  /acceso exclusivo/i,
+  /inicia sesi[óo]n para ver/i,
+  /art[íi]culo bloqueado/i,
+];
+
+/**
+ * Detect whether a page has paywall indicators.
+ * Uses keyword matching + low paragraph count as a signal.
+ */
+export function detectPaywall(html: string): boolean {
+  const hasKeyword = PAYWALL_PATTERNS.some((pat) => pat.test(html));
+  if (!hasKeyword) return false;
+
+  // If paywall keywords exist AND content is sparse (< 3 real paragraphs), it's a paywall
+  const cleaned = html.replace(COMMENT_RE, '').replace(NOISE_TAGS_RE, '');
+  const pMatches = cleaned.match(/<p[^>]*>[^<]{30,}<\/p>/gi) ?? [];
+  if (pMatches.length < 3) return true;
+
+  // Keywords in the actual content container (not just sidebar/footer) → stronger signal
+  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  if (articleMatch) {
+    return PAYWALL_PATTERNS.some((pat) => pat.test(articleMatch[1]));
+  }
+
+  return false;
+}
+
+/**
+ * Extract AMP page URL from `<link rel="amphtml" href="...">`.
+ */
+export function extractAmpUrl(html: string): string | null {
+  const match = html.match(/<link[^>]+rel=["']amphtml["'][^>]+href=["']([^"']+)["']/i);
+  if (match) return match[1];
+  const match2 = html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']amphtml["']/i);
+  return match2 ? match2[1] : null;
+}
+
+/**
+ * Extract the best available meta description from HTML.
+ * Tries og:description → description → twitter:description.
+ */
+export function extractMetaDescription(html: string): string | null {
+  return (
+    extractMeta(html, 'og:description') ??
+    extractMeta(html, 'description') ??
+    extractMeta(html, 'twitter:description') ??
+    null
+  );
+}
+
+/**
+ * Determine which HTML container provided the text extraction.
+ * - 'body': text was extracted from <article>, <main>, or <p> tags
+ * - 'meta': no body text but og:description exists
+ * - 'none': nothing extractable
+ */
+export function detectExtractionSource(html: string): 'body' | 'meta' | 'none' {
+  const cleaned = html.replace(COMMENT_RE, '').replace(NOISE_TAGS_RE, '');
+
+  const containers = [
+    cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i),
+    cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i),
+  ];
+
+  for (const m of containers) {
+    if (m) {
+      const pCount = (m[1].match(/<p[^>]*>/gi) ?? []).length;
+      if (pCount > 0) return 'body';
+    }
+  }
+
+  const anyP = (cleaned.match(/<p[^>]*>/gi) ?? []).length;
+  if (anyP > 0) return 'body';
+
+  if (extractMeta(html, 'og:description')) return 'meta';
+
+  return 'none';
+}
+
 /**
  * Extract the full article body text from an HTML page.
  * Strategy:

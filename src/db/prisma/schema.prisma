@@ -41,9 +41,14 @@ model Article {
   publishedAt   DateTime?       @map("published_at")
   title         String
   snippet       String
-  textNorm       String?         @map("text_norm")
-  status         ArticleStatus   @default(DISCOVERED)
-  blockedReason  BlockedReason?  @map("blocked_reason")
+  textNorm             String?         @map("text_norm")
+  textContentLen       Int?            @map("text_content_len")
+  textContentSource    String?         @map("text_content_source")
+  extractionFailReason String?         @map("extraction_fail_reason")
+  paywallDetected      Boolean         @default(false) @map("paywall_detected")
+  usableForOverview    Boolean         @default(false) @map("usable_for_overview")
+  status               ArticleStatus   @default(DISCOVERED)
+  blockedReason        BlockedReason?  @map("blocked_reason")
   embeddingModel String?         @map("embedding_model")
   embeddingVec   Json?           @map("embedding_vec")
   embeddingHash  String?         @map("embedding_hash")

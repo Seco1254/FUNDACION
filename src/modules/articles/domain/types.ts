@@ -7,6 +7,9 @@ export type BlockedReason =
   | 'DUPLICATE_URL'
   | 'PARSE_FAIL';
 
+export type TextContentSource = 'body' | 'meta' | 'none';
+export type ExtractionFailReason = 'paywall' | 'blocked' | 'parse_error' | 'empty' | 'too_short' | 'unknown';
+
 export interface ArticleEntity {
   id: string;
   mediaId: string;
@@ -15,6 +18,11 @@ export interface ArticleEntity {
   title: string;
   snippet: string;
   textNorm: string | null;
+  textContentLen: number | null;
+  textContentSource: string | null;
+  extractionFailReason: string | null;
+  paywallDetected: boolean;
+  usableForOverview: boolean;
   status: ArticleStatus;
   blockedReason: BlockedReason | null;
   embeddingModel: string | null;
