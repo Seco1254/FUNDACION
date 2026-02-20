@@ -49,6 +49,7 @@ import { debugQualityRoutes } from './api/routes/debug-quality.js';
 import { debugLinkerRoutes } from './api/routes/debug-linker.js';
 import { debugLifecycleRoutes } from './api/routes/debug-lifecycle.js';
 import { debugMediaRoutes } from './api/routes/debug-media.js';
+import { debugPipelineRoutes } from './api/routes/debug-pipeline.js';
 import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
@@ -225,6 +226,7 @@ export function buildApp() {
   app.register(debugLinkerRoutes(auditRepo, eventRepo));
   app.register(debugLifecycleRoutes(lifecycleManager, eventRepo));
   app.register(debugMediaRoutes(mediaRepo));
+  app.register(debugPipelineRoutes(prisma));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }

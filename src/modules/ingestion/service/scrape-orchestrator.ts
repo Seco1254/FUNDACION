@@ -33,6 +33,8 @@ export class ScrapeOrchestrator {
   async run(): Promise<{
     discovered: number;
     skipped: number;
+    skip_reasons: { already_in_db: number; duplicate_in_run: number };
+    discovered_urls: string[];
     summary: Record<string, { discovered: number; skipped: number; fetch_fail: number }>;
     media_results: MediaScrapeResult[];
   }> {
@@ -47,11 +49,13 @@ export class ScrapeOrchestrator {
         },
         'scrape_aborted_no_eligible_media: Media table is empty or has no allowlisted rows. Scraping cannot proceed.',
       );
-      return { discovered: 0, skipped: 0, summary: {}, media_results: [] };
+      return { discovered: 0, skipped: 0, skip_reasons: { already_in_db: 0, duplicate_in_run: 0 }, discovered_urls: [], summary: {}, media_results: [] };
     }
 
     let discovered = 0;
     let skipped = 0;
+    const skipReasons = { already_in_db: 0, duplicate_in_run: 0 };
+    const discoveredUrls: string[] = [];
     const seenUrls = new Set<string>();
     const summary: Record<string, { discovered: number; skipped: number; fetch_fail: number }> = {};
     const mediaResults: MediaScrapeResult[] = [];
@@ -66,7 +70,7 @@ export class ScrapeOrchestrator {
 
       try {
         await withTimeout(
-          this.processMedia(m.mediaKey, scraper, seenUrls, mediaStats, traceId),
+          this.processMedia(m.mediaKey, scraper, seenUrls, mediaStats, traceId, skipReasons, discoveredUrls),
           PER_MEDIA_TIMEOUT_MS,
           { stage: 'media_scrape', mediaKey: m.mediaKey },
         );
@@ -108,7 +112,7 @@ export class ScrapeOrchestrator {
     }
     logger.info({ total_discovered: discovered, total_skipped: skipped, media_count: Object.keys(summary).length }, 'scrape_run_complete');
 
-    return { discovered, skipped, summary, media_results: mediaResults };
+    return { discovered, skipped, skip_reasons: skipReasons, discovered_urls: discoveredUrls, summary, media_results: mediaResults };
   }
 
   private async processMedia(
@@ -117,6 +121,8 @@ export class ScrapeOrchestrator {
     seenUrls: Set<string>,
     stats: { discovered: number; skipped: number; fetch_fail: number },
     traceId: string,
+    skipReasons: { already_in_db: number; duplicate_in_run: number },
+    discoveredUrls: string[],
   ): Promise<void> {
     for (const listUrl of scraper.listPageUrls) {
       let html: string;
@@ -141,6 +147,7 @@ export class ScrapeOrchestrator {
       for (const url of urls) {
         if (seenUrls.has(url)) {
           stats.skipped++;
+          skipReasons.duplicate_in_run++;
           continue;
         }
         seenUrls.add(url);
@@ -148,6 +155,7 @@ export class ScrapeOrchestrator {
         const existing = await this.articleRepo.findByUrl(url);
         if (existing) {
           stats.skipped++;
+          skipReasons.already_in_db++;
           continue;
         }
 
@@ -169,6 +177,7 @@ export class ScrapeOrchestrator {
 
         await this.eventBus.publish(envelope);
         stats.discovered++;
+        discoveredUrls.push(url);
       }
     }
   }

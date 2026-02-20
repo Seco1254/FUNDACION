@@ -20,6 +20,7 @@
     "db:reset": "prisma migrate reset --force",
     "db:generate": "prisma generate",
     "scrape:once": "tsx src/scripts/scrape-once.ts",
+    "link:once": "tsx src/scripts/link-once.ts",
     "dev:api": "node scripts/check-env.js && node scripts/check-db.js && tsx watch src/server.ts",
     "dev:client": "cd apps/client && npx expo start --web",
     "dev:all": "./bin/dev-all",
