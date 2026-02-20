@@ -45,6 +45,8 @@ import { metricsRoutes } from './api/routes/metrics.js';
 import { LlmClient } from './core/llm/index.js';
 import { debugAiRoutes } from './api/routes/debug-ai.js';
 import { debugFeedRoutes } from './api/routes/debug-feed.js';
+import { debugQualityRoutes } from './api/routes/debug-quality.js';
+import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
 // Phase 5: Production infrastructure
@@ -214,6 +216,8 @@ export function buildApp() {
   app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
   app.register(debugFeedRoutes(feedRepo));
+  const qualityService = new QualitySnapshotService(prisma);
+  app.register(debugQualityRoutes(qualityService));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }
