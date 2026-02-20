@@ -102,7 +102,7 @@ export interface PublishGateResult {
  * (pipeline ran and determined evidence is insufficient).
  *
  * Gate Multi: sources>=2 AND text>=1200
- * Gate Single: sources==1 AND text>=800
+ * Gate Single: sources>=1 AND text>=800
  * Both:       key_facts >= GATE_KEY_FACTS_MIN (default 0)
  *             NOT overview_status='failed'
  */

@@ -103,7 +103,7 @@ describe('gates', () => {
       expect(result.reasons).toHaveLength(0);
     });
 
-    it('passes single-source gate with sufficient text', () => {
+    it('passes single-source gate with sufficient text (no disclaimer required)', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
         total_usable_text_len: 900,
@@ -128,6 +128,18 @@ describe('gates', () => {
       expect(result.gate_name).toBe('multi');
     });
 
+    it('passes when overview is unavailable', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 1500,
+        key_facts_count: 0,
+        overview_status: 'unavailable',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
+    });
+
     it('passes single-source with pending overview when text is sufficient', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
@@ -140,7 +152,19 @@ describe('gates', () => {
       expect(result.gate_name).toBe('single');
     });
 
-    it('fails when overview explicitly failed and text is too short', () => {
+    it('blocks when overview_status is failed', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 3,
+        total_usable_text_len: 2000,
+        key_facts_count: 8,
+        overview_status: 'failed',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('OVERVIEW_FAILED');
+    });
+
+    it('blocks when overview failed and text is too short', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 2,
         total_usable_text_len: 0,
@@ -153,7 +177,7 @@ describe('gates', () => {
       expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
 
-    it('fails when text is too short for multi-source', () => {
+    it('blocks when text is too short for multi-source', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 2,
         total_usable_text_len: 500,
@@ -165,7 +189,7 @@ describe('gates', () => {
       expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
 
-    it('fails with no sources', () => {
+    it('blocks when no sources at all', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 0,
         total_usable_text_len: 0,

@@ -213,7 +213,7 @@ export function buildApp() {
   app.register(debugScrapeRoutes(scrapeOrchestrator));
   app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
-  app.register(debugFeedRoutes(prisma));
+  app.register(debugFeedRoutes(feedRepo));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }

@@ -1,103 +1,129 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
-import { PrismaClient } from '@prisma/client';
+import { FeedRepository } from '../../modules/feed/repo/feed-repo.js';
 import { evaluatePublishGate } from '../../core/llm/gates.js';
+import { computeEvidenceLevel, buildWhyNoOverview } from '../../modules/feed/service/evidence-level.js';
 
-/**
- * Debug endpoint for feed pipeline observability.
- * Only useful in dev — exposes DB counts and gate diagnostics.
- */
-export function debugFeedRoutes(prisma: PrismaClient): FastifyPluginCallback {
+const MAX_EVENTS = 50;
+
+interface FeedStatsItem {
+  event_id: string;
+  state: string;
+  headline: string | null;
+  overview_status: string;
+  gate_pass: boolean;
+  gate_reasons: string[];
+  unique_sources_count: number;
+  total_usable_text_len: number;
+  key_facts_count: number;
+  evidence_level: string;
+  why_no_overview: string | null;
+  published_at: string | null;
+}
+
+function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
+  const ai = packet?.ai_overview;
+  if (!ai) return 'pending';
+  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
+  const ctx = Array.isArray(ai.context) ? ai.context : [];
+  if (wh.length > 0 || ctx.length > 0) return 'ready';
+  return 'unavailable';
+}
+
+export function debugFeedRoutes(feedRepo: FeedRepository): FastifyPluginCallback {
   return (app: FastifyInstance, _opts, done) => {
     app.get('/v1/debug/feed/stats', async (_request, reply) => {
-      // Count events by state
-      const stateCounts = await prisma.event.groupBy({
-        by: ['state'],
-        _count: { id: true },
-      });
+      const rows = await feedRepo.getFeed(undefined, MAX_EVENTS);
 
-      const eventsByState: Record<string, number> = {};
-      for (const row of stateCounts) {
-        eventsByState[row.state] = row._count.id;
-      }
+      let gateFilteredCount = 0;
+      const reasonCounts = new Map<string, number>();
+      const items: FeedStatsItem[] = [];
+      let samplePass: FeedStatsItem | null = null;
+      let sampleFail: FeedStatsItem | null = null;
 
-      // Count total articles
-      const articlesTotal = await prisma.article.count();
+      for (const row of rows as any[]) {
+        const latestVersion = row.versions?.[0] ?? null;
+        const packet = (latestVersion?.packetJson as any) ?? {};
+        const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
 
-      // Sample PUBLISHED events with gate diagnostics
-      const published = await prisma.event.findMany({
-        where: { state: 'PUBLISHED' as any, canonicalEventId: null },
-        orderBy: { publishedAt: 'desc' },
-        take: 10,
-        include: {
-          versions: { orderBy: { versionIndex: 'desc' }, take: 1 },
-          eventArticles: {
-            include: {
-              article: {
-                select: {
-                  id: true,
-                  url: true,
-                  textContentLen: true,
-                  usableForOverview: true,
-                  media: { select: { mediaKey: true, name: true } },
-                },
-              },
-            },
-          },
-        },
-      });
+        const uniqueMediaKeys = new Set(articles.map((a: any) => a.media?.mediaKey ?? 'unknown'));
+        const uniqueSourcesCount = uniqueMediaKeys.size;
+        const usableArticles = articles.filter((a: any) => a.usableForOverview);
+        const usableArticlesCount = usableArticles.length;
+        const totalUsableTextLen = usableArticles.reduce(
+          (sum: number, a: any) => sum + (a.textContentLen ?? 0), 0,
+        );
+        const keyFactsCount: number = packet.key_facts_count ?? 0;
+        const overviewStatus = deriveOverviewStatus(packet);
+        const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
 
-      const sample = published.map((evt) => {
-        const version = evt.versions[0] ?? null;
-        const packet = (version?.packetJson as any) ?? {};
-        const articles = evt.eventArticles.map((ea) => ea.article);
-        const uniqueMedia = new Set(articles.map((a) => a.media?.mediaKey ?? 'unknown'));
-        const usable = articles.filter((a) => a.usableForOverview);
-        const totalText = usable.reduce((sum, a) => sum + (a.textContentLen ?? 0), 0);
-        const keyFactsCount = packet.key_facts_count ?? 0;
-
-        const ai = packet.ai_overview;
-        const wh = Array.isArray(ai?.what_happened) ? ai.what_happened : [];
-        const ctx = Array.isArray(ai?.context) ? ai.context : [];
-        const overviewStatus = !ai ? 'pending' : (wh.length > 0 || ctx.length > 0) ? 'ready' : 'unavailable';
-
-        const hasDisclaimer = typeof ai?.why === 'string'
-          && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
+        const ai = packet?.ai_overview;
+        const hasDisclaimer = typeof ai?.why === 'string' && /única fuente|una fuente/i.test(ai.why);
 
         const gate = evaluatePublishGate({
-          unique_sources_count: uniqueMedia.size,
-          total_usable_text_len: totalText,
+          unique_sources_count: uniqueSourcesCount,
+          total_usable_text_len: totalUsableTextLen,
           key_facts_count: keyFactsCount,
           overview_status: overviewStatus,
           has_disclaimer: hasDisclaimer,
         });
 
-        return {
-          event_id: evt.id,
-          published_at: evt.publishedAt?.toISOString() ?? null,
-          headline: version?.headline ?? null,
-          unique_sources: uniqueMedia.size,
-          articles: articles.length,
-          usable_articles: usable.length,
-          total_text: totalText,
-          key_facts: keyFactsCount,
-          overview_status: overviewStatus,
-          overview_mode: packet.overview_mode ?? null,
-          has_disclaimer: hasDisclaimer,
-          gate_eligible: gate.eligible,
-          gate_name: gate.gate_name,
-          gate_reasons: gate.reasons,
-        };
-      });
+        const failReasons = articles
+          .map((a: any) => a.extractionFailReason)
+          .filter(Boolean) as string[];
 
-      const eligible = sample.filter((s) => s.gate_eligible).length;
+        const whyNoOverview = buildWhyNoOverview({
+          overviewStatus: gate.eligible ? overviewStatus : 'failed',
+          uniqueSourcesCount,
+          usableArticlesCount,
+          totalUsableTextLen,
+          articleFailReasons: failReasons,
+          keyFactsCount,
+          gateReasons: gate.eligible ? undefined : gate.reasons,
+        });
+
+        if (!gate.eligible) {
+          gateFilteredCount++;
+          for (const r of gate.reasons) {
+            reasonCounts.set(r, (reasonCounts.get(r) ?? 0) + 1);
+          }
+        }
+
+        const statsItem: FeedStatsItem = {
+          event_id: row.id,
+          state: row.state,
+          headline: latestVersion?.headline ?? null,
+          overview_status: gate.eligible ? overviewStatus : 'failed',
+          gate_pass: gate.eligible,
+          gate_reasons: gate.reasons,
+          unique_sources_count: uniqueSourcesCount,
+          total_usable_text_len: totalUsableTextLen,
+          key_facts_count: keyFactsCount,
+          evidence_level: evidenceLevel,
+          why_no_overview: whyNoOverview,
+          published_at: row.publishedAt?.toISOString() ?? null,
+        };
+
+        items.push(statsItem);
+        if (gate.eligible && !samplePass) samplePass = statsItem;
+        if (!gate.eligible && !sampleFail) sampleFail = statsItem;
+      }
+
+      // Top 3 filter reasons
+      const topReasons = [...reasonCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, count]) => ({ reason, count }));
 
       return reply.send({
-        articles_total: articlesTotal,
-        events_by_state: eventsByState,
-        published_count: published.length,
-        published_eligible: eligible,
-        published_gated: published.length - eligible,
-        sample,
+        totals: {
+          published_total: rows.length,
+          feed_returned_count: rows.length - gateFilteredCount,
+          gate_filtered_count: gateFilteredCount,
+        },
+        top_filter_reasons: topReasons,
+        sample_pass: samplePass,
+        sample_fail: sampleFail,
+        events: items,
       });
     });
 
