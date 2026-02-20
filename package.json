@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/check-env.js && node scripts/check-db.js && tsx watch src/server.ts",
+    "dev:api": "PUBLISH_DELAY_MS=30000 tsx watch src/server.ts",
+    "dev:client": "cd apps/client && npx expo start",
+    "dev:all": "concurrently --names api,client --prefix-colors blue,green \"npm run dev:api\" \"npm run dev:client\"",
     "build": "tsc",
     "start": "node scripts/check-env.js && node scripts/check-dist.js && node scripts/check-db.js && node dist/server.js",
     "start:clean": "node scripts/clean-start.js",
@@ -21,9 +24,6 @@
     "db:generate": "prisma generate",
     "scrape:once": "tsx src/scripts/scrape-once.ts",
     "link:once": "tsx src/scripts/link-once.ts",
-    "dev:api": "node scripts/check-env.js && node scripts/check-db.js && tsx watch src/server.ts",
-    "dev:client": "cd apps/client && npx expo start --web",
-    "dev:all": "./bin/dev-all",
     "reset:db": "./bin/reset-db",
     "smoke": "./bin/smoke",
     "debug:ui": "./bin/debug-ui"
@@ -41,6 +41,7 @@
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "concurrently": "^9.2.1",
     "dotenv-cli": "^11.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.4.0",

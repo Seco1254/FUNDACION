@@ -153,10 +153,12 @@ export class EventRepository {
     }) as Promise<EventEntity[]>;
   }
 
-  async findPendingPublish(): Promise<EventEntity[]> {
+
+  async findPendingPublish(): Promise<Array<{ id: string; publishAt: Date | null }>> {
     return this.prisma.event.findMany({
       where: { state: 'PENDING_PUBLISH' as any },
-    }) as Promise<EventEntity[]>;
+      select: { id: true, publishAt: true },
+    });
   }
 
   async countByState(): Promise<Record<string, number>> {

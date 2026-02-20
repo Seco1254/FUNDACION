@@ -19,21 +19,53 @@ curl http://localhost:3000/v1/feed
 ## Quickstart — Homebrew Postgres (macOS, sin Docker)
 
 ```bash
-brew install postgresql@16
+# 1. Start Postgres (install once: brew install postgresql@16)
 brew services start postgresql@16
-createdb fundacion
+createdb fundacion   # skip if DB already exists
 
+# 2. Configure environment
 cp .env.example .env
-# Edit .env — replace DATABASE_URL with:
+# Set DATABASE_URL (peer auth, no password needed for your OS user):
 #   DATABASE_URL=postgresql://$USER@localhost:5432/fundacion?schema=public
+# Note: quotes around the value are stripped automatically — both forms work.
 
+# 3. Install deps + migrate + seed
 npm install
 npm run db:generate
-npm run db:migrate:dev
+npm run db:migrate:dev   # use "local_init" as migration name if prompted
 npm run db:seed
-npm run db:doctor             # verify DB is reachable
-npm run start:clean
+
+# 4. Start backend (verifies env + DB before starting)
+npm run dev              # http://localhost:3000 — hot-reload via tsx watch
+
+# 5. Trigger first scrape (full pipeline — creates Events visible in /v1/feed)
+curl -X POST http://localhost:3000/v1/debug/scrape/run
+# Events are queued for publish (publish_at = now + 5 min).
+# The scheduler ticker runs every 5 s and auto-publishes when publish_at is due.
+# After ~5 min: curl http://localhost:3000/v1/feed?tab=global → items non-empty
 ```
+
+**Frontend (Expo/React Native):**
+```bash
+cd apps/client && npm install
+npm run web      # opens http://localhost:8081 (browser)
+# npm run start  # Metro + QR for Expo Go on device
+
+# Physical device (iOS/Android) — needs LAN IP instead of localhost:
+# ipconfig getifaddr en0                               # find your IP
+# EXPO_PUBLIC_API_BASE_URL=http://192.168.X.X:3000 npm run start
+```
+
+**Common errors and fixes:**
+
+| Error | Fix |
+|---|---|
+| `port_in_use` on :3000 | `lsof -ti:3000 \| xargs kill -9` or `PORT=3001 npm run dev` |
+| DB unreachable (P1001) | `brew services start postgresql@16` |
+| DB not found (P1003) | `createdb fundacion` |
+| Access denied (P1010) | Check `DATABASE_URL` user matches `SELECT current_user` in psql |
+| Feed always empty | Trigger scrape: `curl -X POST http://localhost:3000/v1/debug/scrape/run`; wait ~5 min for auto-publish |
+| `URL must start with postgresql://` | Remove quotes from DATABASE_URL in .env (or keep them — the loader now strips them automatically) |
 
 ## Prerequisites
 

@@ -20,8 +20,13 @@ function run(env: Record<string, string | undefined>, cwd?: string): { code: num
 }
 
 describe('scripts/check-env.js', () => {
-  it('exits 0 when DATABASE_URL is present', () => {
+  it('exits 0 when DATABASE_URL uses postgresql:// protocol', () => {
     const result = run({ DATABASE_URL: 'postgresql://test@localhost/test' });
+    expect(result.code).toBe(0);
+  });
+
+  it('exits 0 when DATABASE_URL uses postgres:// protocol (alias)', () => {
+    const result = run({ DATABASE_URL: 'postgres://test@localhost/test' });
     expect(result.code).toBe(0);
   });
 
@@ -36,5 +41,17 @@ describe('scripts/check-env.js', () => {
     const result = run({}, tmpdir());
     expect(result.stderr).toContain('cp .env.example .env');
     expect(result.stderr).toContain('docker compose up -d');
+  });
+
+  it('exits 1 when DATABASE_URL has invalid protocol (http://)', () => {
+    const result = run({ DATABASE_URL: 'http://localhost/fundacion' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('postgresql://');
+  });
+
+  it('exits 1 when DATABASE_URL has invalid protocol (mysql://)', () => {
+    const result = run({ DATABASE_URL: 'mysql://user:pass@localhost/db' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('postgresql://');
   });
 });

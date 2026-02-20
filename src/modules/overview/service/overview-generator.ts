@@ -269,6 +269,10 @@ export class OverviewGenerator {
         const supportedCount = claimsWithQuotes.filter((c: any) => c.status === 'SUPPORTED').length;
         const disputedCount = claimsWithQuotes.filter((c: any) => c.status === 'DISPUTED').length;
 
+        const llmOverviewStatus: { state: string; reason: string | null } = heuristicOverview.gate_status === 'PASS'
+          ? { state: 'ready', reason: null }
+          : { state: 'blocked', reason: 'Evidencia insuficiente' };
+
         const updatedPacket = {
           ...existingPacket,
           overview: heuristicOverview,
@@ -283,6 +287,7 @@ export class OverviewGenerator {
             supported_count: supportedCount,
             disputed_count: disputedCount,
           },
+          overview_status: llmOverviewStatus,
           overview_mode: 'llm',
           _ai_hashes: {
             ...existingHashes,
@@ -345,7 +350,7 @@ export class OverviewGenerator {
         }
 
         if (version) {
-          const updatedPacket = {
+          const updatedPacket: Record<string, unknown> = {
             ...existingPacket,
             overview: {
               gate_status: overview.gate_status,
@@ -357,6 +362,10 @@ export class OverviewGenerator {
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
             quality_flags: overview.quality_flags,
+            _ai_hashes: {
+              ...existingHashes,
+              overview_hash: newOverviewHash,
+            },
           };
 
           await this.versionRepo.update(version_id, {

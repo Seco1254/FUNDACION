@@ -84,8 +84,14 @@ export class Scheduler {
             executed++;
             logger.info({ jobKey: key, duration_ms: Date.now() - jobStart }, 'scheduler_job_executed');
           } catch (err) {
+            const eventId = key.startsWith('publish:') ? key.slice(8) : undefined;
             logger.error(
-              { jobKey: key, duration_ms: Date.now() - jobStart, error: err instanceof Error ? err.message : String(err) },
+              {
+                jobKey: key,
+                duration_ms: Date.now() - jobStart,
+                ...(eventId && { event_id: eventId }),
+                error: err instanceof Error ? err.message : String(err),
+              },
               'scheduler_job_failed',
             );
           }
@@ -96,6 +102,7 @@ export class Scheduler {
       this._lastTickExecuted = executed;
     }
 
+    logger.debug({ pending: this.jobs.size, executed }, 'scheduler_tick_done');
     return executed;
   }
 }

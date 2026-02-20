@@ -20,13 +20,16 @@ describeDb('DB integration tests', () => {
 
   beforeEach(async () => {
     // Clean tables in FK-dependency order (children before parents)
-    await prisma.quote.deleteMany();
-    await prisma.claim.deleteMany();
     await prisma.eventArticle.deleteMany();
+    await prisma.quote.deleteMany();          // quote → claim
+    await prisma.claim.deleteMany();          // claim → event_version (version_id FK)
     await prisma.eventVersion.deleteMany();
+    await prisma.topicAssignment.deleteMany();
+    await prisma.biasLabel.deleteMany();
     await prisma.auditLog.deleteMany();
     await prisma.article.deleteMany();
     await prisma.event.deleteMany();
+    await prisma.mediaProfile.deleteMany();
     await prisma.media.deleteMany();
   });
 

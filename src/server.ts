@@ -42,6 +42,7 @@ import { TopicAssigner } from './modules/topics/service/topic-assigner.js';
 import { SubEventBuilder } from './modules/subevents/service/subevent-builder.js';
 import { biasRoutes } from './api/routes/bias.js';
 import { metricsRoutes } from './api/routes/metrics.js';
+import { rehydratePublishJobs } from './core/scheduler/rehydrate.js';
 import { LlmClient } from './core/llm/index.js';
 import { debugAiRoutes } from './api/routes/debug-ai.js';
 import { debugFeedRoutes } from './api/routes/debug-feed.js';
@@ -65,7 +66,7 @@ import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
 import { withTimeout } from './core/async/with-timeout.js';
 import { RankingService } from './modules/ranking/service/ranking-service.js';
 
-const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '30000', 10);
+const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '5000', 10);
 const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
 const CLOSE_CHECK_INTERVAL_MS = parseInt(process.env.CLOSE_CHECK_INTERVAL_MS ?? String(6 * 60 * 60 * 1000), 10);
 const REFRESH_INTERVAL_MS = parseInt(process.env.REFRESH_INTERVAL_MS ?? String(30 * 60 * 1000), 10);
@@ -210,6 +211,44 @@ export function buildApp() {
   // Phase 5: Metrics instrumentation via event bus
   registerMetricSubscribers(eventBus);
 
+  // Scheduler ticker — runs due jobs on a fixed interval with anti-overlap guard.
+  // Interval is configurable via SCHEDULER_TICK_MS env var (default 5 s).
+  // Re-registers the recurring scrape job after each execution so it never gets lost.
+  let tickBusy = false;
+  let tickCount = 0;
+  const LOG_TICK_HEARTBEAT_EVERY = parseInt(process.env.LOG_TICK_HEARTBEAT_EVERY ?? '12', 10); // every ~60 s
+  const tickHandle = setInterval(async () => {
+    if (tickBusy) return; // anti-overlap: skip if previous tick is still running
+    tickBusy = true;
+    tickCount++;
+    try {
+      const executed = await scheduler.runDueJobs();
+      if (executed > 0) {
+        logger.info({ executed, pending: scheduler.list().length }, 'scheduler_tick');
+        // Re-register the recurring scrape job if it was just consumed by this tick.
+        if (!scheduler.list().some((j) => j.jobKey === 'scrape:tick')) {
+          const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
+          scheduler.register('scrape:tick', next, {});
+          logger.info({ next_scrape: next.toISOString() }, 'scheduler_scrape_rescheduled');
+        }
+      } else if (tickCount % LOG_TICK_HEARTBEAT_EVERY === 0) {
+        logger.info({ pending: scheduler.list().length, tick: tickCount }, 'scheduler_heartbeat');
+      }
+    } catch (e) {
+      logger.error(e, 'scheduler_tick_failed');
+    } finally {
+      tickBusy = false;
+    }
+  }, SCHEDULER_TICK_MS);
+  app.addHook('onClose', async () => { clearInterval(tickHandle); });
+
+  // On startup: rehydrate PENDING_PUBLISH jobs from DB (lost on restart because
+  // the scheduler is in-memory). Safe to call multiple times — dedup by jobKey.
+  app.addHook('onReady', async () => {
+    const n = await rehydratePublishJobs(scheduler, eventRepo);
+    if (n > 0) logger.info({ rehydrated: n }, 'scheduler_rehydrated');
+  });
+
   // Routes
   app.register(healthRoutes);
   app.register(tabsRoutes);
@@ -256,21 +295,21 @@ async function start() {
     process.exit(1);
   }
 
-  // Rehydrate: publish any PENDING_PUBLISH events whose publishAt has passed
+  // Rehydrate: directly publish any PENDING_PUBLISH events whose publishAt has passed.
+  // Events with a future publishAt are registered into the scheduler by the onReady hook
+  // (rehydratePublishJobs), so we only need to handle the past-due ones here.
   try {
     const pending = await eventRepo.findPendingPublish();
     const now = clock.now();
-    let rehydrated = 0;
+    let published_now = 0;
     for (const evt of pending) {
       if (!evt.publishAt || evt.publishAt <= now) {
         await lifecycleManager.executePublish(evt.id);
-        rehydrated++;
-      } else {
-        scheduler.register(`publish:${evt.id}`, evt.publishAt, { eventId: evt.id });
+        published_now++;
       }
     }
     if (pending.length > 0) {
-      logger.info({ total: pending.length, published_now: rehydrated }, 'startup_rehydration_complete');
+      logger.info({ total: pending.length, published_now }, 'startup_rehydration_complete');
     }
   } catch (err) {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'startup_rehydration_failed');
@@ -285,35 +324,11 @@ async function start() {
     }
   }
 
-  // Register periodic jobs: scrape, lifecycle close check, refresh scheduling
-  const now = clock.now();
-  scheduler.register('scrape:tick', addMs(now, SCRAPE_INTERVAL_MS), {});
-  scheduler.register('lifecycle:close', addMs(now, CLOSE_CHECK_INTERVAL_MS), {});
-  scheduler.register('lifecycle:scheduleRefreshes', addMs(now, REFRESH_INTERVAL_MS), {});
-
-  // Scheduler tick: check and execute due jobs every SCHEDULER_TICK_MS
-  setInterval(async () => {
-    try {
-      const executed = await scheduler.runDueJobs();
-      if (executed > 0) {
-        logger.info({ executed }, 'scheduler_tick_completed');
-      }
-      // Re-register recurring jobs if missing after execution
-      const jobs = scheduler.list();
-      const tickNow = clock.now();
-      if (!jobs.some((j) => j.jobKey === 'scrape:tick')) {
-        scheduler.register('scrape:tick', addMs(tickNow, SCRAPE_INTERVAL_MS), {});
-      }
-      if (!jobs.some((j) => j.jobKey === 'lifecycle:close')) {
-        scheduler.register('lifecycle:close', addMs(tickNow, CLOSE_CHECK_INTERVAL_MS), {});
-      }
-      if (!jobs.some((j) => j.jobKey === 'lifecycle:scheduleRefreshes')) {
-        scheduler.register('lifecycle:scheduleRefreshes', addMs(tickNow, REFRESH_INTERVAL_MS), {});
-      }
-    } catch (err) {
-      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'scheduler_tick_failed');
-    }
-  }, SCHEDULER_TICK_MS);
+  // Register the initial periodic jobs. The buildApp() tick loop handles re-registration.
+  const startNow = clock.now();
+  scheduler.register('scrape:tick', addMs(startNow, SCRAPE_INTERVAL_MS), {});
+  scheduler.register('lifecycle:close', addMs(startNow, CLOSE_CHECK_INTERVAL_MS), {});
+  scheduler.register('lifecycle:scheduleRefreshes', addMs(startNow, REFRESH_INTERVAL_MS), {});
 }
 
 start();

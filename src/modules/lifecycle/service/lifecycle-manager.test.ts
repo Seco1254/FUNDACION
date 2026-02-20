@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { LifecycleManager } from './lifecycle-manager.js';
+import { LifecycleManager, PUBLISH_DELAY_MS } from './lifecycle-manager.js';
 import { EventBus } from '../../../core/event_bus/dispatcher.js';
 import { EventEnvelope } from '../../../core/event_bus/envelope.js';
 import { FakeClock } from '../../../core/time/clock.js';
@@ -61,7 +61,7 @@ describe('LifecycleManager', () => {
       }));
 
       const publishAt = eventRepo.update.mock.calls[0][1].publishAt as Date;
-      expect(publishAt.getTime() - clock.now().getTime()).toBe(5 * 60 * 1000);
+      expect(publishAt.getTime() - clock.now().getTime()).toBe(PUBLISH_DELAY_MS);
 
       const jobs = scheduler.list();
       expect(jobs).toHaveLength(1);
@@ -213,7 +213,7 @@ describe('LifecycleManager', () => {
       expect(published.filter((e) => e.event_name === 'EventPublished')).toHaveLength(0);
 
       // Advance clock past publish time
-      clock.advanceBy(5 * 60 * 1000 + 1);
+      clock.advanceBy(PUBLISH_DELAY_MS + 1);
 
       // Now publish should work
       await lm.executePublish('ev-11');

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -205,6 +205,9 @@ export default function ForYouScreen() {
       </View>
     );
   }
+
+  // Stable comma-joined ID list for navigation — recomputed only when items change
+  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
 
   return (
     <View style={styles.container}>
