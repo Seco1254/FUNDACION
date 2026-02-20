@@ -103,54 +103,79 @@ describe('gates', () => {
       expect(result.reasons).toHaveLength(0);
     });
 
-    it('passes single-source gate with disclaimer', () => {
+    it('passes single-source gate with sufficient text', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
         total_usable_text_len: 900,
         key_facts_count: 7,
         overview_status: 'ready',
-        has_disclaimer: true,
+        has_disclaimer: false,
       });
       expect(result.eligible).toBe(true);
       expect(result.gate_name).toBe('single');
       expect(result.reasons).toHaveLength(0);
     });
 
-    it('fails when overview is not ready and text is too short', () => {
-      const result = evaluatePublishGate({
-        unique_sources_count: 2,
-        total_usable_text_len: 0,
-        key_facts_count: 0,
-        overview_status: 'unavailable',
-        has_disclaimer: false,
-      });
-      expect(result.eligible).toBe(false);
-      expect(result.reasons).toContain('OVERVIEW_NOT_READY');
-      expect(result.reasons).toContain('TEXT_TOO_SHORT');
-    });
-
-    it('passes multi-gate when key_facts >= GATE_KEY_FACTS_MIN (default 0)', () => {
+    it('passes multi-source with pending overview (evidence-based gate)', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 2,
         total_usable_text_len: 1500,
-        key_facts_count: 3,
-        overview_status: 'ready',
+        key_facts_count: 0,
+        overview_status: 'pending',
         has_disclaimer: false,
       });
       expect(result.eligible).toBe(true);
       expect(result.gate_name).toBe('multi');
     });
 
-    it('fails single-source without disclaimer', () => {
+    it('passes single-source with pending overview when text is sufficient', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
         total_usable_text_len: 900,
-        key_facts_count: 7,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('fails when overview explicitly failed and text is too short', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 0,
+        key_facts_count: 0,
+        overview_status: 'failed',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('OVERVIEW_FAILED');
+      expect(result.reasons).toContain('TEXT_TOO_SHORT');
+    });
+
+    it('fails when text is too short for multi-source', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 500,
+        key_facts_count: 0,
         overview_status: 'ready',
         has_disclaimer: false,
       });
       expect(result.eligible).toBe(false);
-      expect(result.reasons).toContain('MISSING_DISCLAIMER');
+      expect(result.reasons).toContain('TEXT_TOO_SHORT');
+    });
+
+    it('fails with no sources', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 0,
+        total_usable_text_len: 0,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('NO_SOURCES');
+      expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
   });
 });

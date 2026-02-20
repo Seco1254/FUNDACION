@@ -109,7 +109,8 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
  */
 function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
   const ai = packet?.ai_overview;
-  const hasDisclaimer = typeof ai?.why === 'string' && /única fuente|una fuente/i.test(ai.why);
+  const hasDisclaimer = typeof ai?.why === 'string'
+    && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
 
   const gateResult = evaluatePublishGate({
     unique_sources_count: item.unique_sources_count ?? 0,

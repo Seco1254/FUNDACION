@@ -114,6 +114,37 @@ const mockFeedServiceSingleEligible = {
   }),
 } as unknown as FeedService;
 
+// Mock: PUBLISHED event with pending overview but sufficient evidence — should appear in feed
+const mockFeedServicePendingOverview = {
+  getFeed: async () => ({
+    items: [
+      {
+        event_id: 'ev-pending',
+        state: 'PUBLISHED',
+        headline: 'Evento recién publicado',
+        t_last: '2026-02-19T12:00:00.000Z',
+        published_at: '2026-02-19T11:00:00.000Z',
+        cover_image_url: null,
+        ai_overview: null,
+        overview_status: 'pending',
+        overview_mode: null,
+        sources: [
+          { source_id: 'm1', name: 'El Tiempo', domain: 'www.eltiempo.com', article_count: 2 },
+          { source_id: 'm2', name: 'El Espectador', domain: 'www.elespectador.com', article_count: 1 },
+        ],
+        article_count: 3,
+        unique_sources_count: 2,
+        usable_articles_count: 2,
+        total_usable_text_len: 2000,
+        key_facts_count: 0,
+        evidence_level: 'medium',
+        why_no_overview: 'unique_sources=2, usable_articles=2, total_text=2000, key_facts=0',
+      },
+    ],
+    next_cursor: null,
+  }),
+} as unknown as FeedService;
+
 const mockFeedService = {
   getFeed: async () => ({ items: [], next_cursor: null }),
 } as unknown as FeedService;
@@ -387,6 +418,33 @@ describe('API contract tests', () => {
       expect(body.items[0].event_id).toBe('ev-single');
       expect(body.items[0].ai_overview).not.toBeNull();
       expect(body.items[0].key_facts_count).toBe(7);
+
+      await richApp.close();
+    });
+
+    it('PUBLISHED event with pending overview but sufficient evidence appears in feed', async () => {
+      const richApp = Fastify();
+      await richApp.register(feedRoutes(mockFeedServicePendingOverview));
+      await richApp.ready();
+
+      const response = await richApp.inject({ method: 'GET', url: '/v1/feed?tab=global' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Event should appear — gate passes on evidence, not on pipeline completion
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].event_id).toBe('ev-pending');
+      expect(body.items[0].overview_status).toBe('pending');
+      expect(body.items[0].ai_overview).toBeNull();
+      expect(body.items[0].unique_sources_count).toBe(2);
+      expect(body.items[0].total_usable_text_len).toBe(2000);
+
+      // Schema validation
+      const schema = loadSchema('feed');
+      const validate = ajv.compile(schema);
+      const valid = validate(body);
+      if (!valid) console.error(validate.errors);
+      expect(valid).toBe(true);
 
       await richApp.close();
     });

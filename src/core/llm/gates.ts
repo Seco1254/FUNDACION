@@ -96,8 +96,15 @@ export interface PublishGateResult {
 /**
  * Hard publish gate: determines if an event is eligible to appear in /v1/feed.
  *
- * Gate Multi: sources>=2 AND text>=1200 AND facts>=6 AND overview='ready'
- * Gate Single: sources==1 AND text>=800 AND facts>=6 AND overview='ready' AND disclaimer
+ * Checks RAW EVIDENCE capability (sources, text), not pipeline completion.
+ * Events with sufficient evidence pass even if overview hasn't been generated yet
+ * (overview_status 'pending'). Only blocks when status is explicitly 'failed'
+ * (pipeline ran and determined evidence is insufficient).
+ *
+ * Gate Multi: sources>=2 AND text>=1200
+ * Gate Single: sources==1 AND text>=800
+ * Both:       key_facts >= GATE_KEY_FACTS_MIN (default 0)
+ *             NOT overview_status='failed'
  */
 export function evaluatePublishGate(input: PublishGateInput): PublishGateResult {
   // Kill switch: PUBLISH_GATE_ENABLED=0 bypasses the gate entirely
@@ -107,8 +114,9 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
 
   const reasons: string[] = [];
 
-  if (input.overview_status !== 'ready') {
-    reasons.push('OVERVIEW_NOT_READY');
+  // Only block when the pipeline explicitly failed — NOT when it's still pending
+  if (input.overview_status === 'failed') {
+    reasons.push('OVERVIEW_FAILED');
   }
   if (input.key_facts_count < GATE_KEY_FACTS_MIN) {
     reasons.push('KEY_FACTS_INSUFFICIENT');
@@ -128,11 +136,8 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
     return { eligible: false, gate_name: null, reasons };
   }
 
-  // Gate Single: single-source event
-  if (input.unique_sources_count === 1) {
-    if (!input.has_disclaimer) {
-      reasons.push('MISSING_DISCLAIMER');
-    }
+  // Gate Single: single-source event (no disclaimer requirement for feed eligibility)
+  if (input.unique_sources_count >= 1) {
     if (reasons.length === 0) {
       return { eligible: true, gate_name: 'single', reasons: [] };
     }
@@ -140,9 +145,6 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
   }
 
   // No sources at all
-  if (input.unique_sources_count === 0) {
-    reasons.push('NO_SOURCES');
-  }
-
+  reasons.push('NO_SOURCES');
   return { eligible: false, gate_name: null, reasons };
 }

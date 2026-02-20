@@ -44,6 +44,7 @@ import { biasRoutes } from './api/routes/bias.js';
 import { metricsRoutes } from './api/routes/metrics.js';
 import { LlmClient } from './core/llm/index.js';
 import { debugAiRoutes } from './api/routes/debug-ai.js';
+import { debugFeedRoutes } from './api/routes/debug-feed.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
 // Phase 5: Production infrastructure
@@ -212,6 +213,7 @@ export function buildApp() {
   app.register(debugScrapeRoutes(scrapeOrchestrator));
   app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
+  app.register(debugFeedRoutes(prisma));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }
