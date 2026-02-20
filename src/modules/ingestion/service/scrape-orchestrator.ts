@@ -38,6 +38,18 @@ export class ScrapeOrchestrator {
   }> {
     const traceId = ulid();
     const media = await this.mediaRepo.findAllAllowlisted();
+
+    if (media.length === 0) {
+      logger.error(
+        {
+          action: 'NO_MEDIA_CONFIGURED',
+          fix: 'Run: npm run db:seed:minimal   (creates allowlisted Media rows)',
+        },
+        'scrape_aborted_no_eligible_media: Media table is empty or has no allowlisted rows. Scraping cannot proceed.',
+      );
+      return { discovered: 0, skipped: 0, summary: {}, media_results: [] };
+    }
+
     let discovered = 0;
     let skipped = 0;
     const seenUrls = new Set<string>();

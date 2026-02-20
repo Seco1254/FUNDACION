@@ -60,6 +60,20 @@ const SEED_EVENTS = [
 ];
 
 export async function runDevSeed(prisma: PrismaClient): Promise<number> {
+  // Warn if no real (allowlisted) media exists — dev-seed creates its own demo media
+  // but scraping won't work without production media rows
+  const realMediaCount = await prisma.media.count({ where: { allowlisted: true } });
+  if (realMediaCount === 0) {
+    logger.warn(
+      {
+        mode: 'SEED_ONLY_MODE',
+        media_count: 0,
+        fix: 'npm run db:seed:minimal   (creates allowlisted Media for real scraping)',
+      },
+      'dev_seed_warning: Media=0. Dev-seed will create demo media, but real scraping requires allowlisted media rows. Run db:seed:minimal first.',
+    );
+  }
+
   const eventCount = await prisma.event.count();
   if (eventCount > 0) {
     logger.info({ existing_events: eventCount }, 'dev_seed_skip_events_exist');

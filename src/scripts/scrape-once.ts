@@ -36,6 +36,15 @@ async function main() {
 
     console.log('Starting scrape run...');
     const result = await orchestrator.run();
+
+    if (result.media_results.length === 0) {
+      console.error(
+        '\n  FATAL: No eligible media found. Scraping cannot proceed.\n' +
+        '  Fix: npm run db:seed:minimal\n',
+      );
+      process.exit(1);
+    }
+
     console.log(`Scrape complete: ${result.discovered} discovered, ${result.skipped} skipped`);
   } finally {
     await prisma.$disconnect();

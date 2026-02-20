@@ -279,6 +279,27 @@ describe('ScrapeOrchestrator', () => {
     expect(fastResult?.discovered).toBe(1);
   }, 30_000);
 
+  it('returns empty result and does not fetch when no eligible media', async () => {
+    const mediaRepo = makeMockMediaRepo([]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn();
+    const scraperLookup = vi.fn();
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.discovered).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.media_results).toHaveLength(0);
+    expect(Object.keys(result.summary)).toHaveLength(0);
+    expect(fetchHtml).not.toHaveBeenCalled();
+    expect(scraperLookup).not.toHaveBeenCalled();
+  });
+
   it('returns media_results with per-media timing and stats', async () => {
     const html = `<a href="https://www.eltiempo.com/politica/test-article-123">A</a>`;
     const mediaRepo = makeMockMediaRepo([
