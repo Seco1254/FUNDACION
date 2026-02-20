@@ -41,9 +41,10 @@ function makeMockRow(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeRepoReturning(rows: any[]) {
+function makeRepoReturning(rows: any[], stateCounts: Record<string, number> = {}) {
   return {
     getFeed: async () => rows,
+    countEventsByState: async () => stateCounts,
   } as unknown as FeedRepository;
 }
 
@@ -241,12 +242,31 @@ describe('FeedService', () => {
       expect(feed.items).toHaveLength(0);
     });
 
-    it('returns empty feed when no published events', async () => {
-      const repo = makeRepoReturning([]);
+    it('returns empty feed with empty_reason when no published events', async () => {
+      const repo = makeRepoReturning([], { DETECTED: 3, PENDING_PUBLISH: 1 });
       const service = new FeedService(repo);
       const feed = await service.getFeed();
       expect(feed.items).toEqual([]);
       expect(feed.next_cursor).toBeNull();
+      expect(feed.empty_reason).toBe('NO_PUBLISHED');
+    });
+
+    it('returns DB_EMPTY when no events at all', async () => {
+      const repo = makeRepoReturning([], {});
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items).toEqual([]);
+      expect(feed.empty_reason).toBe('DB_EMPTY');
+    });
+
+    it('returns GATE_FILTERED_ALL when all published events are gated', async () => {
+      // Row with no articles → filtered by gate
+      const row = makeMockRow({ eventArticles: [] });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items).toEqual([]);
+      expect(feed.empty_reason).toBe('GATE_FILTERED_ALL');
     });
   });
 });

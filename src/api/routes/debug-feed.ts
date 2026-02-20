@@ -1,5 +1,7 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
 import { FeedRepository } from '../../modules/feed/repo/feed-repo.js';
+import { EventRepository } from '../../modules/events/repo/event-repo.js';
+import { ArticleRepository } from '../../modules/articles/repo/article-repo.js';
 import { evaluatePublishGate } from '../../core/llm/gates.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from '../../modules/feed/service/evidence-level.js';
 
@@ -29,16 +31,53 @@ function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' 
   return 'unavailable';
 }
 
-export function debugFeedRoutes(feedRepo: FeedRepository): FastifyPluginCallback {
+export function debugFeedRoutes(
+  feedRepo: FeedRepository,
+  eventRepo?: EventRepository,
+  articleRepo?: ArticleRepository,
+): FastifyPluginCallback {
   return (app: FastifyInstance, _opts, done) => {
     app.get('/v1/debug/feed/stats', async (_request, reply) => {
       const rows = await feedRepo.getFeed(undefined, MAX_EVENTS);
 
+      // Pipeline breakdown (if repos available)
+      const now = new Date();
+      const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+      let pipeline: Record<string, unknown> | null = null;
+      if (eventRepo && articleRepo) {
+        const [eventsByState, articleStats, oldestPendingPublishAt] = await Promise.all([
+          eventRepo.countByState(),
+          articleRepo.countSince(since24h),
+          eventRepo.oldestPendingPublishAt(),
+        ]);
+
+        pipeline = {
+          now: now.toISOString(),
+          articles_last_24h: articleStats.total,
+          articles_by_status_last_24h: articleStats.byStatus,
+          discovered_articles_last_24h: articleStats.byStatus['DISCOVERED'] ?? 0,
+          normalized_articles_last_24h: articleStats.byStatus['NORMALIZED'] ?? 0,
+          policy_ok_last_24h: articleStats.byStatus['POLICY_OK'] ?? 0,
+          policy_blocked_last_24h: articleStats.byStatus['POLICY_BLOCKED'] ?? 0,
+          events_total: Object.values(eventsByState).reduce((a, b) => a + b, 0),
+          events_by_state: eventsByState,
+          oldest_pending_publish_at: oldestPendingPublishAt?.toISOString() ?? null,
+          pending_is_due: oldestPendingPublishAt ? oldestPendingPublishAt <= now : null,
+        };
+      }
+
+      // Gate analysis on published events
       let gateFilteredCount = 0;
       const reasonCounts = new Map<string, number>();
       const items: FeedStatsItem[] = [];
-      let samplePass: FeedStatsItem | null = null;
-      let sampleFail: FeedStatsItem | null = null;
+      const gateFailExamples: Array<{
+        event_id: string;
+        reasons: string[];
+        text_len: number;
+        sources: number;
+        overview_status: string;
+      }> = [];
 
       for (const row of rows as any[]) {
         const latestVersion = row.versions?.[0] ?? null;
@@ -57,7 +96,7 @@ export function debugFeedRoutes(feedRepo: FeedRepository): FastifyPluginCallback
         const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
 
         const ai = packet?.ai_overview;
-        const hasDisclaimer = typeof ai?.why === 'string' && /única fuente|una fuente/i.test(ai.why);
+        const hasDisclaimer = typeof ai?.why === 'string' && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
 
         const gate = evaluatePublishGate({
           unique_sources_count: uniqueSourcesCount,
@@ -86,9 +125,18 @@ export function debugFeedRoutes(feedRepo: FeedRepository): FastifyPluginCallback
           for (const r of gate.reasons) {
             reasonCounts.set(r, (reasonCounts.get(r) ?? 0) + 1);
           }
+          if (gateFailExamples.length < 10) {
+            gateFailExamples.push({
+              event_id: row.id,
+              reasons: gate.reasons,
+              text_len: totalUsableTextLen,
+              sources: uniqueSourcesCount,
+              overview_status: overviewStatus,
+            });
+          }
         }
 
-        const statsItem: FeedStatsItem = {
+        items.push({
           event_id: row.id,
           state: row.state,
           headline: latestVersion?.headline ?? null,
@@ -101,28 +149,24 @@ export function debugFeedRoutes(feedRepo: FeedRepository): FastifyPluginCallback
           evidence_level: evidenceLevel,
           why_no_overview: whyNoOverview,
           published_at: row.publishedAt?.toISOString() ?? null,
-        };
-
-        items.push(statsItem);
-        if (gate.eligible && !samplePass) samplePass = statsItem;
-        if (!gate.eligible && !sampleFail) sampleFail = statsItem;
+        });
       }
 
-      // Top 3 filter reasons
+      // Top 10 filter reasons
       const topReasons = [...reasonCounts.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
+        .slice(0, 10)
         .map(([reason, count]) => ({ reason, count }));
 
       return reply.send({
+        pipeline,
         totals: {
           published_total: rows.length,
           feed_returned_count: rows.length - gateFilteredCount,
           gate_filtered_count: gateFilteredCount,
         },
         top_filter_reasons: topReasons,
-        sample_pass: samplePass,
-        sample_fail: sampleFail,
+        gate_fail_examples: gateFailExamples,
         events: items,
       });
     });

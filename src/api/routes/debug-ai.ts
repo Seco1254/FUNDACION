@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
 import { ulid } from 'ulid';
+import { validateEventId } from './validate-id.js';
 import { EventRepository } from '../../modules/events/repo/event-repo.js';
 import { ClaimRepository } from '../../modules/claims/repo/claim-repo.js';
 import { VersionRepository } from '../../modules/versions/repo/version-repo.js';
@@ -29,10 +30,11 @@ export function debugAiRoutes(
     app.post<{ Querystring: { event_id: string; force?: string } }>(
       '/v1/debug/ai/run',
       async (request, reply) => {
-        const eventId = (request.query as any).event_id;
-        if (!eventId) {
-          return reply.status(400).send({ error: 'event_id query parameter required' });
+        const check = validateEventId((request.query as any).event_id);
+        if (!check.valid) {
+          return reply.status(400).send({ error: check.error });
         }
+        const eventId = check.id;
 
         const force = (request.query as any).force === '1';
 

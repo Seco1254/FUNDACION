@@ -146,7 +146,7 @@ const mockFeedServicePendingOverview = {
 } as unknown as FeedService;
 
 const mockFeedService = {
-  getFeed: async () => ({ items: [], next_cursor: null }),
+  getFeed: async () => ({ items: [], next_cursor: null, empty_reason: 'DB_EMPTY' }),
 } as unknown as FeedService;
 
 const mockEventRepo = {
@@ -346,6 +346,14 @@ describe('API contract tests', () => {
       const valid = validate(body);
       if (!valid) console.error(validate.errors);
       expect(valid).toBe(true);
+    });
+
+    it('empty feed includes empty_reason', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v1/feed?tab=global' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.items).toHaveLength(0);
+      expect(body.empty_reason).toBe('DB_EMPTY');
     });
 
     it('feed items include sources[], evidence_level, and why_no_overview', async () => {

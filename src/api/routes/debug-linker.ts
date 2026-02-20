@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
 import { AuditRepository } from '../../modules/audit/repo/audit-repo.js';
 import { EventRepository } from '../../modules/events/repo/event-repo.js';
+import { validateEventId } from './validate-id.js';
 
 export function debugLinkerRoutes(
   auditRepo: AuditRepository,
@@ -10,15 +11,15 @@ export function debugLinkerRoutes(
     app.get<{ Querystring: { event_id?: string; limit?: string } }>(
       '/v1/debug/linker/diagnostics',
       async (request, reply) => {
-        const eventId = request.query.event_id;
-        const limit = Math.min(parseInt(request.query.limit ?? '20', 10), 100);
-
-        if (!eventId) {
+        const check = validateEventId(request.query.event_id);
+        if (!check.valid) {
           return reply.status(400).send({
-            error: 'Missing event_id parameter',
+            error: check.error,
             usage: 'GET /v1/debug/linker/diagnostics?event_id=<uuid>&limit=20',
           });
         }
+        const eventId = check.id;
+        const limit = Math.min(parseInt(request.query.limit ?? '20', 10), 100);
 
         // Get event details
         const event = await eventRepo.findByIdWithDetails(eventId);

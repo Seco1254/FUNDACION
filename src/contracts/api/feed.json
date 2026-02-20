@@ -42,7 +42,8 @@
         }
       }
     },
-    "next_cursor": { "type": ["string", "null"] }
+    "next_cursor": { "type": ["string", "null"] },
+    "empty_reason": { "type": "string", "enum": ["NO_EVENTS", "NO_PUBLISHED", "GATE_FILTERED_ALL", "DB_EMPTY"] }
   },
   "additionalProperties": false
 }

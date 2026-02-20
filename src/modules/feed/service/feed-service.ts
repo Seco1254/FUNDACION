@@ -1,5 +1,5 @@
 import { FeedRepository } from '../repo/feed-repo.js';
-import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse } from '../domain/types.js';
+import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 import { evaluatePublishGate } from '../../../core/llm/gates.js';
@@ -237,6 +237,17 @@ export class FeedService {
     this.rankingService = rankingService ?? null;
   }
 
+  private async diagnoseEmpty(publishedRows: number, gatedAll: boolean): Promise<EmptyReason> {
+    if (gatedAll) return 'GATE_FILTERED_ALL';
+    if (publishedRows === 0) {
+      const stateCounts = await this.repo.countEventsByState();
+      const total = Object.values(stateCounts).reduce((a, b) => a + b, 0);
+      if (total === 0) return 'DB_EMPTY';
+      if (!stateCounts['PUBLISHED'] || stateCounts['PUBLISHED'] === 0) return 'NO_PUBLISHED';
+    }
+    return 'NO_EVENTS';
+  }
+
   async getFeed(cursorStr?: string): Promise<FeedResponse> {
     // When ranking is enabled and this is page 1 (no cursor), use ranked feed
     if (this.rankingService && !cursorStr) {
@@ -253,7 +264,8 @@ export class FeedService {
     const rows = await this.repo.getFeed(undefined, RANK_WINDOW);
 
     if (rows.length === 0) {
-      return { items: [], next_cursor: null };
+      const empty_reason = await this.diagnoseEmpty(0, false);
+      return { items: [], next_cursor: null, empty_reason };
     }
 
     const scored = await this.rankingService!.rankPublishedEvents(rows as any);
@@ -278,6 +290,11 @@ export class FeedService {
       const lastRow = rankedRows[scored.findIndex((s) => s.eventId === eligible[lastIdx].item.event_id)] ?? rankedRows[lastIdx];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
       next_cursor = Buffer.from(`${ts}|${eligible[lastIdx].item.event_id}`).toString('base64');
+    }
+
+    if (feedItems.length === 0) {
+      const empty_reason = await this.diagnoseEmpty(rows.length, gated.length > 0 && eligible.length === 0);
+      return { items: [], next_cursor: null, empty_reason };
     }
 
     return { items: feedItems, next_cursor };
@@ -310,6 +327,11 @@ export class FeedService {
       const lastRow = rows.find((r: any) => r.id === eligible[PAGE_SIZE - 1].item.event_id) ?? rows[rows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
       next_cursor = Buffer.from(`${ts}|${eligible[PAGE_SIZE - 1].item.event_id}`).toString('base64');
+    }
+
+    if (feedItems.length === 0) {
+      const empty_reason = await this.diagnoseEmpty(rows.length, gated.length > 0 && eligible.length === 0);
+      return { items: [], next_cursor: null, empty_reason };
     }
 
     return { items: feedItems, next_cursor };

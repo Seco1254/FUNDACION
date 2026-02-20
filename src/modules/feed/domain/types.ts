@@ -35,7 +35,10 @@ export interface FeedItem {
   why_no_overview?: string | null;
 }
 
+export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';
+
 export interface FeedResponse {
   items: FeedItem[];
   next_cursor: string | null;
+  empty_reason?: EmptyReason;
 }

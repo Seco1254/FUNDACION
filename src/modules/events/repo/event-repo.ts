@@ -159,6 +159,27 @@ export class EventRepository {
     }) as Promise<EventEntity[]>;
   }
 
+  async countByState(): Promise<Record<string, number>> {
+    const rows = await this.prisma.event.groupBy({
+      by: ['state'],
+      _count: { _all: true },
+    });
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.state] = row._count._all;
+    }
+    return result;
+  }
+
+  async oldestPendingPublishAt(): Promise<Date | null> {
+    const row = await this.prisma.event.findFirst({
+      where: { state: 'PENDING_PUBLISH' as any },
+      orderBy: { publishAt: 'asc' },
+      select: { publishAt: true },
+    });
+    return row?.publishAt ?? null;
+  }
+
   async findByIdWithDetails(id: string) {
     return this.prisma.event.findUnique({
       where: { id },

@@ -55,6 +55,21 @@ export class ArticleRepository {
     }) as Promise<ArticleEntity>;
   }
 
+  async countSince(since: Date): Promise<{ total: number; byStatus: Record<string, number> }> {
+    const rows = await this.prisma.article.groupBy({
+      by: ['status'],
+      where: { createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      byStatus[row.status] = row._count._all;
+      total += row._count._all;
+    }
+    return { total, byStatus };
+  }
+
   async updateEmbedding(
     id: string,
     data: { embeddingModel: string; embeddingHash: string; embeddingVec: number[] },

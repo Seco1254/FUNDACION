@@ -47,6 +47,7 @@ import { debugAiRoutes } from './api/routes/debug-ai.js';
 import { debugFeedRoutes } from './api/routes/debug-feed.js';
 import { debugQualityRoutes } from './api/routes/debug-quality.js';
 import { debugLinkerRoutes } from './api/routes/debug-linker.js';
+import { debugLifecycleRoutes } from './api/routes/debug-lifecycle.js';
 import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
@@ -57,6 +58,7 @@ import { RateLimiter } from './core/http/rate-limiter.js';
 import { registerCacheInvalidation } from './core/cache/invalidation.js';
 import { registerMetricSubscribers } from './core/metrics/subscribers.js';
 
+import { runDevSeed } from './scripts/dev-seed.js';
 import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
 import { withTimeout } from './core/async/with-timeout.js';
 import { RankingService } from './modules/ranking/service/ranking-service.js';
@@ -216,10 +218,11 @@ export function buildApp() {
   app.register(debugScrapeRoutes(scrapeOrchestrator));
   app.register(debugSchedulerRoutes(scheduler, SCHEDULER_TICK_MS));
   app.register(debugAiRoutes(eventRepo, claimRepo, versionRepo, mediaRepo, eventBus, auditService, llm));
-  app.register(debugFeedRoutes(feedRepo));
+  app.register(debugFeedRoutes(feedRepo, eventRepo, articleRepo));
   const qualityService = new QualitySnapshotService(prisma);
   app.register(debugQualityRoutes(qualityService));
   app.register(debugLinkerRoutes(auditRepo, eventRepo));
+  app.register(debugLifecycleRoutes(lifecycleManager, eventRepo));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }
@@ -267,6 +270,15 @@ async function start() {
     }
   } catch (err) {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'startup_rehydration_failed');
+  }
+
+  // Dev seed: insert demo events if DB is empty
+  if (process.env.DEV_SEED_EVENTS === '1') {
+    try {
+      await runDevSeed(prisma);
+    } catch (err) {
+      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'dev_seed_failed');
+    }
   }
 
   // Register periodic jobs: scrape, lifecycle close check, refresh scheduling

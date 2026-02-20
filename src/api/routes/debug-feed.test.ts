@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import { debugFeedRoutes } from './debug-feed.js';
 import { FeedRepository } from '../../modules/feed/repo/feed-repo.js';
@@ -75,23 +75,26 @@ describe('GET /v1/debug/feed/stats', () => {
     expect(body.top_filter_reasons[0]).toHaveProperty('reason');
     expect(body.top_filter_reasons[0]).toHaveProperty('count');
 
-    // Samples
-    expect(body.sample_pass).not.toBeNull();
-    expect(body.sample_pass.event_id).toBe('evt-pass');
-    expect(body.sample_pass.gate_pass).toBe(true);
-
-    expect(body.sample_fail).not.toBeNull();
-    expect(body.sample_fail.event_id).toBe('evt-fail');
-    expect(body.sample_fail.gate_pass).toBe(false);
+    // Gate fail examples
+    expect(body.gate_fail_examples).toHaveLength(1);
+    expect(body.gate_fail_examples[0].event_id).toBe('evt-fail');
 
     // Events list
     expect(body.events).toHaveLength(2);
+    const pass = body.events.find((e: any) => e.event_id === 'evt-pass');
+    const fail = body.events.find((e: any) => e.event_id === 'evt-fail');
+    expect(pass.gate_pass).toBe(true);
+    expect(fail.gate_pass).toBe(false);
+
     for (const evt of body.events) {
       expect(evt).toHaveProperty('event_id');
       expect(evt).toHaveProperty('overview_status');
       expect(evt).toHaveProperty('gate_pass');
       expect(evt).toHaveProperty('evidence_level');
     }
+
+    // pipeline is null when no repos provided
+    expect(body.pipeline).toBeNull();
 
     await app.close();
   });
@@ -112,8 +115,7 @@ describe('GET /v1/debug/feed/stats', () => {
     expect(body.totals.feed_returned_count).toBe(0);
     expect(body.totals.gate_filtered_count).toBe(0);
     expect(body.events).toHaveLength(0);
-    expect(body.sample_pass).toBeNull();
-    expect(body.sample_fail).toBeNull();
+    expect(body.gate_fail_examples).toHaveLength(0);
 
     await app.close();
   });
