@@ -187,11 +187,12 @@ export class ClaimQuoteExtractor {
     const articleInputs: ArticleInput[] = await Promise.all(
       articles.map(async (a) => {
         const media = await this.mediaRepo.findById(a.mediaId);
+        const bodyText = a.textNorm ?? a.snippet ?? '';
         return {
           article_id: a.id,
           media_key: media?.mediaKey ?? 'unknown',
           title: a.title ?? '',
-          snippet: a.snippet ?? '',
+          snippet: bodyText.slice(0, 3000),
           url: a.url ?? '',
           published_at: a.publishedAt?.toISOString?.() ?? null,
         };
@@ -364,7 +365,9 @@ export class ClaimQuoteExtractor {
       const seenArticleClaim = new Set<string>();
 
       for (const article of articles) {
-        const sourceText = `${article.title}. ${article.snippet}`;
+        const sourceText = article.textNorm
+          ? `${article.title}. ${article.textNorm}`
+          : `${article.title}. ${article.snippet}`;
         const sentences = splitSentences(sourceText);
 
         for (const sentence of sentences) {

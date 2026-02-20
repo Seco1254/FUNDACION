@@ -16,7 +16,7 @@ export interface ArticleInput {
 
 export function buildClaimExtractionPrompt(articles: ArticleInput[]): string {
   const articleList = articles.map((a, i) =>
-    `[${i + 1}] media: ${a.media_key} | url: ${a.url}\n    title: ${a.title}\n    snippet: ${a.snippet}`,
+    `[${i + 1}] media: ${a.media_key} | url: ${a.url}\n    title: ${a.title}\n    texto: ${a.snippet}`,
   ).join('\n\n');
 
   return `Analiza los siguientes artículos de noticias colombianas y extrae claims (afirmaciones atómicas verificables).
@@ -146,6 +146,10 @@ export function buildOverviewPrompt(input: OverviewInput): string {
     `  ${i + 1}. [${q.media_key}] "${q.quote}"`,
   ).join('\n');
 
+  const singleSourceNote = input.sources_count < 2
+    ? '\n- NOTA: Solo hay UNA fuente. Incluye en "why" la frase: "Evidencia limitada (una fuente)."'
+    : '';
+
   return `Genera un resumen periodístico estructurado basado EXCLUSIVAMENTE en la siguiente evidencia.
 
 CONSENSO ENTRE FUENTES:
@@ -159,28 +163,32 @@ ${quoteList}
 
 REGLAS ESTRICTAS:
 - NO inventes información que no esté en la evidencia.
-- Si la evidencia es insuficiente, di "No concluyente" y explica por qué.
-- Cada bullet debe estar respaldado por al menos una cita.
+- NUNCA dejes una sección vacía con "Sin información disponible" si hay citas proporcionadas.
+- Si la evidencia para una sección específica es insuficiente, reformula usando la información disponible.
+- Cada bullet debe estar respaldado por al menos una cita y ser una oración completa con contexto.
 - overview: 3-5 frases resumen (párrafo completo, no telegráfico).
-- what_happened: 3-5 bullets de hechos verificados. Cada bullet debe ser una oración completa con contexto.
+- what_happened: 3-5 bullets de hechos verificados.
 - context: 3-5 bullets de contexto/antecedentes relevantes.
-- in_dispute: 2-4 bullets de puntos en disputa (si los hay).
-- Total mínimo: ~150 palabras entre todas las secciones. NO seas escueto.
+- in_dispute: 2-4 bullets de puntos en disputa. Si no hay disputa: ["No se identifican versiones contradictorias por ahora."]
+- Total mínimo: 150-220 palabras entre todas las secciones. NO seas escueto.
+- facts_extracted: 5-10 fragmentos clave extraídos de las citas (para auditoría interna, no se muestran al usuario).${singleSourceNote}
 
 Responde EXCLUSIVAMENTE con JSON válido:`;
 }
 
 export const OVERVIEW_SYSTEM = `Eres un editor de noticias colombiano senior. Generas resúmenes precisos y equilibrados basados SOLO en evidencia proporcionada.
 NUNCA inventes hechos, nombres o cifras que no estén en la entrada.
-Si la evidencia es insuficiente para una sección, usa: "Sin evidencia suficiente aún."
+NUNCA respondas "Sin información disponible" si se proporcionaron citas. Reformula con lo que hay.
+Si solo hay una fuente, incluye: "Evidencia limitada (una fuente)." en el campo "why".
 Responde SOLO con JSON válido. No incluyas texto fuera del JSON.
 
 Schema esperado:
 {
-  "overview": "string (3-5 frases resumen, párrafo completo)",
-  "what_happened": ["bullet 1", "bullet 2", "bullet 3"],
-  "context": ["bullet 1", "bullet 2", "bullet 3"],
+  "overview": "string (3-5 frases resumen, párrafo completo, ~80 palabras)",
+  "what_happened": ["bullet 1", "bullet 2", "bullet 3", "...hasta 5"],
+  "context": ["bullet 1", "bullet 2", "bullet 3", "...hasta 5"],
   "in_dispute": ["bullet 1", "bullet 2"],
   "confidence_label": "Alta|Media|Baja|No concluyente",
-  "why": "string (1-2 frases explicando confianza y cobertura)"
+  "why": "string (1-2 frases explicando confianza y cobertura)",
+  "facts_extracted": ["fragmento clave 1", "fragmento clave 2", "...hasta 10"]
 }`;

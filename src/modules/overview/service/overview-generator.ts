@@ -3,6 +3,7 @@ import { EventBus, EventHandler, EventEnvelope } from '../../../core/event_bus/i
 import { AuditLogWriter } from '../../../core/event_bus/dispatcher.js';
 import { ClaimRepository } from '../../claims/repo/claim-repo.js';
 import { VersionRepository } from '../../versions/repo/version-repo.js';
+import { EventRepository } from '../../events/repo/event-repo.js';
 import { logger } from '../../../core/logging/logger.js';
 import type { LlmClient } from '../../../core/llm/client.js';
 import {
@@ -19,6 +20,8 @@ import {
   buildInsufficientOverview,
 } from '../../../core/llm/gates.js';
 import { deriveTeaser } from '../../../core/llm/teaser.js';
+
+const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
 
 export interface OverviewBullet {
   claim_id: string;
@@ -55,6 +58,7 @@ export interface OverviewResult {
 
 export class OverviewGenerator {
   private llm: LlmClient | null;
+  private eventRepo: EventRepository | null;
 
   constructor(
     private claimRepo: ClaimRepository,
@@ -62,8 +66,10 @@ export class OverviewGenerator {
     private eventBus: EventBus,
     private auditWriter: AuditLogWriter,
     llm?: LlmClient | null,
+    eventRepo?: EventRepository | null,
   ) {
     this.llm = llm ?? null;
+    this.eventRepo = eventRepo ?? null;
   }
 
   /**
@@ -92,6 +98,28 @@ export class OverviewGenerator {
     if (!evidenceCheck.valid) {
       logger.info({ eventId, reasons: evidenceCheck.reasons }, 'ai_overview_gate_blocked');
       const heuristicOverview = this.buildOverview(claimsWithQuotes);
+
+      // Try text fallback before giving up
+      if (this.eventRepo) {
+        const articles = await this.eventRepo.findArticlesForEvent(eventId);
+        const articlesWithMedia = articles.map((a: any) => ({
+          title: a.title ?? '',
+          textNorm: a.textNorm ?? null,
+          snippet: a.snippet ?? '',
+          url: a.url ?? '',
+          mediaKey: a.media?.mediaKey ?? 'unknown',
+        }));
+        const textFallback = this.buildTextFallbackOverview(articlesWithMedia);
+        if (textFallback) {
+          return {
+            overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
+            ai_overview: { ...textFallback, quality_gate_reasons: evidenceCheck.reasons },
+            ai_teaser: (textFallback.what_happened as string[])[0] ?? '',
+            mode: 'llm',
+          };
+        }
+      }
+
       const insufficient = buildInsufficientOverview(evidenceCheck.reasons);
       return {
         overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
@@ -336,8 +364,34 @@ export class OverviewGenerator {
         const overview = this.buildOverview(claimsWithQuotes);
         computedGateStatus = overview.gate_status;
 
-        // Build ai_overview from heuristic sections so the feed is never stuck on null
-        const heuristicAiOverview = this.buildHeuristicAiOverview(overview);
+        // Build ai_overview from heuristic sections
+        let aiOverview = this.buildHeuristicAiOverview(overview);
+        let overviewMode = 'heuristic';
+
+        // If heuristic produced empty sections and we have article text, try text-based fallback
+        const heuristicWh = aiOverview.what_happened as string[];
+        const heuristicIsEmpty = heuristicWh.length === 0
+          || (heuristicWh.length === 1 && (heuristicWh[0] ?? '').includes('no hay suficiente'));
+
+        if (heuristicIsEmpty && this.eventRepo) {
+          const articles = await this.eventRepo.findArticlesForEvent(event_id);
+          const articlesWithMedia = await Promise.all(
+            articles.map(async (a: any) => ({
+              title: a.title ?? '',
+              textNorm: a.textNorm ?? null,
+              snippet: a.snippet ?? '',
+              url: a.url ?? '',
+              mediaKey: a.media?.mediaKey ?? 'unknown',
+            })),
+          );
+
+          const textFallback = this.buildTextFallbackOverview(articlesWithMedia);
+          if (textFallback) {
+            aiOverview = textFallback;
+            overviewMode = 'fallback';
+            logger.info({ event_id, mode: 'fallback', articles_used: articlesWithMedia.length }, 'text_fallback_overview_generated');
+          }
+        }
 
         if (version) {
           const updatedPacket = {
@@ -346,9 +400,9 @@ export class OverviewGenerator {
               gate_status: overview.gate_status,
               sections: overview.sections,
             },
-            ai_overview: heuristicAiOverview,
-            ai_teaser: (heuristicAiOverview.what_happened as string[])[0] ?? '',
-            overview_mode: 'heuristic',
+            ai_overview: aiOverview,
+            ai_teaser: (aiOverview.what_happened as string[])[0] ?? '',
+            overview_mode: overviewMode,
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
             quality_flags: overview.quality_flags,
@@ -370,6 +424,7 @@ export class OverviewGenerator {
             gate_status: overview.gate_status,
             claims_count: overview.claims_count,
             quotes_count: overview.quotes_count,
+            mode: overviewMode,
           },
         });
       }
@@ -417,6 +472,86 @@ export class OverviewGenerator {
       confidence_label: 'No concluyente',
       why: 'Resumen generado por heurística (sin LLM)',
       status: 'HEURISTIC',
+    };
+  }
+
+  /**
+   * Build a fallback overview directly from article text when the claims-based
+   * pipeline produces insufficient results (gate FAIL / single-source).
+   * Extracts factual sentences from the article body and organizes them into sections.
+   */
+  buildTextFallbackOverview(articles: Array<{ title: string; textNorm: string | null; snippet: string; url: string; mediaKey: string }>): Record<string, unknown> | null {
+    // Collect text from articles with sufficient content
+    const usable = articles.filter((a) => (a.textNorm ?? '').length >= TEXT_MIN_LEN);
+    if (usable.length === 0) return null;
+
+    const uniqueMedia = new Set(usable.map((a) => a.mediaKey));
+    const confidenceLabel = uniqueMedia.size >= 2 ? 'Media' : 'Baja';
+    const disclaimer = uniqueMedia.size < 2 ? 'Evidencia limitada (una sola fuente).' : '';
+
+    // Extract factual sentences from the article text
+    const factsExtracted: string[] = [];
+    const whatHappened: string[] = [];
+    const contextBullets: string[] = [];
+    const seen = new Set<string>();
+
+    for (const article of usable) {
+      const text = article.textNorm ?? article.snippet;
+      const sentences = text.split(/(?<=[.;:])\s+/).filter((s) => s.length >= 40 && s.length <= 300);
+
+      for (const sentence of sentences) {
+        const norm = sentence.toLowerCase().trim();
+        if (seen.has(norm)) continue;
+        seen.add(norm);
+        factsExtracted.push(sentence);
+      }
+    }
+
+    // Classify sentences into sections
+    for (const fact of factsExtracted) {
+      const lower = fact.toLowerCase();
+      const isContext = /según|dijo|señaló|afirmó|indicó|aseguró|declaró|expresó|advirtió|consideró/.test(lower);
+      const isHedging = /podría|se espera|al parecer|sería|investigan|aún no/.test(lower);
+
+      if (isHedging) continue; // Skip hedging for what_happened
+      if (isContext) {
+        if (contextBullets.length < 4) contextBullets.push(fact);
+      } else {
+        if (whatHappened.length < 5) whatHappened.push(fact);
+      }
+
+      if (whatHappened.length >= 5 && contextBullets.length >= 4) break;
+    }
+
+    // If we still don't have enough what_happened, pull from context
+    if (whatHappened.length < 3 && contextBullets.length > 0) {
+      while (whatHappened.length < 3 && contextBullets.length > 0) {
+        whatHappened.push(contextBullets.shift()!);
+      }
+    }
+
+    if (whatHappened.length === 0) return null;
+
+    // Build "En disputa" — for single source, add a standard note
+    const inDispute = ['No se identifican versiones contradictorias por ahora (evidencia limitada).'];
+    const queFalta = ['Falta confirmación de fuentes independientes.'];
+
+    // Build the overview paragraph from the first title + first few bullets
+    const overviewParagraph = usable[0].title + '. ' + whatHappened.slice(0, 3).join('. ');
+
+    return {
+      overview: overviewParagraph,
+      what_happened: whatHappened,
+      context: contextBullets,
+      in_dispute: inDispute,
+      que_falta: queFalta,
+      confidence_label: confidenceLabel,
+      why: disclaimer || 'Resumen basado en texto del artículo (fallback).',
+      status: 'FALLBACK',
+      _audit: {
+        facts_extracted: factsExtracted.slice(0, 10),
+        articles_used: usable.map((a) => ({ url: a.url, media_key: a.mediaKey, text_len: (a.textNorm ?? '').length })),
+      },
     };
   }
 

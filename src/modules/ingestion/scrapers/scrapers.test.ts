@@ -11,6 +11,7 @@ import { AscolbiScraper } from './ascolbi.js';
 import { AciurScraper } from './aciur.js';
 import { StubScraper } from './stub-scraper.js';
 import { getScraperForMedia } from './registry.js';
+import { extractArticleBody } from './html-utils.js';
 
 function loadFixture(name: string): string {
   return readFileSync(resolve(process.cwd(), `test/fixtures/${name}`), 'utf-8');
@@ -49,6 +50,17 @@ describe('ElTiempoScraper', () => {
     expect(parsed.snippet).toContain('El presidente de Colombia');
     expect(parsed.snippet.length).toBeGreaterThan(80);
     expect(parsed.publishedAt).toEqual(new Date('2026-02-15T10:30:00Z'));
+  });
+
+  it('extracts full article body text (textContent >= 800 chars)', () => {
+    const html = loadFixture('eltiempo-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.eltiempo.com/politica/test-12345');
+    expect(parsed.textContent.length).toBeGreaterThan(800);
+    expect(parsed.textContent).toContain('impuesto de renta');
+    expect(parsed.textContent).toContain('Banco de la República');
+    expect(parsed.textContent).not.toContain('Suscríbete');
+    expect(parsed.textContent).not.toContain('newsletter');
+    expect(parsed.textContent).not.toContain('También le puede interesar');
   });
 });
 
@@ -100,6 +112,18 @@ describe('ElEspectadorScraper', () => {
     expect(parsed.snippet).toContain('El Congreso de la República');
     expect(parsed.snippet.length).toBeGreaterThan(80);
     expect(parsed.publishedAt).toEqual(new Date('2026-02-14T08:00:00Z'));
+  });
+
+  it('extracts full article body text (textContent >= 800 chars, no boilerplate)', () => {
+    const html = loadFixture('elespectador-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.elespectador.com/politica/test/');
+    expect(parsed.textContent.length).toBeGreaterThan(800);
+    expect(parsed.textContent).toContain('3 billones de pesos');
+    expect(parsed.textContent).toContain('Corte Constitucional');
+    expect(parsed.textContent).not.toContain('Suscríbete');
+    expect(parsed.textContent).not.toContain('Inicia sesión');
+    expect(parsed.textContent).not.toContain('Copyright');
+    expect(parsed.textContent).not.toContain('Términos y condiciones');
   });
 });
 
@@ -315,5 +339,60 @@ describe('Registry', () => {
   it('returns stub for unknown media key', () => {
     const scraper = getScraperForMedia('unknown_media_xyz');
     expect(scraper.listPageUrls).toHaveLength(0);
+  });
+});
+
+describe('extractArticleBody', () => {
+  it('extracts paragraphs from <article> tag', () => {
+    const html = `<html><body><article>
+      <p>Primer párrafo con contenido suficiente para pasar el filtro de longitud mínima de treinta caracteres.</p>
+      <p>Segundo párrafo con más contenido relevante sobre el tema de la noticia colombiana.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('Primer párrafo');
+    expect(text).toContain('Segundo párrafo');
+  });
+
+  it('removes boilerplate (suscríbete, newsletter, copyright)', () => {
+    const html = `<html><body><article>
+      <p>La reforma tributaria fue presentada ante el Congreso de la República de Colombia.</p>
+      <p>Los gremios económicos expresaron su preocupación por el impacto en la economía colombiana.</p>
+    </article>
+    <aside><p>Suscríbete a nuestro newsletter para recibir las últimas noticias.</p></aside>
+    <footer><p>Copyright © 2026 Todos los derechos reservados.</p></footer>
+    </body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('reforma tributaria');
+    expect(text).not.toContain('Suscríbete');
+    expect(text).not.toContain('newsletter');
+    expect(text).not.toContain('Copyright');
+  });
+
+  it('skips short paragraphs under 30 chars', () => {
+    const html = `<html><body><article>
+      <p>Corto</p>
+      <p>Un párrafo suficientemente largo como para pasar el filtro de longitud mínima de caracteres.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).not.toContain('Corto');
+    expect(text).toContain('párrafo suficientemente largo');
+  });
+
+  it('deduplicates consecutive identical paragraphs', () => {
+    const html = `<html><body><article>
+      <p>La misma frase repetida dos veces para probar la deduplicación de párrafos consecutivos.</p>
+      <p>La misma frase repetida dos veces para probar la deduplicación de párrafos consecutivos.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    const count = text.split('La misma frase repetida').length - 1;
+    expect(count).toBe(1);
+  });
+
+  it('falls back to <main> then <body> when no <article>', () => {
+    const html = `<html><body><main>
+      <p>Contenido dentro de main tag con información relevante sobre el evento noticioso.</p>
+    </main></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('Contenido dentro de main');
   });
 });

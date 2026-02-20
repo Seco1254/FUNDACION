@@ -167,7 +167,7 @@ export function buildApp() {
 
   const claimRepo = new ClaimRepository(prisma);
   const claimExtractor = new ClaimQuoteExtractor(eventRepo, versionRepo, mediaRepo, claimRepo, eventBus, auditService, llm);
-  const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService, llm);
+  const overviewGenerator = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditService, llm, eventRepo);
 
   // Ranking (needs claimRepo for Q formula)
   const rankingService = new RankingService(eventRepo, claimRepo);

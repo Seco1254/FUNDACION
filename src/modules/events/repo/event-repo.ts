@@ -102,7 +102,7 @@ export class EventRepository {
   async findArticlesForEvent(eventId: string): Promise<any[]> {
     const rows = await this.prisma.eventArticle.findMany({
       where: { eventId },
-      include: { article: true },
+      include: { article: { include: { media: true } } },
     });
     return rows.map((r: any) => r.article);
   }

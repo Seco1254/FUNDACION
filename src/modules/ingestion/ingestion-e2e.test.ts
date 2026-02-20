@@ -254,6 +254,7 @@ describe('Ingestion E2E pipeline (no internet)', () => {
           title: titleMatch?.[1] ?? '',
           snippet: snippetMatch?.[1] ?? '',
           publishedAt: null,
+          textContent: '',
         };
       },
     };

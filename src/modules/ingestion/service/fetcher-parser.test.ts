@@ -88,6 +88,7 @@ describe('FetcherParser', () => {
           title: titleMatch?.[1] ?? '',
           snippet: snippetMatch?.[1] ?? '',
           publishedAt: dateMatch ? new Date(dateMatch[1]) : null,
+          textContent: '',
         };
       },
     };
@@ -199,7 +200,7 @@ describe('FetcherParser', () => {
     const mockScraper: MediaScraper = {
       listPageUrls: [],
       extractUrls() { return []; },
-      parseArticle() { return { title: 'T', snippet: 'S', publishedAt: null }; },
+      parseArticle() { return { title: 'T', snippet: 'S', publishedAt: null, textContent: '' }; },
     };
     const scraperLookup = vi.fn().mockReturnValue(mockScraper);
 

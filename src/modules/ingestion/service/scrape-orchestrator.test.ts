@@ -73,7 +73,7 @@ describe('ScrapeOrchestrator', () => {
         return [...new Set(urls)];
       },
       parseArticle() {
-        return { title: '', snippet: '', publishedAt: null };
+        return { title: '', snippet: '', publishedAt: null, textContent: '' };
       },
     };
 
@@ -120,7 +120,7 @@ describe('ScrapeOrchestrator', () => {
         return urls; // intentionally NOT deduped to test orchestrator dedupe
       },
       parseArticle() {
-        return { title: '', snippet: '', publishedAt: null };
+        return { title: '', snippet: '', publishedAt: null, textContent: '' };
       },
     };
 
@@ -153,7 +153,7 @@ describe('ScrapeOrchestrator', () => {
         return ['https://www.eltiempo.com/politica/existing-123'];
       },
       parseArticle() {
-        return { title: '', snippet: '', publishedAt: null };
+        return { title: '', snippet: '', publishedAt: null, textContent: '' };
       },
     };
 
@@ -181,7 +181,7 @@ describe('ScrapeOrchestrator', () => {
     const mockScraper: MediaScraper = {
       listPageUrls: ['https://www.eltiempo.com/'],
       extractUrls() { return []; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
 
     const fetchHtml = vi.fn().mockRejectedValue(new Error('network error'));
@@ -212,7 +212,7 @@ describe('ScrapeOrchestrator', () => {
     const stubScraper: MediaScraper = {
       listPageUrls: [],
       extractUrls() { return []; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
 
     const fetchHtml = vi.fn();

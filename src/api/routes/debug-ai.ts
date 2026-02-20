@@ -89,7 +89,7 @@ export function debugAiRoutes(
 
         // Step 2: Run overview generation
         const generator = new OverviewGenerator(
-          claimRepo, versionRepo, eventBus, auditWriter, llm,
+          claimRepo, versionRepo, eventBus, auditWriter, llm, eventRepo,
         );
 
         const overviewEnvelope = {
@@ -106,10 +106,35 @@ export function debugAiRoutes(
         const updatedVersion = await versionRepo.findById(version.id);
         const packet = (updatedVersion?.packetJson as any) ?? {};
 
+        // Gather article diagnostics
+        const articles = await eventRepo.findArticlesForEvent(eventId);
+        const uniqueMediaKeys = new Set(articles.map((a: any) => a.media?.mediaKey ?? 'unknown'));
+
+        const supportedClaims = await claimRepo.findClaimsWithQuotesByVersion(eventId, version.id);
+        const supportedCount = supportedClaims.filter((c: any) => c.status === 'SUPPORTED').length;
+
+        const aiOverview = packet.ai_overview ?? {};
+        const sectionsFilled = ['what_happened', 'context', 'in_dispute']
+          .filter((k) => Array.isArray(aiOverview[k]) && aiOverview[k].length > 0).length;
+
+        results.article_count = articles.length;
+        results.unique_media_count = uniqueMediaKeys.size;
+        results.per_article = articles.map((a: any) => ({
+          url: a.url,
+          media_key: a.media?.mediaKey ?? 'unknown',
+          status: a.status,
+          text_len: (a.textNorm ?? '').length,
+        }));
+        results.gate_status = packet.overview?.gate_status ?? 'NA';
+        results.supported_claims_count = supportedCount;
         results.overview = packet.overview ?? null;
         results.ai_overview = packet.ai_overview ?? null;
         results.ai_teaser = packet.ai_teaser ?? null;
         results.overview_mode = packet.overview_mode ?? 'heuristic';
+        results.confidence_label = aiOverview.confidence_label ?? null;
+        results.sections_filled_count = sectionsFilled;
+        results.facts_extracted_count = Array.isArray(aiOverview._audit?.facts_extracted)
+          ? aiOverview._audit.facts_extracted.length : 0;
         results.quality_flags = packet.quality_flags ?? null;
         results._ai_hashes = packet._ai_hashes ?? null;
 

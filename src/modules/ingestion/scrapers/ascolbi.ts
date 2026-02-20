@@ -1,5 +1,5 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
-import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
+import { extractMeta, extractH1, extractLeadParagraph, isValidDate, extractArticleBody } from './html-utils.js';
 
 // NOTE: ascolbi.org blog may render via Joomla/SPA with JS-only navigation.
 // If extractUrls returns 0 in production, the list page HTML likely lacks
@@ -29,7 +29,9 @@ export class AscolbiScraper implements MediaScraper {
       extractMeta(html, 'datePublished');
     const publishedAt = dateStr ? new Date(dateStr) : null;
 
-    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
+    const textContent = extractArticleBody(html);
+
+    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null, textContent };
   }
 
   private isArticleUrl(url: string): boolean {

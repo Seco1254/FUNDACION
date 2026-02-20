@@ -17,6 +17,7 @@ export class ArticleRepository {
     url: string;
     title: string;
     snippet: string;
+    textNorm?: string | null;
     publishedAt?: Date | null;
     status?: string;
   }): Promise<ArticleEntity> {
@@ -26,6 +27,7 @@ export class ArticleRepository {
         url: data.url,
         title: data.title,
         snippet: data.snippet,
+        textNorm: data.textNorm ?? null,
         publishedAt: data.publishedAt ?? null,
         status: (data.status as any) ?? 'DISCOVERED',
       },

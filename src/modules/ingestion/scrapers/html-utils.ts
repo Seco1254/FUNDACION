@@ -51,3 +51,82 @@ export function decodeHtmlEntities(text: string): string {
 export function isValidDate(d: Date | null): boolean {
   return d !== null && !isNaN(d.getTime());
 }
+
+const MAX_TEXT_NORM_CHARS = 50_000;
+
+const BOILERPLATE_PATTERNS = [
+  /suscr[íi]be(te)?/i,
+  /inicia sesi[óo]n/i,
+  /newsletter/i,
+  /cookies/i,
+  /también le puede interesar/i,
+  /te puede interesar/i,
+  /noticias relacionadas/i,
+  /contenido relacionado/i,
+  /recomendados para ti/i,
+  /más noticias/i,
+  /lee también/i,
+  /comparte esta noticia/i,
+  /síguenos en/i,
+  /publicidad/i,
+  /copyright\s+©/i,
+  /todos los derechos reservados/i,
+  /términos y condiciones/i,
+  /pol[íi]tica de privacidad/i,
+];
+
+const NOISE_TAGS_RE = /<(?:header|footer|nav|aside|script|style|noscript|iframe|form|button|svg|figure|figcaption)[^>]*>[\s\S]*?<\/(?:header|footer|nav|aside|script|style|noscript|iframe|form|button|svg|figure|figcaption)>/gi;
+const COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+/**
+ * Extract the full article body text from an HTML page.
+ * Strategy:
+ *   1. Try <article> tag content
+ *   2. Fallback to <main> tag content
+ *   3. Final fallback: all <p> tags in <body>
+ * Then strip noise tags, boilerplate, and normalize whitespace.
+ */
+export function extractArticleBody(html: string): string {
+  // Remove comments and noise tags first
+  let cleaned = html.replace(COMMENT_RE, '');
+  cleaned = cleaned.replace(NOISE_TAGS_RE, '');
+
+  // Try <article> first, then <main>, then <body>
+  let bodyHtml = '';
+  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  if (articleMatch) {
+    bodyHtml = articleMatch[1];
+  } else {
+    const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+    if (mainMatch) {
+      bodyHtml = mainMatch[1];
+    } else {
+      bodyHtml = cleaned;
+    }
+  }
+
+  // Extract text from <p> tags (paragraph-focused extraction)
+  const paragraphs: string[] = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let pMatch;
+  while ((pMatch = pRegex.exec(bodyHtml)) !== null) {
+    const text = stripHtml(pMatch[1]).trim();
+    if (text.length < 30) continue;
+    if (BOILERPLATE_PATTERNS.some((pat) => pat.test(text))) continue;
+    paragraphs.push(text);
+  }
+
+  // Deduplicate consecutive identical paragraphs
+  const deduped: string[] = [];
+  for (const p of paragraphs) {
+    if (deduped.length === 0 || deduped[deduped.length - 1] !== p) {
+      deduped.push(p);
+    }
+  }
+
+  const fullText = deduped.join('\n\n');
+
+  // Collapse excessive whitespace and truncate
+  const normalized = fullText.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return normalized.slice(0, MAX_TEXT_NORM_CHARS);
+}

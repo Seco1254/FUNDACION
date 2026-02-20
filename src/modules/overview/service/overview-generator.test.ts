@@ -287,5 +287,113 @@ describe('OverviewGenerator', () => {
       expect(updateCall[1].gateStatus).toBe('FAIL');
       expect(published[0].payload).toHaveProperty('gate_status', 'FAIL');
     });
+
+    it('uses text fallback when gate FAIL and articles have textNorm', async () => {
+      claimRepo.findClaimsWithQuotesByVersion.mockResolvedValue([
+        makeClaim({
+          status: 'INSUFFICIENT',
+          quotes: [makeQuote()],
+        }),
+      ]);
+
+      const eventRepo = {
+        findArticlesForEvent: vi.fn().mockResolvedValue([
+          {
+            title: 'Reforma tributaria aprobada en Colombia',
+            textNorm: 'El Congreso de la República aprobó la reforma tributaria con 87 votos a favor. La medida establece un aumento del 15 por ciento en la recaudación fiscal, lo que representaría ingresos adicionales de aproximadamente 18 billones de pesos para el Estado colombiano. Los gremios económicos del país expresaron su preocupación por el impacto que podría tener la reforma en la competitividad empresarial. Según el ministro de Hacienda, los recursos adicionales se destinarán a programas de educación y salud. El presidente señaló que la reforma es necesaria para financiar los programas sociales comprometidos en el Plan Nacional de Desarrollo. La propuesta será presentada oficialmente ante el Congreso en las próximas semanas. Analistas económicos consideran que el proyecto podría enfrentar una fuerte oposición en el Senado. La reforma también propone simplificar el sistema tributario reduciendo el número de declaraciones anuales requeridas. El Banco de la República indicó que monitorea con atención los posibles efectos de la reforma sobre la inflación y las tasas de interés.',
+            snippet: 'El Congreso aprobó la reforma tributaria.',
+            url: 'https://eltiempo.com/reforma',
+            media: { mediaKey: 'eltiempo' },
+          },
+        ]),
+      };
+
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter, null, eventRepo as any);
+      await gen.handler()(makeClaimGraphBuiltEnvelope('ev-1', 'ver-1'));
+
+      const updateCall = versionRepo.update.mock.calls[0];
+      const packet = updateCall[1].packetJson;
+      expect(packet.overview_mode).toBe('fallback');
+      expect(packet.ai_overview.status).toBe('FALLBACK');
+      const wh = packet.ai_overview.what_happened as string[];
+      expect(wh.length).toBeGreaterThanOrEqual(3);
+      expect(packet.ai_overview.confidence_label).toBe('Baja');
+    });
+
+    it('does NOT generate text fallback when article text is too short', async () => {
+      claimRepo.findClaimsWithQuotesByVersion.mockResolvedValue([
+        makeClaim({
+          status: 'INSUFFICIENT',
+          quotes: [makeQuote()],
+        }),
+      ]);
+
+      const eventRepo = {
+        findArticlesForEvent: vi.fn().mockResolvedValue([
+          {
+            title: 'Título corto',
+            textNorm: 'Texto demasiado corto.',
+            snippet: 'Snippet corto.',
+            url: 'https://eltiempo.com/short',
+            media: { mediaKey: 'eltiempo' },
+          },
+        ]),
+      };
+
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter, null, eventRepo as any);
+      await gen.handler()(makeClaimGraphBuiltEnvelope('ev-1', 'ver-1'));
+
+      const updateCall = versionRepo.update.mock.calls[0];
+      const packet = updateCall[1].packetJson;
+      // Falls back to heuristic (not fallback) since text is too short
+      expect(packet.overview_mode).toBe('heuristic');
+    });
+  });
+
+  describe('buildTextFallbackOverview', () => {
+    it('extracts facts from article text when text >= 800 chars', () => {
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      const result = gen.buildTextFallbackOverview([
+        {
+          title: 'Reforma tributaria aprobada',
+          textNorm: 'El Congreso de la República aprobó la reforma tributaria con 87 votos a favor y 23 en contra en la plenaria del Senado. La medida establece un aumento del 15 por ciento en la recaudación fiscal, lo que representaría ingresos adicionales de aproximadamente 18 billones de pesos para el Estado colombiano. Los gremios económicos del país, representados por la ANDI y Fenalco, expresaron su preocupación por el impacto en la competitividad empresarial. Según el ministro de Hacienda, los recursos adicionales se destinarán a programas de educación y salud en las zonas rurales del país. El presidente señaló que la reforma es necesaria para financiar los programas sociales comprometidos en el Plan Nacional de Desarrollo. La propuesta será presentada oficialmente ante el Congreso de la República en las próximas semanas y se espera que el debate legislativo se extienda durante al menos tres meses. Analistas económicos consideran que el proyecto podría enfrentar una fuerte oposición en el Senado. La reforma también propone simplificar el sistema tributario, reduciendo el número de declaraciones anuales requeridas.',
+          snippet: 'El Congreso aprobó la reforma.',
+          url: 'https://eltiempo.com/reforma',
+          mediaKey: 'eltiempo',
+        },
+      ]);
+
+      expect(result).not.toBeNull();
+      expect((result!.what_happened as string[]).length).toBeGreaterThanOrEqual(3);
+      expect(result!.confidence_label).toBe('Baja');
+      expect(result!.status).toBe('FALLBACK');
+    });
+
+    it('returns null when article text < 800 chars', () => {
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      const result = gen.buildTextFallbackOverview([
+        {
+          title: 'Breve',
+          textNorm: 'Texto muy corto.',
+          snippet: 'Snippet.',
+          url: 'https://example.com/short',
+          mediaKey: 'eltiempo',
+        },
+      ]);
+
+      expect(result).toBeNull();
+    });
+
+    it('uses Media confidence when 2+ sources', () => {
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      const longText = 'El Congreso de la República aprobó la reforma tributaria con 87 votos a favor y 23 en contra en la plenaria del Senado, después de un extenso debate. La medida establece un aumento del 15 por ciento en la recaudación fiscal, lo que representaría ingresos adicionales de aproximadamente 18 billones de pesos para el Estado colombiano. Los gremios económicos del país, representados por la ANDI y Fenalco, expresaron su preocupación por el impacto que podría tener la reforma en la competitividad empresarial y en la generación de empleo formal. Según el ministro de Hacienda, los recursos adicionales se destinarán a programas de educación y salud en las zonas rurales del país. El presidente señaló que la reforma es necesaria para financiar los programas sociales comprometidos en el Plan Nacional de Desarrollo, especialmente aquellos dirigidos a las comunidades más vulnerables. La propuesta será presentada oficialmente ante el Congreso de la República en las próximas semanas y se espera que el debate legislativo se extienda durante al menos tres meses. Analistas económicos consideran que el proyecto podría enfrentar una fuerte oposición en el Senado, donde varios partidos han manifestado su desacuerdo con el incremento de impuestos.';
+      const result = gen.buildTextFallbackOverview([
+        { title: 'Título 1', textNorm: longText, snippet: 'S1', url: 'https://a.com/1', mediaKey: 'eltiempo' },
+        { title: 'Título 2', textNorm: longText, snippet: 'S2', url: 'https://b.com/2', mediaKey: 'elespectador' },
+      ]);
+
+      expect(result).not.toBeNull();
+      expect(result!.confidence_label).toBe('Media');
+    });
   });
 });

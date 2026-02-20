@@ -113,6 +113,7 @@ export class FetcherParser {
       }
 
       const snippet = parsed.snippet.slice(0, MAX_SNIPPET_CHARS);
+      const textNorm = parsed.textContent || null;
 
       let article;
       try {
@@ -121,6 +122,7 @@ export class FetcherParser {
           url,
           title: parsed.title,
           snippet,
+          textNorm,
           publishedAt: parsed.publishedAt,
           status: 'NORMALIZED',
         });
