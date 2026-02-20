@@ -23,7 +23,8 @@
     "dev:client": "cd apps/client && npx expo start --web",
     "dev:all": "./bin/dev-all",
     "reset:db": "./bin/reset-db",
-    "smoke": "./bin/smoke"
+    "smoke": "./bin/smoke",
+    "debug:ui": "./bin/debug-ui"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
