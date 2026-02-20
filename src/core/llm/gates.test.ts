@@ -129,7 +129,7 @@ describe('gates', () => {
       expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
 
-    it('fails when key_facts < 6', () => {
+    it('passes multi-gate when key_facts >= GATE_KEY_FACTS_MIN (default 0)', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 2,
         total_usable_text_len: 1500,
@@ -137,8 +137,8 @@ describe('gates', () => {
         overview_status: 'ready',
         has_disclaimer: false,
       });
-      expect(result.eligible).toBe(false);
-      expect(result.reasons).toContain('KEY_FACTS_INSUFFICIENT');
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
     });
 
     it('fails single-source without disclaimer', () => {

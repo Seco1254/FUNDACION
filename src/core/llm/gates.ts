@@ -73,10 +73,11 @@ export function buildInsufficientOverview(reasons: string[]): Record<string, unk
 
 // ── PUBLISH GATE ──────────────────────────────────────────────────────
 
+const PUBLISH_GATE_ENABLED = process.env.PUBLISH_GATE_ENABLED !== '0';
 const GATE_MULTI_SOURCES = parseInt(process.env.GATE_MULTI_SOURCES ?? '2', 10);
 const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
 const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
-const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '6', 10);
+const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '0', 10);
 
 export interface PublishGateInput {
   unique_sources_count: number;
@@ -99,6 +100,11 @@ export interface PublishGateResult {
  * Gate Single: sources==1 AND text>=800 AND facts>=6 AND overview='ready' AND disclaimer
  */
 export function evaluatePublishGate(input: PublishGateInput): PublishGateResult {
+  // Kill switch: PUBLISH_GATE_ENABLED=0 bypasses the gate entirely
+  if (!PUBLISH_GATE_ENABLED) {
+    return { eligible: true, gate_name: null, reasons: [] };
+  }
+
   const reasons: string[] = [];
 
   if (input.overview_status !== 'ready') {

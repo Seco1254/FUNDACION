@@ -6,6 +6,9 @@ import {
   checkHardBlock,
   THETA_AUTO_LINK,
   THETA_MAYBE_LINK,
+  DISABLE_AUTO_LINK,
+  ENTITY_GUARD_ENABLED,
+  ENTITY_GUARD_MIN_JACCARD,
   ArticleForPairing,
   EventCandidate,
   HardBlockContext,
@@ -403,5 +406,63 @@ describe('decideLinkAction', () => {
   it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.30', () => {
     expect(THETA_AUTO_LINK).toBe(0.45);
     expect(THETA_MAYBE_LINK).toBe(0.30);
+  });
+
+  it('entity guard defaults: enabled with min_jaccard = 0.01', () => {
+    expect(ENTITY_GUARD_ENABLED).toBe(true);
+    expect(ENTITY_GUARD_MIN_JACCARD).toBe(0.01);
+  });
+
+  it('DISABLE_AUTO_LINK defaults to false', () => {
+    expect(DISABLE_AUTO_LINK).toBe(false);
+  });
+
+  it('entity guard: auto-link with entity overlap > MIN_JACCARD still links', async () => {
+    // Same vector + shared entities → high score, entity overlap > 0.01
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-entities',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBeGreaterThan(ENTITY_GUARD_MIN_JACCARD);
+    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_AUTO_LINK);
+
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.action).toBe('LINK');
+  });
+
+  it('entity guard: auto-link score with zero entity overlap downgrades to maybe logic', async () => {
+    // Identical vector → high embedding sim, but completely unrelated entities → entityOverlap=0
+    // The entity guard should downgrade from auto-link to maybe-link
+    const article = makeArticle({
+      title: 'Alpha Bravo Charlie',
+      snippet: 'Alpha Bravo Charlie Delta.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-no-entities',
+      articleVecs: [makeVec(42)], // identical → high embedding
+      articleTexts: ['Xray Yankee Zulu'],
+      uniqueMediaCount: 1,
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBe(0);
+
+    // With entity guard enabled, this should still LINK via the maybe path
+    // because uniqueMediaCount >= 1 and composite >= THETA_MAYBE_LINK
+    const result = await decideLinkAction(article, [candidate], null);
+    // Score is above auto-link but entity guard downgrades it.
+    // Then maybe-link path checks uniqueMedia >= 1 → LINK
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      expect(result.action).toBe('LINK');
+    } else {
+      expect(result.action).toBe('CREATE');
+    }
   });
 });

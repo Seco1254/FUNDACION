@@ -28,7 +28,8 @@ import {
 import { checkMegaEvent, MAX_ARTICLES_PER_EVENT } from './mega-event-guard.js';
 import { THETA_AUTO_LINK, THETA_MAYBE_LINK } from './pair-scorer.js';
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const CANDIDATE_WINDOW_HOURS = parseInt(process.env.EVENT_LINKER_CANDIDATE_WINDOW_HOURS ?? '72', 10);
+const FALLBACK_WINDOW_DAYS = parseInt(process.env.EVENT_LINKER_FALLBACK_WINDOW_DAYS ?? '7', 10);
 const DEBUG_LINKER = process.env.DEBUG_EVENT_LINKER === '1';
 
 export class EventLinkerV2 {
@@ -54,8 +55,26 @@ export class EventLinkerV2 {
 
       const articleVec = article.embeddingVec as number[];
       const now = this.clock.now();
-      const since = new Date(now.getTime() - SEVEN_DAYS_MS);
-      const rawCandidates = await this.eventRepo.findCandidateEvents(since);
+
+      // Primary candidate window (72h default), fallback to wider window if empty
+      const candidateWindowMs = CANDIDATE_WINDOW_HOURS * 60 * 60 * 1000;
+      const fallbackWindowMs = FALLBACK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+      let since = new Date(now.getTime() - candidateWindowMs);
+      let rawCandidates = await this.eventRepo.findCandidateEvents(since);
+
+      if (rawCandidates.length === 0 && fallbackWindowMs > candidateWindowMs) {
+        since = new Date(now.getTime() - fallbackWindowMs);
+        rawCandidates = await this.eventRepo.findCandidateEvents(since);
+        if (rawCandidates.length > 0) {
+          logger.info({
+            article_id,
+            primary_window_hours: CANDIDATE_WINDOW_HOURS,
+            fallback_window_days: FALLBACK_WINDOW_DAYS,
+            candidates_found: rawCandidates.length,
+          }, 'linker_fallback_window_used');
+        }
+      }
 
       // Build rich candidate objects for pair scoring
       const candidates: EventCandidate[] = [];

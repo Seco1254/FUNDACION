@@ -227,4 +227,93 @@ describe('ScrapeOrchestrator', () => {
     expect(result.discovered).toBe(0);
     expect(fetchHtml).not.toHaveBeenCalled();
   });
+
+  it('continues to next media when one times out (per-media timeout)', async () => {
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-slow', mediaKey: 'slow_media', allowlisted: true },
+      { id: 'media-fast', mediaKey: 'fast_media', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const slowScraper: MediaScraper = {
+      listPageUrls: ['https://slow.com/'],
+      extractUrls() { return ['https://slow.com/article-1']; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
+    };
+
+    const fastScraper: MediaScraper = {
+      listPageUrls: ['https://fast.com/'],
+      extractUrls() { return ['https://fast.com/article-1']; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
+    };
+
+    // Slow media hangs forever, fast media returns immediately
+    const fetchHtml = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('slow.com')) {
+        return new Promise(() => {}); // never resolves
+      }
+      return '<html></html>';
+    });
+
+    const scraperLookup = vi.fn().mockImplementation((key: string) => {
+      return key === 'slow_media' ? slowScraper : fastScraper;
+    });
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    // Fast media should succeed even though slow media timed out
+    expect(result.media_results).toHaveLength(2);
+
+    const slowResult = result.media_results.find((r) => r.media_key === 'slow_media');
+    const fastResult = result.media_results.find((r) => r.media_key === 'fast_media');
+
+    expect(slowResult?.ok).toBe(false);
+    expect(slowResult?.error).toContain('Timeout');
+
+    expect(fastResult?.ok).toBe(true);
+    expect(fastResult?.discovered).toBe(1);
+  }, 30_000);
+
+  it('returns media_results with per-media timing and stats', async () => {
+    const html = `<a href="https://www.eltiempo.com/politica/test-article-123">A</a>`;
+    const mediaRepo = makeMockMediaRepo([
+      { id: 'media-1', mediaKey: 'eltiempo', allowlisted: true },
+    ]);
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: ['https://www.eltiempo.com/'],
+      extractUrls() {
+        return ['https://www.eltiempo.com/politica/test-article-123'];
+      },
+      parseArticle() {
+        return { title: '', snippet: '', publishedAt: null, textContent: '' };
+      },
+    };
+
+    const fetchHtml = vi.fn().mockResolvedValue(html);
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const orchestrator = new ScrapeOrchestrator(
+      mediaRepo, articleRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const result = await orchestrator.run();
+
+    expect(result.media_results).toHaveLength(1);
+    expect(result.media_results[0]).toEqual(expect.objectContaining({
+      media_key: 'eltiempo',
+      ok: true,
+      discovered: 1,
+      skipped: 0,
+      fetch_fail: 0,
+    }));
+    expect(result.media_results[0].duration_ms).toBeGreaterThanOrEqual(0);
+  });
 });

@@ -4,6 +4,7 @@ import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 import { evaluatePublishGate } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
+import { logger } from '../../../core/logging/logger.js';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -172,7 +173,7 @@ export class FeedService {
       .map((s) => rowMap.get(s.eventId))
       .filter((r): r is NonNullable<typeof r> => r != null);
 
-    const allRankedItems: Array<{ item: FeedItem; row: any; eligible: boolean }> = rankedRows.map((row: any) => {
+    const allRankedItems: Array<{ item: FeedItem; row: any; eligible: boolean; gateReasons: string[] }> = rankedRows.map((row: any) => {
       const latestVersion = row.versions?.[0] ?? null;
       const packet = (latestVersion?.packetJson as any) ?? {};
       const teaser: string | null = packet.ai_teaser || null;
@@ -188,10 +189,25 @@ export class FeedService {
         ...enrichFeedItem(row, packet),
       };
       const gate = applyPublishGate(item, packet);
-      return { item, row, eligible: gate.eligible };
+      return { item, row, eligible: gate.eligible, gateReasons: gate.reasons };
     });
 
     const eligible = allRankedItems.filter((r) => r.eligible);
+    const gated = allRankedItems.filter((r) => !r.eligible);
+    if (gated.length > 0) {
+      logger.info({
+        total: allRankedItems.length,
+        eligible: eligible.length,
+        gated: gated.length,
+        sample_reasons: gated.slice(0, 5).map((r) => ({
+          event_id: r.item.event_id,
+          reasons: r.gateReasons,
+          overview_status: r.item.overview_status,
+          sources: r.item.unique_sources_count,
+          text_len: r.item.total_usable_text_len,
+        })),
+      }, 'feed_publish_gate_filtered');
+    }
     const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
 
     // Cursor for page 2+: fall back to chronological after ranked page 1
@@ -220,7 +236,7 @@ export class FeedService {
     const OVER_FETCH = PAGE_SIZE * 3;
     const rows = await this.repo.getFeed(cursor, OVER_FETCH);
 
-    const allItems: Array<{ item: FeedItem; row: any; eligible: boolean }> = rows.map((row: any) => {
+    const allItems: Array<{ item: FeedItem; row: any; eligible: boolean; gateReasons: string[] }> = rows.map((row: any) => {
       const latestVersion = row.versions?.[0] ?? null;
       const packet = (latestVersion?.packetJson as any) ?? {};
       const teaser: string | null = packet.ai_teaser || null;
@@ -236,10 +252,25 @@ export class FeedService {
         ...enrichFeedItem(row, packet),
       };
       const gate = applyPublishGate(item, packet);
-      return { item, row, eligible: gate.eligible };
+      return { item, row, eligible: gate.eligible, gateReasons: gate.reasons };
     });
 
     const eligible = allItems.filter((r) => r.eligible);
+    const gated = allItems.filter((r) => !r.eligible);
+    if (gated.length > 0) {
+      logger.info({
+        total: allItems.length,
+        eligible: eligible.length,
+        gated: gated.length,
+        sample_reasons: gated.slice(0, 5).map((r) => ({
+          event_id: r.item.event_id,
+          reasons: r.gateReasons,
+          overview_status: r.item.overview_status,
+          sources: r.item.unique_sources_count,
+          text_len: r.item.total_usable_text_len,
+        })),
+      }, 'feed_publish_gate_filtered');
+    }
     const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
 
     let next_cursor: string | null = null;

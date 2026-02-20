@@ -50,6 +50,7 @@ export function debugScrapeRoutes(orchestrator: ScrapeOrchestrator): FastifyPlug
           discovered: result.discovered,
           skipped: result.skipped,
           summary: result.summary,
+          media_results: result.media_results,
         });
       } catch (err) {
         const durationMs = Date.now() - startMs;

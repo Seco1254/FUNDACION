@@ -27,6 +27,13 @@ export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45')
 export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.30');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// Kill switch: never auto-link, only maybe/create
+export const DISABLE_AUTO_LINK = process.env.DISABLE_AUTO_LINK === '1';
+
+// Entity guard: downgrade auto-link to maybe when entity overlap is near zero
+export const ENTITY_GUARD_ENABLED = process.env.EVENT_LINKER_ENTITY_GUARD_ENABLED !== '0';
+export const ENTITY_GUARD_MIN_JACCARD = parseFloat(process.env.EVENT_LINKER_ENTITY_GUARD_MIN_JACCARD ?? '0.01');
+
 // ── Weights for composite score ──
 const W_EMBEDDING = 0.55;
 const W_ENTITY = 0.25;
@@ -276,8 +283,30 @@ export async function decideLinkAction(
   const top = eligible[0];
   const topCandidate = candidates.find((c) => c.id === top.eventId);
 
-  // >= 0.62 → auto-link
-  if (top.compositeScore >= THETA_AUTO_LINK) {
+  // Determine auto-link eligibility
+  let autoLinkEligible = top.compositeScore >= THETA_AUTO_LINK;
+
+  // Kill switch: never auto-link
+  if (DISABLE_AUTO_LINK && autoLinkEligible) {
+    logger.info({ article_id: article.id, score: top.compositeScore }, 'auto_link_disabled_by_kill_switch');
+    autoLinkEligible = false;
+  }
+
+  // Entity guard: downgrade auto-link when entity overlap is near zero
+  if (autoLinkEligible && ENTITY_GUARD_ENABLED && top.entityOverlap < ENTITY_GUARD_MIN_JACCARD) {
+    logger.info({
+      article_id: article.id,
+      event_id: top.eventId,
+      entity_overlap: top.entityOverlap,
+      min_jaccard: ENTITY_GUARD_MIN_JACCARD,
+      composite: top.compositeScore,
+    }, 'entity_guard_downgrade');
+    metrics.incCounter('linking.entity_guard_downgrade_total');
+    autoLinkEligible = false;
+  }
+
+  // Auto-link zone
+  if (autoLinkEligible) {
     metrics.incCounter('linking.auto_link_total');
     return {
       bestMatch: { eventId: top.eventId, score: top.compositeScore },
@@ -287,7 +316,7 @@ export async function decideLinkAction(
     };
   }
 
-  // 0.50–0.62 range
+  // Maybe-link zone (also catches downgraded auto-links)
   if (top.compositeScore >= THETA_MAYBE_LINK) {
     // Try LLM first if available
     if (llm) {

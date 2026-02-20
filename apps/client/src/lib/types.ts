@@ -9,6 +9,13 @@ export interface FeedItemOverview {
   confidence_label: string;
 }
 
+export interface FeedItemSource {
+  source_id: string;
+  name: string;
+  domain: string;
+  article_count: number;
+}
+
 export interface FeedItem {
   event_id: string;
   state: EventState;
@@ -17,8 +24,17 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
-  overview_status?: 'ready' | 'unavailable' | 'pending';
+  overview_status?: 'ready' | 'unavailable' | 'pending' | 'failed';
   source_count?: number;
+  sources?: FeedItemSource[];
+  article_count?: number;
+  unique_sources_count?: number;
+  usable_articles_count?: number;
+  total_usable_text_len?: number;
+  key_facts_count?: number;
+  evidence_level?: 'high' | 'medium' | 'low' | 'none';
+  overview_mode?: string | null;
+  why_no_overview?: string | null;
 }
 
 export interface FeedResponse {
