@@ -2,6 +2,8 @@ import { FeedRepository } from '../repo/feed-repo.js';
 import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
+import { evaluatePublishGate } from '../../../core/llm/gates.js';
+import type { PublishGateResult } from '../../../core/llm/gates.js';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -76,12 +78,15 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
     .map((a: any) => a.extractionFailReason)
     .filter(Boolean) as string[];
 
+  const keyFactsCount: number = packet.key_facts_count ?? 0;
+
   const whyNoOverview = buildWhyNoOverview({
     overviewStatus,
     uniqueSourcesCount,
     usableArticlesCount,
     totalUsableTextLen,
     articleFailReasons: failReasons,
+    keyFactsCount,
   });
 
   return {
@@ -90,10 +95,43 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
     unique_sources_count: uniqueSourcesCount,
     usable_articles_count: usableArticlesCount,
     total_usable_text_len: totalUsableTextLen,
+    key_facts_count: keyFactsCount,
     evidence_level: evidenceLevel,
     overview_mode: overviewMode,
     why_no_overview: whyNoOverview,
   };
+}
+
+/**
+ * Apply the publish gate to a feed item.
+ * Returns the gate result and optionally mutates item to 'failed' status.
+ */
+function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
+  const ai = packet?.ai_overview;
+  const hasDisclaimer = typeof ai?.why === 'string' && /única fuente|una fuente/i.test(ai.why);
+
+  const gateResult = evaluatePublishGate({
+    unique_sources_count: item.unique_sources_count ?? 0,
+    total_usable_text_len: item.total_usable_text_len ?? 0,
+    key_facts_count: item.key_facts_count ?? 0,
+    overview_status: item.overview_status ?? 'pending',
+    has_disclaimer: hasDisclaimer,
+  });
+
+  if (!gateResult.eligible) {
+    item.overview_status = 'failed';
+    item.why_no_overview = buildWhyNoOverview({
+      overviewStatus: 'failed',
+      uniqueSourcesCount: item.unique_sources_count ?? 0,
+      usableArticlesCount: item.usable_articles_count ?? 0,
+      totalUsableTextLen: item.total_usable_text_len ?? 0,
+      articleFailReasons: [],
+      keyFactsCount: item.key_facts_count ?? 0,
+      gateReasons: gateResult.reasons,
+    });
+  }
+
+  return gateResult;
 }
 
 const PAGE_SIZE = 20;
@@ -134,13 +172,11 @@ export class FeedService {
       .map((s) => rowMap.get(s.eventId))
       .filter((r): r is NonNullable<typeof r> => r != null);
 
-    const items = rankedRows.slice(0, PAGE_SIZE);
-
-    const feedItems: FeedItem[] = items.map((row: any) => {
+    const allRankedItems: Array<{ item: FeedItem; row: any; eligible: boolean }> = rankedRows.map((row: any) => {
       const latestVersion = row.versions?.[0] ?? null;
       const packet = (latestVersion?.packetJson as any) ?? {};
       const teaser: string | null = packet.ai_teaser || null;
-      return {
+      const item: FeedItem = {
         event_id: row.id,
         state: row.state,
         headline: latestVersion?.headline ?? null,
@@ -151,14 +187,19 @@ export class FeedService {
         overview_status: deriveOverviewStatus(packet),
         ...enrichFeedItem(row, packet),
       };
+      const gate = applyPublishGate(item, packet);
+      return { item, row, eligible: gate.eligible };
     });
+
+    const eligible = allRankedItems.filter((r) => r.eligible);
+    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
 
     // Cursor for page 2+: fall back to chronological after ranked page 1
     let next_cursor: string | null = null;
-    if (rankedRows.length > PAGE_SIZE) {
-      const last = items[items.length - 1] as any;
-      const ts = last.publishedAt?.toISOString() ?? last.createdAt.toISOString();
-      next_cursor = Buffer.from(`${ts}|${last.id}`).toString('base64');
+    if (eligible.length > PAGE_SIZE) {
+      const lastRow = eligible[PAGE_SIZE - 1].row;
+      const ts = lastRow.publishedAt?.toISOString() ?? lastRow.createdAt.toISOString();
+      next_cursor = Buffer.from(`${ts}|${lastRow.id}`).toString('base64');
     }
 
     return { items: feedItems, next_cursor };
@@ -175,15 +216,15 @@ export class FeedService {
       }
     }
 
-    const rows = await this.repo.getFeed(cursor, PAGE_SIZE);
-    const hasMore = rows.length > PAGE_SIZE;
-    const items = rows.slice(0, PAGE_SIZE);
+    // Over-fetch to compensate for gate-filtered items
+    const OVER_FETCH = PAGE_SIZE * 3;
+    const rows = await this.repo.getFeed(cursor, OVER_FETCH);
 
-    const feedItems: FeedItem[] = items.map((row: any) => {
+    const allItems: Array<{ item: FeedItem; row: any; eligible: boolean }> = rows.map((row: any) => {
       const latestVersion = row.versions?.[0] ?? null;
       const packet = (latestVersion?.packetJson as any) ?? {};
       const teaser: string | null = packet.ai_teaser || null;
-      return {
+      const item: FeedItem = {
         event_id: row.id,
         state: row.state,
         headline: latestVersion?.headline ?? null,
@@ -194,13 +235,18 @@ export class FeedService {
         overview_status: deriveOverviewStatus(packet),
         ...enrichFeedItem(row, packet),
       };
+      const gate = applyPublishGate(item, packet);
+      return { item, row, eligible: gate.eligible };
     });
 
+    const eligible = allItems.filter((r) => r.eligible);
+    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
+
     let next_cursor: string | null = null;
-    if (hasMore && items.length > 0) {
-      const last = items[items.length - 1];
-      const ts = last.publishedAt?.toISOString() ?? last.createdAt.toISOString();
-      next_cursor = Buffer.from(`${ts}|${last.id}`).toString('base64');
+    if (eligible.length > PAGE_SIZE) {
+      const lastRow = eligible[PAGE_SIZE - 1].row;
+      const ts = lastRow.publishedAt?.toISOString() ?? lastRow.createdAt.toISOString();
+      next_cursor = Buffer.from(`${ts}|${lastRow.id}`).toString('base64');
     }
 
     return { items: feedItems, next_cursor };

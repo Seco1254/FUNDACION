@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 /** Bump this when prompt templates change to invalidate all cached hashes. */
-export const PROMPT_VERSION = 'v2.0';
+export const PROMPT_VERSION = 'v3.0';
 
 /**
  * Deterministic hash for claim-extraction inputs.

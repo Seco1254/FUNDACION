@@ -70,3 +70,73 @@ export function buildInsufficientOverview(reasons: string[]): Record<string, unk
     status: 'INSUFFICIENT_EVIDENCE',
   };
 }
+
+// ── PUBLISH GATE ──────────────────────────────────────────────────────
+
+const GATE_MULTI_SOURCES = parseInt(process.env.GATE_MULTI_SOURCES ?? '2', 10);
+const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
+const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
+const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '6', 10);
+
+export interface PublishGateInput {
+  unique_sources_count: number;
+  total_usable_text_len: number;
+  key_facts_count: number;
+  overview_status: string;
+  has_disclaimer: boolean;
+}
+
+export interface PublishGateResult {
+  eligible: boolean;
+  gate_name: 'multi' | 'single' | null;
+  reasons: string[];
+}
+
+/**
+ * Hard publish gate: determines if an event is eligible to appear in /v1/feed.
+ *
+ * Gate Multi: sources>=2 AND text>=1200 AND facts>=6 AND overview='ready'
+ * Gate Single: sources==1 AND text>=800 AND facts>=6 AND overview='ready' AND disclaimer
+ */
+export function evaluatePublishGate(input: PublishGateInput): PublishGateResult {
+  const reasons: string[] = [];
+
+  if (input.overview_status !== 'ready') {
+    reasons.push('OVERVIEW_NOT_READY');
+  }
+  if (input.key_facts_count < GATE_KEY_FACTS_MIN) {
+    reasons.push('KEY_FACTS_INSUFFICIENT');
+  }
+  if (input.total_usable_text_len < GATE_SINGLE_TEXT) {
+    reasons.push('TEXT_TOO_SHORT');
+  }
+
+  // Gate Multi: multi-source event
+  if (input.unique_sources_count >= GATE_MULTI_SOURCES) {
+    if (input.total_usable_text_len < GATE_MULTI_TEXT) {
+      if (!reasons.includes('TEXT_TOO_SHORT')) reasons.push('TEXT_TOO_SHORT');
+    }
+    if (reasons.length === 0) {
+      return { eligible: true, gate_name: 'multi', reasons: [] };
+    }
+    return { eligible: false, gate_name: null, reasons };
+  }
+
+  // Gate Single: single-source event
+  if (input.unique_sources_count === 1) {
+    if (!input.has_disclaimer) {
+      reasons.push('MISSING_DISCLAIMER');
+    }
+    if (reasons.length === 0) {
+      return { eligible: true, gate_name: 'single', reasons: [] };
+    }
+    return { eligible: false, gate_name: null, reasons };
+  }
+
+  // No sources at all
+  if (input.unique_sources_count === 0) {
+    reasons.push('NO_SOURCES');
+  }
+
+  return { eligible: false, gate_name: null, reasons };
+}

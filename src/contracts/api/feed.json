@@ -17,7 +17,7 @@
           "published_at": { "type": ["string", "null"] },
           "cover_image_url": { "type": ["string", "null"] },
           "ai_overview": {},
-          "overview_status": { "type": "string", "enum": ["ready", "unavailable", "pending"] },
+          "overview_status": { "type": "string", "enum": ["ready", "unavailable", "pending", "failed"] },
           "overview_mode": { "type": ["string", "null"] },
           "sources": {
             "type": "array",
@@ -36,6 +36,7 @@
           "unique_sources_count": { "type": "integer" },
           "usable_articles_count": { "type": "integer" },
           "total_usable_text_len": { "type": "integer" },
+          "key_facts_count": { "type": "integer" },
           "evidence_level": { "type": "string", "enum": ["high", "medium", "low", "none"] },
           "why_no_overview": { "type": ["string", "null"] }
         }

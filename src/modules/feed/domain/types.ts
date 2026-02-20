@@ -22,13 +22,14 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
-  overview_status?: 'ready' | 'unavailable' | 'pending';
+  overview_status?: 'ready' | 'unavailable' | 'pending' | 'failed';
   source_count?: number;
   sources?: FeedItemSource[];
   article_count?: number;
   unique_sources_count?: number;
   usable_articles_count?: number;
   total_usable_text_len?: number;
+  key_facts_count?: number;
   evidence_level?: EvidenceLevel;
   overview_mode?: string | null;
   why_no_overview?: string | null;

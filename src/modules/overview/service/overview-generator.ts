@@ -7,18 +7,16 @@ import { EventRepository } from '../../events/repo/event-repo.js';
 import { logger } from '../../../core/logging/logger.js';
 import type { LlmClient } from '../../../core/llm/client.js';
 import {
-  buildDisputeDetectionPrompt,
-  DISPUTE_DETECTION_SYSTEM,
-  buildOverviewPrompt,
-  OVERVIEW_SYSTEM,
+  buildOverviewWriterPrompt,
+  OVERVIEW_WRITER_SYSTEM,
 } from '../../../core/llm/prompts.js';
-import type { ClaimInput, OverviewInput } from '../../../core/llm/prompts.js';
 import { computeOverviewHash } from '../../../core/llm/dedup.js';
 import {
-  validateOverviewEvidence,
   validateOverviewContent,
   buildInsufficientOverview,
 } from '../../../core/llm/gates.js';
+import { extractFacts } from '../../../core/llm/facts-extractor.js';
+import type { FactsPacket } from '../../../core/llm/facts-extractor.js';
 import { deriveTeaser } from '../../../core/llm/teaser.js';
 
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
@@ -73,8 +71,9 @@ export class OverviewGenerator {
   }
 
   /**
-   * LLM-powered dispute detection + AI overview.
-   * Includes anti-hallucination gates and teaser derivation.
+   * 2-step pipeline: heuristic facts extraction → single LLM overview writer.
+   * Step 1: extractFacts() (pure heuristic, zero LLM calls)
+   * Step 2: LLM overview writer (single call) with anti-hallucination gates
    * Returns enriched packet fields or null on failure (caller falls back to heuristic).
    */
   private async generateWithLlm(
@@ -85,119 +84,68 @@ export class OverviewGenerator {
     ai_overview: any;
     ai_teaser: string;
     mode: 'llm';
+    facts_packet: FactsPacket;
+    key_facts_count: number;
   } | null> {
     if (!this.llm?.isAvailable()) return null;
     if (claimsWithQuotes.length === 0) return null;
 
-    // ── Gate: evidence check BEFORE calling LLM ──────────────────
-    const allQuotesRaw: any[] = claimsWithQuotes.flatMap((c: any) => c.quotes ?? []);
-    const allMediaKeys = new Set(
-      allQuotesRaw.map((q: any) => q.article?.media?.mediaKey ?? 'unknown').filter((k: string) => k !== 'unknown'),
+    // ── Step 1: Heuristic facts extraction ─────────────────────
+    let articles: any[] = [];
+    if (this.eventRepo) {
+      articles = await this.eventRepo.findArticlesForEvent(eventId);
+    }
+
+    const articleInputs = articles.map((a: any) => ({
+      title: a.title ?? '',
+      textNorm: a.textNorm ?? null,
+      url: a.url ?? '',
+      mediaKey: a.media?.mediaKey ?? 'unknown',
+      mediaName: a.media?.name ?? a.media?.mediaKey ?? 'unknown',
+      textContentLen: a.textContentLen ?? 0,
+    }));
+
+    const headline = claimsWithQuotes[0]?.claimText ?? articleInputs[0]?.title ?? null;
+    const factsPacket = extractFacts(claimsWithQuotes, articleInputs, headline);
+    const keyFactsCount = factsPacket.key_facts.length;
+
+    logger.info(
+      { eventId, key_facts: keyFactsCount, sources: factsPacket.coverage_summary.sources_count },
+      'facts_extracted',
     );
-    const evidenceCheck = validateOverviewEvidence(allMediaKeys.size, allQuotesRaw.length);
-    if (!evidenceCheck.valid) {
-      logger.info({ eventId, reasons: evidenceCheck.reasons }, 'ai_overview_gate_blocked');
+
+    if (keyFactsCount === 0) {
+      // No facts → try text fallback
       const heuristicOverview = this.buildOverview(claimsWithQuotes);
-
-      // Try text fallback before giving up
-      if (this.eventRepo) {
-        const articles = await this.eventRepo.findArticlesForEvent(eventId);
-        const articlesWithMedia = articles.map((a: any) => ({
-          title: a.title ?? '',
-          textNorm: a.textNorm ?? null,
-          snippet: a.snippet ?? '',
-          url: a.url ?? '',
-          mediaKey: a.media?.mediaKey ?? 'unknown',
-        }));
-        const textFallback = this.buildTextFallbackOverview(articlesWithMedia);
-        if (textFallback) {
-          return {
-            overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
-            ai_overview: { ...textFallback, quality_gate_reasons: evidenceCheck.reasons },
-            ai_teaser: (textFallback.what_happened as string[])[0] ?? '',
-            mode: 'llm',
-          };
-        }
+      const articlesWithMedia = articleInputs.map((a) => ({
+        ...a,
+        snippet: '',
+      }));
+      const textFallback = this.buildTextFallbackOverview(articlesWithMedia);
+      if (textFallback) {
+        return {
+          overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
+          ai_overview: { ...textFallback },
+          ai_teaser: (textFallback.what_happened as string[])[0] ?? '',
+          mode: 'llm',
+          facts_packet: factsPacket,
+          key_facts_count: keyFactsCount,
+        };
       }
-
-      const insufficient = buildInsufficientOverview(evidenceCheck.reasons);
+      const insufficient = buildInsufficientOverview(['NO_KEY_FACTS']);
       return {
         overview: { gate_status: heuristicOverview.gate_status, sections: heuristicOverview.sections },
-        ai_overview: { ...insufficient, quality_gate_reasons: evidenceCheck.reasons },
+        ai_overview: insufficient,
         ai_teaser: '',
         mode: 'llm',
+        facts_packet: factsPacket,
+        key_facts_count: keyFactsCount,
       };
     }
 
     try {
-      // ── Step 1: Dispute Detection ──────────────────────────────
-      const claimInputs: ClaimInput[] = claimsWithQuotes.map((c: any) => {
-        const quotes: any[] = c.quotes ?? [];
-        const topQuote = quotes[0]?.quoteText ?? '';
-        const sourceUrls = quotes.map((q: any) => q.article?.url ?? '').filter(Boolean);
-        const mediaKeys = quotes.map((q: any) => q.article?.media?.mediaKey ?? 'unknown');
-        const uniqueMediaKeys = [...new Set(mediaKeys)];
-
-        return {
-          claim_id: c.id,
-          claim_text: c.claimText,
-          claim_type: c.claimType,
-          source_urls: sourceUrls,
-          media_keys: uniqueMediaKeys,
-          top_quote: topQuote,
-        };
-      });
-
-      const disputePrompt = buildDisputeDetectionPrompt(claimInputs);
-      const { data: disputeData } = await this.llm.completeJson<{
-        disputes: Array<{
-          topic: string;
-          point_a: { claim_text: string; source_url: string };
-          point_b: { claim_text: string; source_url: string };
-          why_disputed: string;
-          confidence: number;
-        }>;
-        consensus: Array<{
-          claim_text: string;
-          why_consensus: string;
-          confidence: number;
-          evidence: Array<{ source_url: string; quote: string }>;
-        }>;
-      }>([{ role: 'user', content: disputePrompt }], DISPUTE_DETECTION_SYSTEM);
-
-      const disputes = Array.isArray(disputeData.disputes) ? disputeData.disputes : [];
-      const consensus = Array.isArray(disputeData.consensus) ? disputeData.consensus : [];
-
-      logger.info(
-        { eventId, disputes: disputes.length, consensus: consensus.length },
-        'dispute_detection_completed',
-      );
-
-      // ── Step 2: AI Overview ────────────────────────────────────
-      const allQuotes: any[] = claimsWithQuotes.flatMap((c: any) => (c.quotes ?? []).map((q: any) => ({
-        quote: q.quoteText ?? '',
-        media_key: q.article?.media?.mediaKey ?? 'unknown',
-        url: q.article?.url ?? '',
-      })));
-      const uniqueSources = new Set(allQuotes.map((q: any) => q.media_key));
-
-      const overviewInput: OverviewInput = {
-        consensus: consensus.map((c) => ({
-          claim_text: c.claim_text,
-          why_consensus: c.why_consensus,
-          confidence: Math.max(0, Math.min(1, c.confidence ?? 0)),
-        })),
-        disputes: disputes.map((d) => ({
-          topic: d.topic,
-          why_disputed: d.why_disputed,
-          confidence: Math.max(0, Math.min(1, d.confidence ?? 0)),
-        })),
-        top_quotes: allQuotes.slice(0, 10),
-        claims_count: claimsWithQuotes.length,
-        sources_count: uniqueSources.size,
-      };
-
-      const overviewPrompt = buildOverviewPrompt(overviewInput);
+      // ── Step 2: Single LLM call — overview writer ────────────
+      const overviewPrompt = buildOverviewWriterPrompt(factsPacket);
       const { data: aiOverview } = await this.llm.completeJson<{
         overview: string;
         what_happened: string[];
@@ -205,7 +153,8 @@ export class OverviewGenerator {
         in_dispute: string[];
         confidence_label: string;
         why: string;
-      }>([{ role: 'user', content: overviewPrompt }], OVERVIEW_SYSTEM);
+        fuentes: string;
+      }>([{ role: 'user', content: overviewPrompt }], OVERVIEW_WRITER_SYSTEM);
 
       // ── Gate: validate LLM output content ──────────────────────
       const contentCheck = validateOverviewContent(aiOverview);
@@ -218,6 +167,8 @@ export class OverviewGenerator {
           ai_overview: { ...insufficient, quality_gate_reasons: contentCheck.reasons },
           ai_teaser: '',
           mode: 'llm',
+          facts_packet: factsPacket,
+          key_facts_count: keyFactsCount,
         };
       }
 
@@ -230,7 +181,7 @@ export class OverviewGenerator {
       const aiTeaser = deriveTeaser(whatHappened);
 
       logger.info(
-        { eventId, confidence_label: confidenceLabel, teaser_len: aiTeaser.length, mode: 'llm' },
+        { eventId, confidence_label: confidenceLabel, teaser_len: aiTeaser.length, mode: 'llm', key_facts: keyFactsCount },
         'ai_overview_generated',
       );
 
@@ -248,21 +199,12 @@ export class OverviewGenerator {
           in_dispute: Array.isArray(aiOverview.in_dispute) ? aiOverview.in_dispute : [],
           confidence_label: confidenceLabel,
           why: aiOverview.why ?? '',
-          disputes: disputes.map((d) => ({
-            topic: d.topic,
-            point_a: d.point_a,
-            point_b: d.point_b,
-            why_disputed: d.why_disputed,
-            confidence: d.confidence,
-          })),
-          consensus: consensus.map((c) => ({
-            claim_text: c.claim_text,
-            why_consensus: c.why_consensus,
-            confidence: c.confidence,
-          })),
+          fuentes: aiOverview.fuentes ?? '',
         },
         ai_teaser: aiTeaser,
         mode: 'llm',
+        facts_packet: factsPacket,
+        key_facts_count: keyFactsCount,
       };
     } catch (err) {
       logger.error(
@@ -327,6 +269,8 @@ export class OverviewGenerator {
           ai_teaser: llmResult.ai_teaser,
           claims_count: claimsWithQuotes.length,
           quotes_count: totalQuotes,
+          key_facts_count: llmResult.key_facts_count,
+          facts_packet: llmResult.facts_packet,
           quality_flags: {
             evidence_rate: claimsWithQuotes.length > 0 ? supportedCount / claimsWithQuotes.length : 0,
             supported_count: supportedCount,

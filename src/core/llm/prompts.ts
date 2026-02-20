@@ -192,3 +192,77 @@ Schema esperado:
   "why": "string (1-2 frases explicando confianza y cobertura)",
   "facts_extracted": ["fragmento clave 1", "fragmento clave 2", "...hasta 10"]
 }`;
+
+// ── OVERVIEW WRITER (v3 — facts-based single LLM call) ─────────────
+
+import type { FactsPacket } from './facts-extractor.js';
+
+export function buildOverviewWriterPrompt(facts: FactsPacket): string {
+  const factsList = facts.key_facts.map((f, i) =>
+    `  ${i + 1}. ${f.text}${f.quote ? ` — "${f.quote}"` : ''} [${f.source_id}]`,
+  ).join('\n');
+
+  const conflictsList = facts.conflicts.length > 0
+    ? facts.conflicts.map((c, i) => `  ${i + 1}. ${c}`).join('\n')
+    : '  (sin conflictos detectados)';
+
+  const uncertaintiesList = facts.uncertainties.length > 0
+    ? facts.uncertainties.map((u, i) => `  ${i + 1}. ${u}`).join('\n')
+    : '  (sin incertidumbres)';
+
+  const sourceNames = facts.coverage_summary.source_names.join(', ');
+  const isSingleSource = facts.coverage_summary.sources_count < 2;
+
+  const singleSourceNote = isSingleSource
+    ? `\n- IMPORTANTE: Solo hay UNA fuente (${sourceNames}). DEBES incluir en "why": "Nota: información de una única fuente y no ha sido contrastada con medios independientes."`
+    : '';
+
+  return `Genera un resumen periodístico estructurado basado EXCLUSIVAMENTE en los siguientes hechos verificados.
+
+TÍTULO: ${facts.canonical_title}
+
+HECHOS VERIFICADOS (${facts.key_facts.length} facts de ${facts.coverage_summary.sources_count} fuentes):
+${factsList}
+
+PUNTOS EN CONFLICTO:
+${conflictsList}
+
+INCERTIDUMBRES:
+${uncertaintiesList}
+
+COBERTURA: ${facts.coverage_summary.articles_used} artículos, ${facts.coverage_summary.total_text_len} caracteres de texto.
+
+REGLAS ESTRICTAS:
+- NO inventes información que no esté en los hechos verificados.
+- NUNCA escribas "Sin información disponible" ni "Aún no hay resumen". Si la evidencia es escasa, explica qué falta.
+- overview: párrafo de 80-100 palabras resumiendo los hechos principales.
+- what_happened: 3-5 bullets con los hechos más importantes.
+- context: 3-5 bullets de contexto/antecedentes.
+- in_dispute: 2-4 bullets de puntos en conflicto. Si no hay: ["No se identifican versiones contradictorias entre fuentes."]
+- Total entre TODAS las secciones: 150-220 palabras. NO seas escueto.
+- fuentes: SIEMPRE termina con "Fuentes: ${sourceNames}" citando los medios por nombre.${singleSourceNote}
+
+Responde EXCLUSIVAMENTE con JSON válido:`;
+}
+
+export const OVERVIEW_WRITER_SYSTEM = `Eres un editor de noticias colombiano senior. Tu rol es escribir resúmenes periodísticos precisos y equilibrados.
+
+REGLAS INQUEBRANTABLES:
+1. NUNCA inventes hechos, nombres o cifras que no estén en los hechos verificados proporcionados.
+2. NUNCA escribas "Sin información disponible" ni "Aún no hay resumen" sin explicar por qué.
+3. Si solo hay una fuente, incluye disclamer explícito en "why".
+4. SIEMPRE incluye "Fuentes: X, Y, Z" en el campo "fuentes" citando los medios por nombre.
+5. El resumen total debe tener entre 150 y 220 palabras.
+
+Responde SOLO con JSON válido. No incluyas texto fuera del JSON.
+
+Schema esperado:
+{
+  "overview": "string (párrafo de 80-100 palabras)",
+  "what_happened": ["bullet 1", "bullet 2", "...hasta 5"],
+  "context": ["bullet 1", "bullet 2", "...hasta 5"],
+  "in_dispute": ["bullet 1", "bullet 2", "...hasta 4"],
+  "confidence_label": "Alta|Media|Baja|No concluyente",
+  "why": "string (1-2 frases explicando confianza + disclaimer si aplica)",
+  "fuentes": "Fuentes: Medio 1, Medio 2, Medio 3"
+}`;

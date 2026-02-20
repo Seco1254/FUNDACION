@@ -29,6 +29,8 @@ export function buildWhyNoOverview(stats: {
   usableArticlesCount: number;
   totalUsableTextLen: number;
   articleFailReasons: string[];
+  keyFactsCount?: number;
+  gateReasons?: string[];
 }): string | null {
   if (stats.overviewStatus === 'ready') return null;
 
@@ -38,13 +40,23 @@ export function buildWhyNoOverview(stats: {
     `total_text=${stats.totalUsableTextLen}`,
   ];
 
+  if (stats.keyFactsCount !== undefined) {
+    parts.push(`key_facts=${stats.keyFactsCount}`);
+  }
+
   const uniqueReasons = [...new Set(stats.articleFailReasons)];
   if (uniqueReasons.length > 0) {
     parts.push(`fail_reasons=${uniqueReasons.join(',')}`);
   }
 
+  if (stats.gateReasons && stats.gateReasons.length > 0) {
+    parts.push(`gate=${stats.gateReasons.join(',')}`);
+  }
+
   if (stats.overviewStatus === 'pending') {
     parts.unshift('status=pending');
+  } else if (stats.overviewStatus === 'failed') {
+    parts.unshift('gate_failed');
   }
 
   return parts.join(', ');

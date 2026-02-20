@@ -201,6 +201,7 @@ export function eventDetailRoutes(
           const totalUsableTextLen = usableArticles.reduce(
             (sum: number, a: any) => sum + (a.text_content_len ?? 0), 0,
           );
+          const keyFactsCount: number = packetJson.key_facts_count ?? 0;
           const evidenceLevel = computeEvidenceLevel(uniqueMediaKeys.size, totalUsableTextLen);
           const failReasons = articles
             .map((a: any) => a.extraction_fail_reason)
@@ -211,6 +212,7 @@ export function eventDetailRoutes(
             usableArticlesCount: usableArticles.length,
             totalUsableTextLen,
             articleFailReasons: failReasons,
+            keyFactsCount,
           });
 
           return {
@@ -241,6 +243,7 @@ export function eventDetailRoutes(
             unique_sources_count: uniqueMediaKeys.size,
             usable_articles_count: usableArticles.length,
             total_usable_text_len: totalUsableTextLen,
+            key_facts_count: keyFactsCount,
             evidence_level: evidenceLevel,
             why_no_overview: whyNoOverview,
             bias,

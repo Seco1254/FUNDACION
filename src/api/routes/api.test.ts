@@ -40,8 +40,74 @@ const mockFeedServiceWithItems = {
         unique_sources_count: 2,
         usable_articles_count: 1,
         total_usable_text_len: 1450,
+        key_facts_count: 0,
         evidence_level: 'medium',
         why_no_overview: 'unique_sources=2, usable_articles=1, total_text=1450, fail_reasons=paywall,too_short',
+      },
+    ],
+    next_cursor: null,
+  }),
+} as unknown as FeedService;
+
+// Mock feed service that exercises publish gate filtering (multi-source eligible)
+const mockFeedServiceMultiEligible = {
+  getFeed: async () => ({
+    items: [
+      {
+        event_id: 'ev-multi',
+        state: 'PUBLISHED',
+        headline: 'Reforma tributaria aprobada',
+        t_last: '2026-02-19T12:00:00.000Z',
+        published_at: '2026-02-19T11:00:00.000Z',
+        cover_image_url: null,
+        ai_overview: { what_happened: ['La reforma fue aprobada.'], context: ['Contexto.'], in_dispute: [], confidence_label: 'Alta' },
+        overview_status: 'ready',
+        overview_mode: 'llm',
+        sources: [
+          { source_id: 'm1', name: 'El Tiempo', domain: 'www.eltiempo.com', article_count: 2 },
+          { source_id: 'm2', name: 'El Espectador', domain: 'www.elespectador.com', article_count: 1 },
+          { source_id: 'm3', name: 'Semana', domain: 'www.semana.com', article_count: 1 },
+        ],
+        article_count: 4,
+        unique_sources_count: 3,
+        usable_articles_count: 3,
+        total_usable_text_len: 2500,
+        key_facts_count: 8,
+        evidence_level: 'high',
+        why_no_overview: null,
+      },
+    ],
+    next_cursor: null,
+  }),
+} as unknown as FeedService;
+
+// Mock feed service that returns a single-source eligible item with disclaimer
+const mockFeedServiceSingleEligible = {
+  getFeed: async () => ({
+    items: [
+      {
+        event_id: 'ev-single',
+        state: 'PUBLISHED',
+        headline: 'Alcalde anuncia plan',
+        t_last: '2026-02-19T12:00:00.000Z',
+        published_at: '2026-02-19T11:00:00.000Z',
+        cover_image_url: null,
+        ai_overview: {
+          what_happened: ['El alcalde anunció el plan.'],
+          context: ['Plan de movilidad.'],
+          in_dispute: [],
+          confidence_label: 'Baja',
+        },
+        overview_status: 'ready',
+        overview_mode: 'llm',
+        sources: [{ source_id: 'm1', name: 'El Tiempo', domain: 'www.eltiempo.com', article_count: 1 }],
+        article_count: 1,
+        unique_sources_count: 1,
+        usable_articles_count: 1,
+        total_usable_text_len: 950,
+        key_facts_count: 7,
+        evidence_level: 'low',
+        why_no_overview: null,
       },
     ],
     next_cursor: null,
@@ -282,6 +348,45 @@ describe('API contract tests', () => {
       expect(item.overview_status).toBe('unavailable');
       expect(item.why_no_overview).toContain('unique_sources=2');
       expect(item.why_no_overview).toContain('fail_reasons=');
+
+      await richApp.close();
+    });
+
+    it('multi-source eligible event appears in feed', async () => {
+      const richApp = Fastify();
+      await richApp.register(feedRoutes(mockFeedServiceMultiEligible));
+      await richApp.ready();
+
+      const response = await richApp.inject({ method: 'GET', url: '/v1/feed?tab=global' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].event_id).toBe('ev-multi');
+      expect(body.items[0].overview_status).toBe('ready');
+      expect(body.items[0].key_facts_count).toBe(8);
+
+      // Schema validation
+      const schema = loadSchema('feed');
+      const validate = ajv.compile(schema);
+      const valid = validate(body);
+      if (!valid) console.error(validate.errors);
+      expect(valid).toBe(true);
+
+      await richApp.close();
+    });
+
+    it('single-source eligible event appears in feed with overview', async () => {
+      const richApp = Fastify();
+      await richApp.register(feedRoutes(mockFeedServiceSingleEligible));
+      await richApp.ready();
+
+      const response = await richApp.inject({ method: 'GET', url: '/v1/feed?tab=global' });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].event_id).toBe('ev-single');
+      expect(body.items[0].ai_overview).not.toBeNull();
+      expect(body.items[0].key_facts_count).toBe(7);
 
       await richApp.close();
     });
