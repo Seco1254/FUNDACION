@@ -301,7 +301,7 @@ describe('ScrapeOrchestrator', () => {
     const mockScraper: MediaScraper = {
       listPageUrls: ['https://www.eltiempo.com/'],
       extractUrls() { return []; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
 
     const fetchHtml = vi.fn().mockResolvedValue('<html></html>');
@@ -341,12 +341,12 @@ describe('ScrapeOrchestrator', () => {
     const slowScraper: MediaScraper = {
       listPageUrls: ['https://slow.example.com/'],
       extractUrls() { return []; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
     const fastScraper: MediaScraper = {
       listPageUrls: ['https://fast.example.com/'],
       extractUrls() { return ['https://fast.example.com/article-1']; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
 
     const fetchHtml = vi.fn().mockImplementation((url: string) => {
@@ -392,7 +392,7 @@ describe('ScrapeOrchestrator', () => {
     const mockScraper: MediaScraper = {
       listPageUrls: ['https://www.eltiempo.com/'],
       extractUrls() { return ['https://www.eltiempo.com/article-1']; },
-      parseArticle() { return { title: '', snippet: '', publishedAt: null }; },
+      parseArticle() { return { title: '', snippet: '', publishedAt: null, textContent: '' }; },
     };
 
     vi.spyOn(eventBus, 'publish').mockRejectedValue(new Error('pipeline exploded'));
