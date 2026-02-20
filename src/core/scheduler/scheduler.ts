@@ -23,8 +23,13 @@ export class Scheduler {
   }
 
   register(jobKey: string, runAt: Date, payload: Record<string, unknown>): void {
-    if (this.jobs.has(jobKey)) {
-      logger.info({ jobKey }, 'scheduler_job_deduplicated');
+    const existing = this.jobs.get(jobKey);
+    if (existing) {
+      if (existing.runAt.getTime() === runAt.getTime()) {
+        return; // identical — no-op
+      }
+      this.jobs.set(jobKey, { jobKey, runAt, payload });
+      logger.info({ jobKey, runAt: runAt.toISOString(), prevRunAt: existing.runAt.toISOString() }, 'scheduler_job_updated');
       return;
     }
     this.jobs.set(jobKey, { jobKey, runAt, payload });

@@ -26,8 +26,10 @@ import {
   EventCandidate,
 } from './pair-scorer.js';
 import { checkMegaEvent, MAX_ARTICLES_PER_EVENT } from './mega-event-guard.js';
+import { THETA_AUTO_LINK, THETA_MAYBE_LINK } from './pair-scorer.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const DEBUG_LINKER = process.env.DEBUG_EVENT_LINKER === '1';
 
 export class EventLinkerV2 {
   constructor(
@@ -102,7 +104,50 @@ export class EventLinkerV2 {
         publishedAt: article.publishedAt,
       };
 
+      const startMs = Date.now();
       const decision = await decideLinkAction(articleForPairing, candidates, this.llm);
+      const elapsedMs = Date.now() - startMs;
+
+      // Structured linker decision log (always, compact)
+      const topScore = decision.scores[0] ?? null;
+      const reason = candidates.length === 0
+        ? 'noCandidates'
+        : decision.scores.every((s) => s.hardBlock)
+          ? 'allHardBlocked'
+          : decision.action === 'CREATE'
+            ? 'belowThreshold'
+            : 'matched';
+
+      logger.info({
+        article_id,
+        candidatesFound: candidates.length,
+        topCandidateEventId: topScore?.eventId ?? null,
+        topScore: topScore ? +topScore.compositeScore.toFixed(4) : null,
+        thresholds: { auto: THETA_AUTO_LINK, maybe: THETA_MAYBE_LINK },
+        decision: decision.action,
+        reason,
+        llmUsed: decision.llmUsed,
+        elapsedMs,
+      }, 'linker_decision');
+
+      // Verbose debug log (controlled by DEBUG_EVENT_LINKER=1)
+      if (DEBUG_LINKER) {
+        logger.info({
+          article_id,
+          title: article.title.slice(0, 80),
+          source: article.mediaId,
+          publishedAt: article.publishedAt?.toISOString() ?? null,
+          scores: decision.scores.slice(0, 5).map((s) => ({
+            eventId: s.eventId,
+            composite: +s.compositeScore.toFixed(4),
+            embedding: +s.embeddingSim.toFixed(4),
+            entity: +s.entityOverlap.toFixed(4),
+            temporal: +s.temporalProximity.toFixed(4),
+            hardBlock: s.hardBlock,
+            hardBlockReasons: s.hardBlockReasons,
+          })),
+        }, 'linker_decision_debug');
+      }
 
       if (decision.action === 'LINK' && decision.bestMatch) {
         await this.linkToEvent(article_id, decision.bestMatch.eventId, decision.bestMatch.score, decision, traceId, now);

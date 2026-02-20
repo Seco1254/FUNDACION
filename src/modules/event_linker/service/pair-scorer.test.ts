@@ -347,67 +347,61 @@ describe('decideLinkAction', () => {
     expect(result.bestMatch).toBeNull();
   });
 
-  it('0.50-0.62 range: LINK when event has >= 2 unique media', async () => {
-    // makeVec(42) and makeVec(41) share one non-zero dimension → cosine ≈ 0.42
-    // With moderate entity overlap (Jaccard ~0.5) and high temporal proximity
-    // composite ≈ 0.55*0.42 + 0.25*0.5 + 0.20*0.99 ≈ 0.56
+  it('maybe range: LINK when score in [MAYBE, AUTO) and event has >= 1 media', async () => {
+    // Distant vectors (no overlap) + shared entity names + close temporal
+    // → embedding ≈ 0, entity ≈ 0.5, temporal ≈ 1.0 → composite ≈ 0.325
     const article = makeArticle({
       title: 'Gustavo Petro impulsa reforma',
-      snippet: 'El presidente Gustavo Petro firmó decreto.',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
       embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
     });
     const candidate = makeCandidate({
-      id: 'evt-mod',
-      articleVecs: [makeVec(41)], // partial overlap with vec(42)
-      articleTexts: ['Gustavo Petro anuncia cambios en el Congreso de la República'],
+      id: 'evt-maybe',
+      articleVecs: [makeVec(100)], // distant vector — no bucket overlap
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 3, // >= 2 → should link in 0.50-0.62 range
+      uniqueMediaCount: 1,
     });
 
-    // Verify score is in [0.50, 0.62) range
     const scores = scoreCandidates(article, [candidate]);
     const score = scores[0].compositeScore;
     expect(score).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
     expect(score).toBeLessThan(THETA_AUTO_LINK);
 
-    // With >= 2 unique media → should LINK
+    // With >= 1 media → should LINK in maybe range
     const result = await decideLinkAction(article, [candidate], null);
     expect(result.action).toBe('LINK');
-    expect(result.bestMatch!.eventId).toBe('evt-mod');
+    expect(result.bestMatch!.eventId).toBe('evt-maybe');
   });
 
-  it('0.50-0.62 range: CREATE when event has < 2 unique media', async () => {
-    // Same vector setup as above → score in [0.50, 0.62)
+  it('below maybe threshold: CREATE even with media', async () => {
+    // Distant vectors + different entity names + old temporal → low composite
     const article = makeArticle({
-      title: 'Gustavo Petro impulsa reforma',
-      snippet: 'El presidente Gustavo Petro firmó decreto.',
-      embeddingVec: makeVec(42),
+      title: 'Economía del café',
+      snippet: 'Los cafeteros reportan pérdidas por el clima.',
+      embeddingVec: makeVec(200),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
     });
     const candidate = makeCandidate({
-      id: 'evt-single-media',
-      articleVecs: [makeVec(41)],
-      articleTexts: ['Gustavo Petro anuncia cambios en el Congreso de la República'],
-      t0: new Date('2025-01-14T08:00:00Z'),
-      tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 1, // < 2 → should CREATE in 0.50-0.62 range
+      id: 'evt-distant',
+      articleVecs: [makeVec(50)],
+      articleTexts: ['Fútbol colombiano resultados de la liga'],
+      t0: new Date('2025-01-01T10:00:00Z'),
+      tLast: new Date('2025-01-02T10:00:00Z'),
+      uniqueMediaCount: 3,
     });
 
-    // Verify score is in [0.50, 0.62) range
     const scores = scoreCandidates(article, [candidate]);
-    const score = scores[0].compositeScore;
-    expect(score).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
-    expect(score).toBeLessThan(THETA_AUTO_LINK);
+    expect(scores[0].compositeScore).toBeLessThan(THETA_MAYBE_LINK);
 
-    // With < 2 unique media → should CREATE
     const result = await decideLinkAction(article, [candidate], null);
     expect(result.action).toBe('CREATE');
   });
 
-  it('thresholds: THETA_AUTO_LINK = 0.62, THETA_MAYBE_LINK = 0.50', () => {
-    expect(THETA_AUTO_LINK).toBe(0.62);
-    expect(THETA_MAYBE_LINK).toBe(0.50);
+  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.30', () => {
+    expect(THETA_AUTO_LINK).toBe(0.45);
+    expect(THETA_MAYBE_LINK).toBe(0.30);
   });
 });

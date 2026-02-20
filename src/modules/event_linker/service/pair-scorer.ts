@@ -23,8 +23,8 @@ import { LlmClient } from '../../../core/llm/client.js';
 import { logger } from '../../../core/logging/logger.js';
 import { metrics } from '../../../core/metrics/metrics.js';
 
-export const THETA_AUTO_LINK = 0.62;
-export const THETA_MAYBE_LINK = 0.50;
+export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
+export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.30');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ── Weights for composite score ──
@@ -310,9 +310,9 @@ export async function decideLinkAction(
       }
     }
 
-    // Heuristic fallback: only link if event has >= 2 unique media
+    // Heuristic fallback: link if event has >= 1 article (no chicken-and-egg gate)
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
-    if (uniqueMedia >= 2) {
+    if (uniqueMedia >= 1) {
       metrics.incCounter('linking.heuristic_link_total');
       return {
         bestMatch: { eventId: top.eventId, score: top.compositeScore },

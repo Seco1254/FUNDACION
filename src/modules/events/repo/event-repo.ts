@@ -45,7 +45,7 @@ export class EventRepository {
   }
 
   async findPublishedFeed(cursor?: { publishedAt: Date; eventId: string }, pageSize: number = 20) {
-    const where: any = { state: 'PUBLISHED' as any };
+    const where: any = { state: 'PUBLISHED' as any, canonicalEventId: null };
     if (cursor) {
       where.AND = [
         {
@@ -113,6 +113,7 @@ export class EventRepository {
       where: {
         state: { not: 'CLOSED' as any },
         tLast: { gte: since },
+        canonicalEventId: null,
       },
     }) as Promise<EventEntity[]>;
   }
