@@ -11,6 +11,7 @@ import type { LlmClient } from '../../../core/llm/client.js';
 import { buildClaimExtractionPrompt, CLAIM_EXTRACTION_SYSTEM } from '../../../core/llm/prompts.js';
 import type { ArticleInput } from '../../../core/llm/prompts.js';
 import { computeClaimsHash } from '../../../core/llm/dedup.js';
+import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 
 interface ClaimCandidate {
   claimTextNorm: string;
@@ -183,11 +184,15 @@ export class ClaimQuoteExtractor {
   ): Promise<{ claimsCount: number; quotesCount: number } | null> {
     if (!this.llm?.isAvailable()) return null;
 
-    // Build article inputs with media keys
+    // Build article inputs with media keys — sanitize text before extraction
     const articleInputs: ArticleInput[] = await Promise.all(
       articles.map(async (a) => {
         const media = await this.mediaRepo.findById(a.mediaId);
-        const bodyText = a.textNorm ?? a.snippet ?? '';
+        const rawBody = a.textNorm ?? a.snippet ?? '';
+        const { cleaned_text: bodyText } = sanitizeText({
+          text: rawBody,
+          source: { media_key: media?.mediaKey, url: a.url },
+        });
         return {
           article_id: a.id,
           media_key: media?.mediaKey ?? 'unknown',
@@ -365,9 +370,13 @@ export class ClaimQuoteExtractor {
       const seenArticleClaim = new Set<string>();
 
       for (const article of articles) {
-        const sourceText = article.textNorm
+        const rawText = article.textNorm
           ? `${article.title}. ${article.textNorm}`
           : `${article.title}. ${article.snippet}`;
+        const { cleaned_text: sourceText } = sanitizeText({
+          text: rawText,
+          source: { url: article.url },
+        });
         const sentences = splitSentences(sourceText);
 
         for (const sentence of sentences) {

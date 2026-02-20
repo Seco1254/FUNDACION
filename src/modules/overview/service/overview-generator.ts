@@ -18,6 +18,7 @@ import {
 import { extractFacts } from '../../../core/llm/facts-extractor.js';
 import type { FactsPacket } from '../../../core/llm/facts-extractor.js';
 import { deriveTeaser } from '../../../core/llm/teaser.js';
+import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
 
@@ -96,14 +97,20 @@ export class OverviewGenerator {
       articles = await this.eventRepo.findArticlesForEvent(eventId);
     }
 
-    const articleInputs = articles.map((a: any) => ({
-      title: a.title ?? '',
-      textNorm: a.textNorm ?? null,
-      url: a.url ?? '',
-      mediaKey: a.media?.mediaKey ?? 'unknown',
-      mediaName: a.media?.name ?? a.media?.mediaKey ?? 'unknown',
-      textContentLen: a.textContentLen ?? 0,
-    }));
+    const articleInputs = articles.map((a: any) => {
+      const rawText = a.textNorm ?? null;
+      const sanitized = rawText
+        ? sanitizeText({ text: rawText, source: { media_key: a.media?.mediaKey, url: a.url } })
+        : null;
+      return {
+        title: a.title ?? '',
+        textNorm: sanitized?.cleaned_text ?? null,
+        url: a.url ?? '',
+        mediaKey: a.media?.mediaKey ?? 'unknown',
+        mediaName: a.media?.name ?? a.media?.mediaKey ?? 'unknown',
+        textContentLen: sanitized ? sanitized.stats.chars_after : (a.textContentLen ?? 0),
+      };
+    });
 
     const headline = claimsWithQuotes[0]?.claimText ?? articleInputs[0]?.title ?? null;
     const factsPacket = extractFacts(claimsWithQuotes, articleInputs, headline);
@@ -440,7 +447,11 @@ export class OverviewGenerator {
     const seen = new Set<string>();
 
     for (const article of usable) {
-      const text = article.textNorm ?? article.snippet;
+      const rawText = article.textNorm ?? article.snippet;
+      const { cleaned_text: text } = sanitizeText({
+        text: rawText,
+        source: { media_key: article.mediaKey, url: article.url },
+      });
       const sentences = text.split(/(?<=[.;:])\s+/).filter((s) => s.length >= 40 && s.length <= 300);
 
       for (const sentence of sentences) {
