@@ -175,6 +175,10 @@ export default function ForYouScreen() {
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60 }).current;
 
+  // Stable comma-joined ID list for navigation — recomputed only when items change.
+  // MUST be declared before any conditional returns so hooks always execute in the same order.
+  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
+
   if (status === 'loading') {
     return (
       <View style={styles.container}>
@@ -206,9 +210,6 @@ export default function ForYouScreen() {
     );
   }
 
-  // Stable comma-joined ID list for navigation — recomputed only when items change
-  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
-
   return (
     <View style={styles.container}>
       {status === 'offline' && (
@@ -222,22 +223,19 @@ export default function ForYouScreen() {
         ref={flatListRef}
         data={items}
         keyExtractor={(item) => item.event_id}
-        renderItem={({ item, index }) => {
-          const feedIds = items.map((i) => i.event_id).join(',');
-          return (
-            <View style={styles.cardWrapper}>
-              <EventCard
-                item={item}
-                onPress={() => router.push({
-                  pathname: '/event/[eventId]',
-                  params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
-                })}
-                onLongPress={() => handleLongPress(item)}
-                onRetryOverview={handleRetryOverview}
-              />
-            </View>
-          );
-        }}
+        renderItem={({ item, index }) => (
+          <View style={styles.cardWrapper}>
+            <EventCard
+              item={item}
+              onPress={() => router.push({
+                pathname: '/event/[eventId]',
+                params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
+              })}
+              onLongPress={() => handleLongPress(item)}
+              onRetryOverview={handleRetryOverview}
+            />
+          </View>
+        )}
         snapToInterval={SNAP_INTERVAL}
         snapToAlignment="start"
         decelerationRate="fast"

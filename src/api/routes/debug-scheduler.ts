@@ -32,6 +32,24 @@ export function debugSchedulerRoutes(scheduler: Scheduler, tickMs: number): Fast
       });
     });
 
+    app.post('/v1/debug/scheduler/tick', async (_request, reply) => {
+      if (process.env.NODE_ENV === 'production') {
+        return reply.status(403).send({ error: 'disabled_in_production' });
+      }
+
+      const before = scheduler.list().length;
+      const executed = await scheduler.runDueJobs();
+      const after = scheduler.list().length;
+
+      return reply.send({
+        ok: true,
+        jobs_before: before,
+        jobs_executed: executed,
+        jobs_after: after,
+        last_tick_at: scheduler.lastTickAt?.toISOString() ?? null,
+      });
+    });
+
     done();
   };
 }
