@@ -11,6 +11,7 @@ import {
   extractMetaDescription,
 } from '../scrapers/html-utils.js';
 import { logger } from '../../../core/logging/logger.js';
+import { classifyContent } from '../../text_sanitizer/content-classifier.js';
 
 export class FetcherParser {
   constructor(
@@ -177,6 +178,11 @@ export class FetcherParser {
         (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
       );
 
+      // Content type classification (soft — score + reasons, no exclusion)
+      const classification = textNorm ? classifyContent(textNorm) : null;
+      const contentType = classification?.content_type ?? null;
+      const contentTypeScore = classification?.score ?? null;
+
       let article;
       try {
         article = await this.articleRepo.create({
@@ -190,6 +196,8 @@ export class FetcherParser {
           extractionFailReason,
           paywallDetected,
           usableForOverview,
+          contentType,
+          contentTypeScore,
           publishedAt: parsed.publishedAt,
           status: 'NORMALIZED',
         });

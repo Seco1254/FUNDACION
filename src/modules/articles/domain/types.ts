@@ -23,6 +23,8 @@ export interface ArticleEntity {
   extractionFailReason: string | null;
   paywallDetected: boolean;
   usableForOverview: boolean;
+  contentType: string | null;
+  contentTypeScore: number | null;
   status: ArticleStatus;
   blockedReason: BlockedReason | null;
   embeddingModel: string | null;

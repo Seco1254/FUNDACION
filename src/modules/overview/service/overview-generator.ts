@@ -22,6 +22,102 @@ import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
 
+// ── Mixed-topic tripwire ─────────────────────────────────────────────
+
+const STOP_WORDS_TRIPWIRE = new Set([
+  'el', 'la', 'los', 'las', 'un', 'una', 'de', 'del', 'al', 'en', 'con',
+  'por', 'para', 'sin', 'sobre', 'entre', 'hasta', 'desde', 'que', 'se',
+  'es', 'son', 'fue', 'hay', 'más', 'como', 'pero', 'no', 'su', 'sus',
+  'ya', 'y', 'o', 'a', 'ante', 'este', 'esta', 'estos', 'estas', 'ese',
+  'esa', 'esos', 'esas', 'lo', 'le', 'les', 'nos', 'ser', 'ha', 'han',
+  'muy', 'también', 'donde', 'cuando', 'porque', 'si', 'así', 'según',
+  'colombia', 'colombiano', 'colombiana', 'país', 'gobierno', 'año', 'años',
+]);
+
+/**
+ * Extract top meaningful terms from a text (proper nouns + key nouns).
+ * Returns a Set of lowercased terms for Jaccard comparison.
+ */
+function extractTopTerms(text: string, maxTerms = 15): Set<string> {
+  const words = text
+    .replace(/[^\wáéíóúñÁÉÍÓÚÑ\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4)
+    .map((w) => w.toLowerCase());
+
+  // Count frequency
+  const freq = new Map<string, number>();
+  for (const w of words) {
+    if (STOP_WORDS_TRIPWIRE.has(w)) continue;
+    freq.set(w, (freq.get(w) ?? 0) + 1);
+  }
+
+  // Sort by frequency descending, take top N
+  const sorted = [...freq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
+    .map(([term]) => term);
+
+  return new Set(sorted);
+}
+
+/**
+ * Compute Jaccard similarity between two Sets.
+ */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const item of a) {
+    if (b.has(item)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Detect if articles in a FactsPacket likely cover different topics.
+ * Returns true if Jaccard similarity between article term-sets is very low.
+ */
+function detectMixedTopics(
+  articles: Array<{ title: string; textNorm: string | null; mediaKey: string }>,
+): { isMixed: boolean; avgJaccard: number; evidence: string } {
+  if (articles.length < 2) {
+    return { isMixed: false, avgJaccard: 1, evidence: '' };
+  }
+
+  // Extract top terms per article
+  const termSets = articles.map((a) => {
+    const text = [a.title, (a.textNorm ?? '').slice(0, 1000)].join(' ');
+    return { mediaKey: a.mediaKey, terms: extractTopTerms(text) };
+  });
+
+  // Compute pairwise Jaccard
+  let totalJaccard = 0;
+  let pairCount = 0;
+  for (let i = 0; i < termSets.length; i++) {
+    for (let j = i + 1; j < termSets.length; j++) {
+      totalJaccard += jaccardSimilarity(termSets[i].terms, termSets[j].terms);
+      pairCount++;
+    }
+  }
+
+  const avgJaccard = pairCount > 0 ? totalJaccard / pairCount : 1;
+  const MIXED_THRESHOLD = 0.05;
+
+  if (avgJaccard < MIXED_THRESHOLD) {
+    const termSamples = termSets.map((ts) =>
+      `${ts.mediaKey}: [${[...ts.terms].slice(0, 5).join(', ')}]`,
+    ).join('; ');
+    return {
+      isMixed: true,
+      avgJaccard,
+      evidence: `Avg Jaccard=${avgJaccard.toFixed(3)}. Terms: ${termSamples}`,
+    };
+  }
+
+  return { isMixed: false, avgJaccard, evidence: '' };
+}
+
 export interface OverviewBullet {
   claim_id: string;
   text: string;
@@ -150,6 +246,16 @@ export class OverviewGenerator {
       };
     }
 
+    // ── Mixed-topic tripwire (pre-LLM) ──────────────────────
+    const mixedTopicResult = detectMixedTopics(articleInputs);
+    if (mixedTopicResult.isMixed) {
+      (factsPacket as any).mixed_topic_flag = true;
+      logger.info(
+        { eventId, avgJaccard: mixedTopicResult.avgJaccard, evidence: mixedTopicResult.evidence },
+        'event_possible_mixed_topic',
+      );
+    }
+
     try {
       // ── Step 2: Single LLM call — overview writer ────────────
       const overviewPrompt = buildOverviewWriterPrompt(factsPacket);
@@ -158,6 +264,11 @@ export class OverviewGenerator {
         what_happened: string[];
         context: string[];
         in_dispute: string[];
+        analisis_fuentes?: {
+          consenso?: string[];
+          desacuerdo?: string[];
+          informacion_faltante?: string[];
+        };
         confidence_label: string;
         why: string;
         fuentes: string;
@@ -194,6 +305,15 @@ export class OverviewGenerator {
 
       const heuristicOverview = this.buildOverview(claimsWithQuotes);
 
+      // Parse analisis_fuentes (backward compatible — optional field)
+      const analisisFuentes = aiOverview.analisis_fuentes && typeof aiOverview.analisis_fuentes === 'object'
+        ? {
+          consenso: Array.isArray(aiOverview.analisis_fuentes.consenso) ? aiOverview.analisis_fuentes.consenso : [],
+          desacuerdo: Array.isArray(aiOverview.analisis_fuentes.desacuerdo) ? aiOverview.analisis_fuentes.desacuerdo : [],
+          informacion_faltante: Array.isArray(aiOverview.analisis_fuentes.informacion_faltante) ? aiOverview.analisis_fuentes.informacion_faltante : [],
+        }
+        : undefined;
+
       return {
         overview: {
           gate_status: heuristicOverview.gate_status,
@@ -204,6 +324,7 @@ export class OverviewGenerator {
           what_happened: whatHappened,
           context: Array.isArray(aiOverview.context) ? aiOverview.context : [],
           in_dispute: Array.isArray(aiOverview.in_dispute) ? aiOverview.in_dispute : [],
+          ...(analisisFuentes && { analisis_fuentes: analisisFuentes }),
           confidence_label: confidenceLabel,
           why: aiOverview.why ?? '',
           fuentes: aiOverview.fuentes ?? '',

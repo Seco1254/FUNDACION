@@ -49,6 +49,8 @@ model Article {
   usableForOverview    Boolean         @default(false) @map("usable_for_overview")
   status               ArticleStatus   @default(DISCOVERED)
   blockedReason        BlockedReason?  @map("blocked_reason")
+  contentType          String?         @map("content_type")
+  contentTypeScore     Float?          @map("content_type_score")
   embeddingModel String?         @map("embedding_model")
   embeddingVec   Json?           @map("embedding_vec")
   embeddingHash  String?         @map("embedding_hash")

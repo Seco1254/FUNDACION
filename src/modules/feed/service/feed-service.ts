@@ -14,7 +14,25 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
   const disp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
   const label = typeof ai.confidence_label === 'string' ? ai.confidence_label : 'No concluyente';
   if (wh.length === 0 && ctx.length === 0) return null;
-  return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+
+  const result: FeedItemOverview = { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+
+  // Pass through overview paragraph if present
+  if (typeof ai.overview === 'string' && ai.overview.trim().length > 0) {
+    result.overview = ai.overview;
+  }
+
+  // Pass through analisis_fuentes if present (backward compatible)
+  if (ai.analisis_fuentes && typeof ai.analisis_fuentes === 'object') {
+    const af = ai.analisis_fuentes;
+    result.analisis_fuentes = {
+      consenso: Array.isArray(af.consenso) ? af.consenso : [],
+      desacuerdo: Array.isArray(af.desacuerdo) ? af.desacuerdo : [],
+      informacion_faltante: Array.isArray(af.informacion_faltante) ? af.informacion_faltante : [],
+    };
+  }
+
+  return result;
 }
 
 /**

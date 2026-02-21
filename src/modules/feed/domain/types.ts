@@ -1,10 +1,18 @@
 import type { EvidenceLevel } from '../service/evidence-level.js';
 
+export interface AnalisisFuentes {
+  consenso: string[];
+  desacuerdo: string[];
+  informacion_faltante: string[];
+}
+
 export interface FeedItemOverview {
+  overview?: string;
   what_happened: string[];
   context: string[];
   in_dispute: string[];
   confidence_label: string;
+  analisis_fuentes?: AnalisisFuentes;
 }
 
 export interface FeedItemSource {

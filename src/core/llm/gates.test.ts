@@ -36,13 +36,23 @@ describe('gates', () => {
   });
 
   describe('validateOverviewContent', () => {
-    it('passes with non-empty arrays', () => {
+    it('passes with non-empty arrays of proper sentences', () => {
       const result = validateOverviewContent({
-        what_happened: ['fact 1'],
-        context: ['ctx 1'],
-        in_dispute: ['disp 1'],
+        what_happened: ['Según El Tiempo, el gobierno colombiano anunció nuevas medidas económicas para enfrentar la inflación en el país durante este trimestre.'],
+        context: ['El contexto general indica que las medidas se adoptaron después de meses de debate entre los principales actores económicos del país.'],
+        in_dispute: ['Algunos medios señalan que las cifras presentadas por el gobierno difieren de las proyecciones del Banco de la República.'],
       });
       expect(result.valid).toBe(true);
+    });
+
+    it('blocks when all what_happened bullets are telegraphic (< 15 words)', () => {
+      const result = validateOverviewContent({
+        what_happened: ['fact 1', 'short bullet'],
+        context: ['Some context sentence with enough words to pass the basic check easily.'],
+        in_dispute: ['A dispute sentence long enough to meet the requirements.'],
+      });
+      expect(result.valid).toBe(false);
+      expect(result.reasons).toContain('TELEGRAPHIC_WHAT_HAPPENED');
     });
 
     it('blocks when what_happened is empty', () => {

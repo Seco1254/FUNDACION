@@ -27,9 +27,34 @@ export function validateOverviewEvidence(
 }
 
 /**
- * Validate the LLM output itself — non-empty arrays for key fields.
+ * Count words in a string (Spanish-aware).
+ */
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+const BOILERPLATE_PATTERNS: RegExp[] = [
+  /\bsuscr[ií]b[ea]|suscripci[oó]n\b/i,
+  /\bnewsletter\b/i,
+  /\bcookies?\b/i,
+  /\bpublicidad\b/i,
+  /\bcompartir en (facebook|twitter|whatsapp)\b/i,
+  /\bseguir leyendo\b/i,
+  /\bt[eé]rminos y condiciones\b/i,
+  /\bpol[ií]tica de privacidad\b/i,
+  /\binicia[r]? sesi[oó]n\b/i,
+  /\bdescargar la app\b/i,
+  /\bderechos reservados\b/i,
+];
+
+const MIN_WORDS_PER_BULLET = 15;
+const MIN_OVERVIEW_WORDS = 80;
+
+/**
+ * Validate the LLM output itself — non-empty arrays + narrative quality checks.
  */
 export function validateOverviewContent(aiOverview: {
+  overview?: unknown;
   what_happened?: unknown;
   context?: unknown;
   in_dispute?: unknown;
@@ -39,6 +64,19 @@ export function validateOverviewContent(aiOverview: {
   const wh = aiOverview.what_happened;
   if (!Array.isArray(wh) || wh.length === 0 || wh.every((s: unknown) => typeof s !== 'string' || s.trim() === '')) {
     reasons.push('EMPTY_WHAT_HAPPENED');
+  } else {
+    // Narrative quality: each bullet must have >= MIN_WORDS_PER_BULLET words
+    const shortBullets = (wh as string[]).filter((s) => typeof s === 'string' && s.trim().length > 0 && countWords(s) < MIN_WORDS_PER_BULLET);
+    if (shortBullets.length > 0 && shortBullets.length === wh.length) {
+      reasons.push('TELEGRAPHIC_WHAT_HAPPENED');
+    }
+    // Boilerplate check on what_happened
+    const boilerplateBullets = (wh as string[]).filter((s) =>
+      typeof s === 'string' && BOILERPLATE_PATTERNS.some((p) => p.test(s)),
+    );
+    if (boilerplateBullets.length > 0 && boilerplateBullets.length >= (wh.length / 2)) {
+      reasons.push('BOILERPLATE_WHAT_HAPPENED');
+    }
   }
 
   const ctx = aiOverview.context;
@@ -49,6 +87,14 @@ export function validateOverviewContent(aiOverview: {
   const disp = aiOverview.in_dispute;
   if (!Array.isArray(disp) || disp.every((s: unknown) => typeof s !== 'string' || s.trim() === '')) {
     reasons.push('EMPTY_IN_DISPUTE');
+  }
+
+  // Overview paragraph quality: must be >= MIN_OVERVIEW_WORDS words
+  const overview = aiOverview.overview;
+  if (typeof overview === 'string' && overview.trim().length > 0) {
+    if (countWords(overview) < MIN_OVERVIEW_WORDS) {
+      reasons.push('SHORT_OVERVIEW_PARAGRAPH');
+    }
   }
 
   return { valid: reasons.length === 0, reasons };
