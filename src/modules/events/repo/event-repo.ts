@@ -79,6 +79,7 @@ export class EventRepository {
                 extractionFailReason: true,
                 paywallDetected: true,
                 usableForOverview: true,
+                contentType: true,
                 media: { select: { id: true, mediaKey: true, name: true } },
               },
             },

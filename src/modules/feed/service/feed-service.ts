@@ -17,9 +17,15 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
 
   const result: FeedItemOverview = { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
 
-  // Pass through overview paragraph if present
+  // Pass through or build overview paragraph
   if (typeof ai.overview === 'string' && ai.overview.trim().length > 0) {
     result.overview = ai.overview;
+  } else {
+    // Fallback: build narrative paragraph from what_happened bullets
+    const fallbackParagraph = buildNarrativeFallback(wh, ctx);
+    if (fallbackParagraph) {
+      result.overview = fallbackParagraph;
+    }
   }
 
   // Pass through analisis_fuentes if present (backward compatible)
@@ -33,6 +39,97 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
   }
 
   return result;
+}
+
+const CONNECTORS = [' Además, ', ' Por otra parte, ', ' Asimismo, ', ' También, ', ' De igual manera, '];
+const MIN_FALLBACK_WORDS = 90;
+
+/**
+ * Build a narrative paragraph from what_happened bullets + context as fallback
+ * when the LLM overview is missing or empty. Produces 3-5 sentences with connectors.
+ * Returns null if not enough content to reach a reasonable paragraph.
+ */
+export function buildNarrativeFallback(whatHappened: string[], context: string[]): string | null {
+  // Collect candidate sentences (what_happened first, then context)
+  const candidates = [...whatHappened, ...context].filter(
+    (s) => typeof s === 'string' && s.trim().length > 0,
+  );
+  if (candidates.length === 0) return null;
+
+  // Take up to 5 sentences to build the paragraph
+  const sentences = candidates.slice(0, 5);
+  if (sentences.length < 2) {
+    // Single sentence — only viable if it's long enough
+    const single = sentences[0].trim();
+    const wordCount = single.split(/\s+/).length;
+    return wordCount >= MIN_FALLBACK_WORDS ? single : null;
+  }
+
+  // Join with connectors
+  const parts: string[] = [sentences[0].replace(/\.\s*$/, '') + '.'];
+  for (let i = 1; i < sentences.length; i++) {
+    const connector = CONNECTORS[(i - 1) % CONNECTORS.length];
+    const sentence = sentences[i].replace(/^\s*/, '').replace(/\.\s*$/, '') + '.';
+    // Lowercase first char after connector (unless proper noun)
+    const firstChar = sentence[0];
+    const lowered = firstChar === firstChar.toUpperCase() && /^[A-ZÁÉÍÓÚÑ]/.test(firstChar)
+      ? sentence // keep uppercase (likely proper noun or start of sentence)
+      : sentence[0].toLowerCase() + sentence.slice(1);
+    parts.push(connector + lowered);
+  }
+
+  const paragraph = parts.join('');
+  const wordCount = paragraph.split(/\s+/).length;
+  return wordCount >= 15 ? paragraph : null; // At least a reasonable length
+}
+
+// ── Institutional Event Eligibility ─────────────────────────────────
+
+/**
+ * Determine if an event is dominated by institutional/static content
+ * and should be excluded from the feed.
+ *
+ * Rules:
+ * - If all articles are institutional_static and no news articles => exclude
+ * - If institutional_static >= 70% and no news articles => exclude
+ * - If all articles are institutional (convocatoria) and no news => exclude
+ */
+export function isInstitutionalEvent(row: any): { excluded: boolean; reason: string } {
+  const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const totalArticles = articles.length;
+
+  if (totalArticles === 0) return { excluded: false, reason: '' };
+
+  let newsCount = 0;
+  let institutionalStaticCount = 0;
+  let institutionalCount = 0;
+
+  for (const a of articles) {
+    const ct = a.contentType ?? 'unknown';
+    if (ct === 'news') newsCount++;
+    else if (ct === 'institutional_static') institutionalStaticCount++;
+    else if (ct === 'institutional') institutionalCount++;
+  }
+
+  // Rule 1: All articles are institutional_static, no news => exclude
+  if (institutionalStaticCount >= 1 && newsCount === 0 && institutionalCount === 0) {
+    return { excluded: true, reason: 'ALL_INSTITUTIONAL_STATIC' };
+  }
+
+  // Rule 2: institutional_static dominates (>= 70%) and no news => exclude
+  if (newsCount === 0 && institutionalStaticCount > 0) {
+    const staticPct = institutionalStaticCount / totalArticles;
+    if (staticPct >= 0.7) {
+      return { excluded: true, reason: 'INSTITUTIONAL_STATIC_DOMINANT' };
+    }
+  }
+
+  // Rule 3: All institutional (convocatoria etc.) and no news => exclude
+  if (newsCount === 0 && (institutionalCount + institutionalStaticCount) === totalArticles && totalArticles >= 1) {
+    return { excluded: true, reason: 'ALL_INSTITUTIONAL' };
+  }
+
+  return { excluded: false, reason: '' };
 }
 
 /**
@@ -192,6 +289,22 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
  * Build a FeedItem from a DB row, applying gate and fallback logic.
  */
 function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
+  // ── Institutional content gate (before building the full item) ─────
+  const institutionalCheck = isInstitutionalEvent(row);
+  if (institutionalCheck.excluded) {
+    // Build a minimal item for logging but mark as ineligible
+    const latestVersion = row.versions?.[0] ?? null;
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: [institutionalCheck.reason] };
+  }
+
   const latestVersion = row.versions?.[0] ?? null;
   const packet = (latestVersion?.packetJson as any) ?? {};
   const teaser: string | null = packet.ai_teaser || null;

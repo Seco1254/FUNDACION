@@ -12,12 +12,6 @@ interface Props {
   onRetryOverview?: () => void;
 }
 
-const OVERVIEW_MIN_WORDS = 80;
-
-function wordCount(text: string): number {
-  return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
-}
-
 export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props) {
   const updatedAt = relativeTime(item.t_last);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
@@ -27,9 +21,9 @@ export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props
   // 'blocked' = processed but insufficient data; undefined = not yet processed (pending)
   const isBlocked = !hasOverview && item.overview_status?.state === 'blocked';
 
-  // Determine if we have a rich narrative overview paragraph
+  // Show narrative overview paragraph whenever it exists (backend guarantees quality)
   const overviewParagraph = ov?.overview?.trim() ?? '';
-  const hasNarrativeOverview = overviewParagraph.length > 0 && wordCount(overviewParagraph) >= OVERVIEW_MIN_WORDS;
+  const hasNarrativeOverview = overviewParagraph.length > 0;
 
   // Source analysis section
   const af = ov?.analisis_fuentes;

@@ -179,7 +179,9 @@ export class FetcherParser {
       );
 
       // Content type classification (soft — score + reasons, no exclusion)
-      const classification = textNorm ? classifyContent(textNorm) : null;
+      const classification = textNorm
+        ? classifyContent({ text: textNorm, title: parsed.title, url })
+        : null;
       const contentType = classification?.content_type ?? null;
       const contentTypeScore = classification?.score ?? null;
 
