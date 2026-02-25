@@ -289,6 +289,24 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
  * Build a FeedItem from a DB row, applying gate and fallback logic.
  */
 function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
+  // ── Coherence gate (block incoherent clusters) ─────────────────────
+  const latestVersionForCoherence = row.versions?.[0] ?? null;
+  const packetForCoherence = (latestVersionForCoherence?.packetJson as any) ?? {};
+  const coherenceGate = packetForCoherence.coherence_gate;
+  if (coherenceGate && coherenceGate.status === 'FAIL') {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersionForCoherence?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      overview_status: 'failed',
+      why_no_overview: `Coherence gate failed: ${coherenceGate.failed_checks?.join(', ') ?? 'unknown'}`,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['COHERENCE_GATE_FAILED', ...(coherenceGate.failed_checks ?? [])] };
+  }
+
   // ── Institutional content gate (before building the full item) ─────
   const institutionalCheck = isInstitutionalEvent(row);
   if (institutionalCheck.excluded) {

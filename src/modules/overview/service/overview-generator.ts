@@ -19,6 +19,11 @@ import { extractFacts } from '../../../core/llm/facts-extractor.js';
 import type { FactsPacket } from '../../../core/llm/facts-extractor.js';
 import { deriveTeaser } from '../../../core/llm/teaser.js';
 import { sanitizeText } from '../../text_sanitizer/sanitize.js';
+import {
+  evaluateClusterCoherence,
+  type EventCluster,
+  type CoherenceCheckResult,
+} from '../../events/coherence-gate.js';
 
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
 
@@ -360,6 +365,65 @@ export class OverviewGenerator {
       const version = await this.versionRepo.findById(version_id);
       const existingPacket = (version?.packetJson as any) ?? {};
 
+      // ── Hard Coherence Gate (pre-overview, pre-LLM) ────────────────
+      let coherenceResult: CoherenceCheckResult | null = null;
+      if (this.eventRepo) {
+        const articlesForCoherence = await this.eventRepo.findArticlesForEvent(event_id);
+        const cluster: EventCluster = {
+          event_id,
+          headline: version?.headline ?? null,
+          articles: articlesForCoherence.map((a: any) => ({
+            id: a.id,
+            title: a.title ?? '',
+            titleRaw: a.title ?? '',
+            textNorm: a.textNorm ?? null,
+            embeddingVec: a.embeddingVec ?? null,
+          })),
+        };
+        coherenceResult = evaluateClusterCoherence(cluster);
+
+        if (!coherenceResult.passed) {
+          logger.info(
+            { event_id, version_id, failed_checks: coherenceResult.failed_checks, score: coherenceResult.score },
+            'coherence_gate_blocked_overview',
+          );
+
+          // Store coherence failure in packet and skip overview generation
+          if (version) {
+            const updatedPacket = {
+              ...existingPacket,
+              coherence_gate: {
+                status: 'FAIL' as const,
+                score: coherenceResult.score,
+                failed_checks: coherenceResult.failed_checks,
+                details: coherenceResult.details,
+              },
+              overview_status: { state: 'blocked', reason: 'coherence_gate_failed' },
+            };
+            await this.versionRepo.update(version_id, {
+              packetJson: updatedPacket,
+              gateStatus: 'FAIL',
+            });
+          }
+
+          await this.auditWriter.write({
+            entity_type: 'OVERVIEW',
+            entity_id: event_id,
+            action: 'COHERENCE_GATE_BLOCKED',
+            trace_id: traceId,
+            data: {
+              version_id,
+              score: coherenceResult.score,
+              failed_checks: coherenceResult.failed_checks,
+              article_count: cluster.articles.length,
+            },
+          });
+
+          // Do NOT emit OverviewGenerated — block the pipeline
+          return;
+        }
+      }
+
       // ── Dedupe: compute overview hash, skip LLM if input unchanged ──
       const existingHashes = existingPacket._ai_hashes ?? {};
       const claimsHash = existingHashes.claims_hash ?? '';
@@ -394,7 +458,7 @@ export class OverviewGenerator {
           ? { state: 'ready', reason: null }
           : { state: 'blocked', reason: 'Evidencia insuficiente' };
 
-        const updatedPacket = {
+        const updatedPacket: Record<string, unknown> = {
           ...existingPacket,
           overview: heuristicOverview,
           ai_overview: llmResult.ai_overview,
@@ -414,6 +478,14 @@ export class OverviewGenerator {
             ...existingHashes,
             overview_hash: newOverviewHash,
           },
+          ...(coherenceResult && {
+            coherence_gate: {
+              status: 'PASS' as const,
+              score: coherenceResult.score,
+              failed_checks: coherenceResult.failed_checks,
+              details: coherenceResult.details,
+            },
+          }),
         };
 
         if (version) {
@@ -487,6 +559,14 @@ export class OverviewGenerator {
               ...existingHashes,
               overview_hash: newOverviewHash,
             },
+            ...(coherenceResult && {
+              coherence_gate: {
+                status: 'PASS' as const,
+                score: coherenceResult.score,
+                failed_checks: coherenceResult.failed_checks,
+                details: coherenceResult.details,
+              },
+            }),
           };
 
           await this.versionRepo.update(version_id, {
