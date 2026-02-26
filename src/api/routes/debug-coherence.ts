@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyPluginCallback } from 'fastify';
 import { PrismaClient } from '@prisma/client';
+import { metrics } from '../../core/metrics/metrics.js';
 
 interface CoherenceRow {
   event_id: string;
@@ -13,7 +14,22 @@ interface CoherenceRow {
   article_count: number | null;
   failed_checks: string[] | null;
   thresholds: Record<string, number> | null;
+  /** true when this row was read from legacy `details` format */
+  is_legacy: boolean;
 }
+
+// ── Bin labels for article_count grouping ─────────────────────────────
+const BIN_LABELS = ['1', '2', '3-4', '5-9', '10+'] as const;
+
+function articleCountBin(ac: number): (typeof BIN_LABELS)[number] {
+  if (ac <= 1) return '1';
+  if (ac === 2) return '2';
+  if (ac <= 4) return '3-4';
+  if (ac <= 9) return '5-9';
+  return '10+';
+}
+
+// ── Percentile helpers ────────────────────────────────────────────────
 
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -24,19 +40,27 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
-function computePercentiles(values: number[]): { p25: number; p50: number; p75: number } {
+function computePercentiles(
+  values: number[],
+): { p50: number; p75: number; p90: number; count: number } {
   const sorted = [...values].sort((a, b) => a - b);
   return {
-    p25: percentile(sorted, 25),
     p50: percentile(sorted, 50),
     p75: percentile(sorted, 75),
+    p90: percentile(sorted, 90),
+    count: sorted.length,
   };
 }
+
+// ── Data fetching ─────────────────────────────────────────────────────
 
 /**
  * Fetch recent event versions, then filter in JS for those containing coherence_gate.
  * Avoids Prisma JSON-path filters (P2019 on some Postgres versions).
  * Over-fetches by 10x (min 500) so post-filter still yields enough rows.
+ *
+ * SOURCE OF TRUTH: `metrics` is the canonical format.
+ * `details` is legacy and read only as fallback for rows not yet backfilled.
  */
 async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<CoherenceRow[]> {
   const fetchLimit = Math.max(limit * 10, 500);
@@ -57,9 +81,10 @@ async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<
     const cg = packet?.coherence_gate;
     if (!cg) continue;
 
-    // Handle both old `details` format and correct `metrics` format
+    // Source of truth: `metrics`. Legacy fallback: `details`.
     const m = cg.metrics ?? null;
     const d = cg.details ?? null;
+    const isLegacy = m == null && d != null;
 
     rows.push({
       event_id: v.eventId,
@@ -73,11 +98,19 @@ async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<
       article_count: m?.article_count ?? null,
       failed_checks: cg.failed_checks ?? null,
       thresholds: cg.thresholds ?? null,
+      is_legacy: isLegacy,
     });
     if (rows.length >= limit) break;
   }
   return rows;
 }
+
+// ── Warning thresholds (canary guardrails) ────────────────────────────
+
+const WARN_GLOBAL_FAIL_RATE = 0.40;    // warn if >40% events fail
+const WARN_BIN2_FAIL_RATE = 0.60;       // warn if >60% of 2-article events fail
+
+// ── Summary builder ───────────────────────────────────────────────────
 
 function buildSummary(rows: CoherenceRow[]) {
   const totalEvents = rows.length;
@@ -92,17 +125,27 @@ function buildSummary(rows: CoherenceRow[]) {
   const titles = evaluated.map((r) => r.title_jaccard).filter((v): v is number => v != null);
   const drifts = evaluated.map((r) => r.stddev_drift).filter((v): v is number => v != null);
 
-  // Distribution by article_count
-  const byArticleCount: Record<number, { total: number; pass: number; fail: number; na: number }> = {};
+  // Binned distribution by article_count
+  const bins: Record<
+    string,
+    { total: number; pass: number; fail: number; na: number; fail_rate: number }
+  > = {};
+  for (const label of BIN_LABELS) {
+    bins[label] = { total: 0, pass: 0, fail: 0, na: 0, fail_rate: 0 };
+  }
   for (const row of rows) {
-    const ac = row.article_count ?? 0;
-    if (!byArticleCount[ac]) {
-      byArticleCount[ac] = { total: 0, pass: 0, fail: 0, na: 0 };
-    }
-    byArticleCount[ac].total++;
-    if (row.status === 'PASS') byArticleCount[ac].pass++;
-    if (row.status === 'FAIL') byArticleCount[ac].fail++;
-    if (row.status === 'NA') byArticleCount[ac].na++;
+    const ac = row.article_count ?? (row.status === 'NA' ? 1 : 0);
+    const bin = articleCountBin(ac);
+    bins[bin].total++;
+    if (row.status === 'PASS') bins[bin].pass++;
+    if (row.status === 'FAIL') bins[bin].fail++;
+    if (row.status === 'NA') bins[bin].na++;
+  }
+  // Compute fail_rate per bin (among evaluated only: pass + fail)
+  for (const label of BIN_LABELS) {
+    const b = bins[label];
+    const evaluatedInBin = b.pass + b.fail;
+    b.fail_rate = evaluatedInBin > 0 ? b.fail / evaluatedInBin : 0;
   }
 
   // Failure reason frequency
@@ -115,40 +158,72 @@ function buildSummary(rows: CoherenceRow[]) {
     }
   }
 
+  // Legacy / observability counters
+  const legacyRows = rows.filter((r) => r.is_legacy).length;
+
+  // Update metrics gauges
+  metrics.setGauge('coherence_metrics_legacy_rows', legacyRows);
+  metrics.setGauge('coherence_metrics_total_rows', totalEvents);
+
+  // Canary warnings
+  const warnings: string[] = [];
+  const evaluatedTotal = passCount + failCount;
+  const globalFailRate = evaluatedTotal > 0 ? failCount / evaluatedTotal : 0;
+  if (globalFailRate > WARN_GLOBAL_FAIL_RATE && evaluatedTotal >= 5) {
+    warnings.push(
+      `WARN: global FAIL rate ${(globalFailRate * 100).toFixed(1)}% exceeds ${WARN_GLOBAL_FAIL_RATE * 100}% threshold (${failCount}/${evaluatedTotal} evaluated events)`,
+    );
+  }
+  const bin2 = bins['2'];
+  const bin2Evaluated = bin2.pass + bin2.fail;
+  if (bin2.fail_rate > WARN_BIN2_FAIL_RATE && bin2Evaluated >= 3) {
+    warnings.push(
+      `WARN: article_count=2 bin FAIL rate ${(bin2.fail_rate * 100).toFixed(1)}% exceeds ${WARN_BIN2_FAIL_RATE * 100}% threshold (${bin2.fail}/${bin2Evaluated} events) — thresholds may be too aggressive for small clusters`,
+    );
+  }
+
   return {
     total_events: totalEvents,
-    pass_rate: totalEvents > 0 ? passCount / totalEvents : 0,
-    fail_rate: totalEvents > 0 ? failCount / totalEvents : 0,
-    na_rate: totalEvents > 0 ? naCount / totalEvents : 0,
     pass_count: passCount,
     fail_count: failCount,
     na_count: naCount,
+    pass_rate: totalEvents > 0 ? passCount / totalEvents : 0,
+    fail_rate: totalEvents > 0 ? failCount / totalEvents : 0,
+    na_rate: totalEvents > 0 ? naCount / totalEvents : 0,
     percentiles: {
       avg_cosine: computePercentiles(cosines),
       entity_jaccard: computePercentiles(entities),
       title_jaccard: computePercentiles(titles),
       stddev_drift: computePercentiles(drifts),
     },
-    distribution_by_article_count: byArticleCount,
+    bins,
     fail_reason_frequency: failReasonCounts,
+    observability: {
+      legacy_rows: legacyRows,
+      total_rows: totalEvents,
+      legacy_pct: totalEvents > 0 ? legacyRows / totalEvents : 0,
+    },
+    warnings,
   };
 }
+
+// ── Routes ────────────────────────────────────────────────────────────
 
 export function debugCoherenceRoutes(
   prisma: PrismaClient,
 ): FastifyPluginCallback {
   return (app: FastifyInstance, _opts, done) => {
-    // ── Summary endpoint ──────────────────────────────────────────────
+    // ── Summary / canary endpoint ────────────────────────────────────
     app.get<{ Querystring: { limit?: string; min_articles?: string } }>(
       '/v1/debug/coherence/summary',
       async (request, reply) => {
         const limitStr = request.query.limit;
-        const limit = limitStr ? parseInt(limitStr, 10) : 100;
+        const limit = limitStr ? parseInt(limitStr, 10) : 200;
 
-        if (isNaN(limit) || limit < 1 || limit > 1000) {
+        if (isNaN(limit) || limit < 1 || limit > 2000) {
           return reply.status(400).send({
             error: 'Invalid limit parameter',
-            message: 'limit must be between 1 and 1000.',
+            message: 'limit must be between 1 and 2000.',
           });
         }
 
@@ -171,7 +246,7 @@ export function debugCoherenceRoutes(
       },
     );
 
-    // ── Sample endpoint ───────────────────────────────────────────────
+    // ── Sample endpoint ──────────────────────────────────────────────
     app.get<{ Querystring: { limit?: string; status?: string; min_articles?: string } }>(
       '/v1/debug/coherence/sample',
       async (request, reply) => {
@@ -229,6 +304,7 @@ export function debugCoherenceRoutes(
             article_count: r.article_count,
           },
           thresholds: r.thresholds,
+          is_legacy: r.is_legacy,
         }));
 
         return reply.send({

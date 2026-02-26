@@ -170,6 +170,8 @@ PUBLISH_DELAY_MS=30000
 | `npm run reset:db` | Migrate + seed (safe, optional `--wipe` flag) |
 | `npm run smoke` | E2E smoke test: reset -> scrape -> publish -> feed |
 | `npm run debug:ui` | Quick diagnostic: health + feed + gate stats |
+| `npm run db:backfill:coherence` | Backfill legacy coherence metrics (dry-run; add `-- --apply` to write) |
+| `npm run debug:coherence:canary` | Canary report: PASS/FAIL bins, percentiles, warnings (CLI, no server) |
 
 ### Shell helpers (bin/)
 
@@ -353,7 +355,7 @@ All variables are documented in `.env.example`. Key groups:
 | GET | `/v1/debug/pipeline/why-empty` | Diagnose empty feed with hints |
 | GET | `/v1/debug/quality/snapshot?hours=24` | Quality metrics (boilerplate, mixed, split) |
 | GET | `/v1/debug/routing/summary?limit=500` | Content routing decision breakdown |
-| GET | `/v1/debug/coherence/summary?limit=100` | Coherence gate metrics + percentiles |
+| GET | `/v1/debug/coherence/summary?limit=200` | Canary report: bins, percentiles, warnings, legacy count |
 | GET | `/v1/debug/coherence/sample?limit=50&status=FAIL` | Sample events by coherence status |
 | GET | `/v1/debug/extractor/sample?limit=20` | Text extraction diagnostics |
 

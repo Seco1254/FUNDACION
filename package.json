@@ -26,7 +26,9 @@
     "link:once": "tsx src/scripts/link-once.ts",
     "reset:db": "./bin/reset-db",
     "smoke": "./bin/smoke",
-    "debug:ui": "./bin/debug-ui"
+    "debug:ui": "./bin/debug-ui",
+    "db:backfill:coherence": "tsx scripts/backfill-coherence-metrics.ts",
+    "debug:coherence:canary": "tsx scripts/coherence-canary.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

@@ -46,6 +46,38 @@ function makeVersion(
   };
 }
 
+/** Build a version with legacy `details` format (no `metrics` key). */
+function makeLegacyVersion(
+  eventId: string,
+  status: 'PASS' | 'FAIL',
+  details: {
+    embedding_cohesion: number | null;
+    entity_overlap: number | null;
+    title_alignment: number | null;
+    topic_drift_variance: number | null;
+  },
+  failedChecks: string[] = [],
+) {
+  return {
+    eventId,
+    createdAt: new Date('2026-02-26T09:00:00Z'),
+    headline: null,
+    packetJson: {
+      coherence_gate: {
+        status,
+        failed_checks: failedChecks,
+        details,
+        thresholds: {
+          min_avg_cosine: 0.55,
+          min_entity_jaccard: 0.05,
+          min_title_jaccard: 0.10,
+          max_stddev_drift: 0.35,
+        },
+      },
+    },
+  };
+}
+
 describe('debug-coherence routes — summary', () => {
   let app: FastifyInstance;
 
@@ -53,7 +85,7 @@ describe('debug-coherence routes — summary', () => {
     await app?.close();
   });
 
-  it('returns deterministic response shape', async () => {
+  it('returns deterministic response shape with bins, observability, warnings', async () => {
     const prisma = makePrisma([
       makeVersion('evt-1', 'PASS', {
         avg_cosine: 0.72,
@@ -85,15 +117,28 @@ describe('debug-coherence routes — summary', () => {
     expect(body).toHaveProperty('pass_count', 1);
     expect(body).toHaveProperty('fail_count', 1);
     expect(body).toHaveProperty('na_count', 0);
+    // Percentiles with p50, p75, p90, count
     expect(body).toHaveProperty('percentiles');
-    expect(body.percentiles).toHaveProperty('avg_cosine');
-    expect(body.percentiles).toHaveProperty('entity_jaccard');
-    expect(body.percentiles).toHaveProperty('title_jaccard');
-    expect(body.percentiles).toHaveProperty('stddev_drift');
-    expect(body.percentiles.avg_cosine).toHaveProperty('p25');
     expect(body.percentiles.avg_cosine).toHaveProperty('p50');
     expect(body.percentiles.avg_cosine).toHaveProperty('p75');
-    expect(body).toHaveProperty('distribution_by_article_count');
+    expect(body.percentiles.avg_cosine).toHaveProperty('p90');
+    expect(body.percentiles.avg_cosine).toHaveProperty('count');
+    // Bins
+    expect(body).toHaveProperty('bins');
+    expect(body.bins).toHaveProperty('1');
+    expect(body.bins).toHaveProperty('2');
+    expect(body.bins).toHaveProperty('3-4');
+    expect(body.bins).toHaveProperty('5-9');
+    expect(body.bins).toHaveProperty('10+');
+    // Observability
+    expect(body).toHaveProperty('observability');
+    expect(body.observability).toHaveProperty('legacy_rows');
+    expect(body.observability).toHaveProperty('total_rows');
+    expect(body.observability).toHaveProperty('legacy_pct');
+    // Warnings
+    expect(body).toHaveProperty('warnings');
+    expect(Array.isArray(body.warnings)).toBe(true);
+    // Fail reasons
     expect(body).toHaveProperty('fail_reason_frequency');
   });
 
@@ -170,12 +215,13 @@ describe('debug-coherence routes — summary', () => {
     expect(body.fail_reason_frequency.title_content_mismatch).toBe(1);
   });
 
-  it('distribution_by_article_count includes na', async () => {
+  it('bins article_count into correct groups', async () => {
     const prisma = makePrisma([
       makeVersion('evt-1', 'NA', { avg_cosine: null, entity_jaccard: null, title_jaccard: null, stddev_drift: null, article_count: 1 }),
       makeVersion('evt-2', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.1, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 2 }),
       makeVersion('evt-3', 'PASS', { avg_cosine: 0.8, entity_jaccard: 0.2, title_jaccard: 0.3, stddev_drift: 0.03, article_count: 2 }),
       makeVersion('evt-4', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 5 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-5', 'PASS', { avg_cosine: 0.9, entity_jaccard: 0.3, title_jaccard: 0.4, stddev_drift: 0.02, article_count: 12 }),
     ]);
 
     app = Fastify();
@@ -184,9 +230,33 @@ describe('debug-coherence routes — summary', () => {
     const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
     const body = res.json();
 
-    expect(body.distribution_by_article_count[1]).toEqual({ total: 1, pass: 0, fail: 0, na: 1 });
-    expect(body.distribution_by_article_count[2]).toEqual({ total: 2, pass: 2, fail: 0, na: 0 });
-    expect(body.distribution_by_article_count[5]).toEqual({ total: 1, pass: 0, fail: 1, na: 0 });
+    // NA article_count=1 → bin '1'
+    expect(body.bins['1'].na).toBe(1);
+    // Two PASS article_count=2 → bin '2'
+    expect(body.bins['2'].pass).toBe(2);
+    expect(body.bins['2'].total).toBe(2);
+    // FAIL article_count=5 → bin '5-9'
+    expect(body.bins['5-9'].fail).toBe(1);
+    // PASS article_count=12 → bin '10+'
+    expect(body.bins['10+'].pass).toBe(1);
+    // bin '3-4' empty
+    expect(body.bins['3-4'].total).toBe(0);
+  });
+
+  it('computes fail_rate per bin', async () => {
+    const prisma = makePrisma([
+      makeVersion('evt-1', 'PASS', { avg_cosine: 0.8, entity_jaccard: 0.2, title_jaccard: 0.3, stddev_drift: 0.05, article_count: 2 }),
+      makeVersion('evt-2', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 2 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    // bin '2': 1 pass + 1 fail → fail_rate = 0.5
+    expect(body.bins['2'].fail_rate).toBeCloseTo(0.5, 5);
   });
 
   it('handles empty results', async () => {
@@ -202,7 +272,89 @@ describe('debug-coherence routes — summary', () => {
     expect(body.pass_rate).toBe(0);
     expect(body.fail_rate).toBe(0);
     expect(body.na_rate).toBe(0);
-    expect(body.percentiles.avg_cosine).toEqual({ p25: 0, p50: 0, p75: 0 });
+    expect(body.percentiles.avg_cosine).toEqual({ p50: 0, p75: 0, p90: 0, count: 0 });
+    expect(body.observability.legacy_rows).toBe(0);
+    expect(body.warnings).toEqual([]);
+  });
+
+  it('detects legacy (details) format rows', async () => {
+    const prisma = makePrisma([
+      makeLegacyVersion('evt-legacy', 'PASS', {
+        embedding_cohesion: 0.65,
+        entity_overlap: 0.10,
+        title_alignment: 0.20,
+        topic_drift_variance: 0.06,
+      }),
+      makeVersion('evt-new', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 3 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    expect(body.observability.legacy_rows).toBe(1);
+    expect(body.observability.total_rows).toBe(2);
+    expect(body.observability.legacy_pct).toBeCloseTo(0.5, 5);
+    // Legacy row metrics should still be read correctly
+    expect(body.percentiles.avg_cosine.count).toBe(2);
+  });
+
+  it('emits warning when global FAIL rate exceeds threshold', async () => {
+    // 5 FAIL + 1 PASS = 83% fail rate (above 40% threshold)
+    const prisma = makePrisma([
+      makeVersion('evt-1', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 2 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-2', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 3 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-3', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 4 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-4', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 5 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-5', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 6 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-6', 'PASS', { avg_cosine: 0.8, entity_jaccard: 0.2, title_jaccard: 0.3, stddev_drift: 0.05, article_count: 3 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    expect(body.warnings.length).toBeGreaterThanOrEqual(1);
+    expect(body.warnings[0]).toContain('global FAIL rate');
+  });
+
+  it('emits warning when bin-2 FAIL rate exceeds threshold', async () => {
+    // 3 FAIL + 1 PASS in bin 2 → 75% fail rate (above 60% threshold)
+    const prisma = makePrisma([
+      makeVersion('evt-1', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 2 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-2', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 2 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-3', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 2 }, ['low_embedding_cohesion', 'low_entity_overlap']),
+      makeVersion('evt-4', 'PASS', { avg_cosine: 0.8, entity_jaccard: 0.2, title_jaccard: 0.3, stddev_drift: 0.05, article_count: 2 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    const bin2Warning = body.warnings.find((w: string) => w.includes('article_count=2'));
+    expect(bin2Warning).toBeDefined();
+    expect(bin2Warning).toContain('too aggressive for small clusters');
+  });
+
+  it('no warnings when rates are healthy', async () => {
+    const prisma = makePrisma([
+      makeVersion('evt-1', 'PASS', { avg_cosine: 0.8, entity_jaccard: 0.2, title_jaccard: 0.3, stddev_drift: 0.05, article_count: 2 }),
+      makeVersion('evt-2', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.08, article_count: 3 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    expect(body.warnings).toEqual([]);
   });
 
   it('rejects invalid limit', async () => {
@@ -244,11 +396,8 @@ describe('debug-coherence routes — summary', () => {
 
   it('does not crash when versions lack coherence_gate in packet_json', async () => {
     const prisma = makePrisma([
-      // Version without coherence_gate
       { eventId: 'evt-no-cg', createdAt: new Date(), headline: 'No gate', packetJson: { some_other_field: true } },
-      // Version with null packetJson
       { eventId: 'evt-null', createdAt: new Date(), headline: null, packetJson: null },
-      // Version with coherence_gate
       makeVersion('evt-ok', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 3 }),
     ]);
 
@@ -259,16 +408,13 @@ describe('debug-coherence routes — summary', () => {
     expect(res.statusCode).toBe(200);
 
     const body = res.json();
-    // Only the one with coherence_gate should appear
     expect(body.total_events).toBe(1);
     expect(body.pass_count).toBe(1);
   });
 
   it('percentiles exclude NA rows', async () => {
     const prisma = makePrisma([
-      // NA row with title_jaccard = 0.9 — should NOT contribute to percentiles
       makeVersion('evt-na', 'NA', { avg_cosine: null, entity_jaccard: null, title_jaccard: 0.9, stddev_drift: null, article_count: 1 }),
-      // PASS row with low title_jaccard
       makeVersion('evt-pass', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 3 }),
     ]);
 
@@ -278,13 +424,9 @@ describe('debug-coherence routes — summary', () => {
     const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
     const body = res.json();
 
-    // NA row counts for na_count but not percentiles
     expect(body.na_count).toBe(1);
     expect(body.pass_count).toBe(1);
-
-    // title_jaccard percentiles should only reflect the PASS row (0.2), not NA (0.9)
     expect(body.percentiles.title_jaccard.p50).toBeCloseTo(0.2, 5);
-    // avg_cosine should only have the PASS row
     expect(body.percentiles.avg_cosine.p50).toBeCloseTo(0.7, 5);
   });
 });
@@ -296,7 +438,7 @@ describe('debug-coherence routes — sample', () => {
     await app?.close();
   });
 
-  it('returns deterministic response shape', async () => {
+  it('returns deterministic response shape with is_legacy flag', async () => {
     const prisma = makePrisma([
       makeVersion('evt-1', 'FAIL', { avg_cosine: 0.3, entity_jaccard: 0.01, title_jaccard: 0.02, stddev_drift: 0.5, article_count: 3 }, ['low_embedding_cohesion', 'low_entity_overlap'], 'Test headline'),
     ]);
@@ -327,7 +469,28 @@ describe('debug-coherence routes — sample', () => {
     expect(row.metrics).toHaveProperty('stddev_drift');
     expect(row.metrics).toHaveProperty('article_count', 3);
     expect(row).toHaveProperty('thresholds');
-    expect(row.thresholds).toHaveProperty('min_avg_cosine');
+    expect(row).toHaveProperty('is_legacy', false);
+  });
+
+  it('marks legacy-format rows in sample output', async () => {
+    const prisma = makePrisma([
+      makeLegacyVersion('evt-legacy', 'FAIL', {
+        embedding_cohesion: 0.30,
+        entity_overlap: 0.01,
+        title_alignment: 0.02,
+        topic_drift_variance: 0.50,
+      }, ['low_embedding_cohesion', 'low_entity_overlap']),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/sample' });
+    const body = res.json();
+
+    expect(body.rows[0].is_legacy).toBe(true);
+    expect(body.rows[0].metrics.avg_cosine).toBeCloseTo(0.30, 5);
+    expect(body.rows[0].metrics.entity_jaccard).toBeCloseTo(0.01, 5);
   });
 
   it('filters by status', async () => {
