@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluateClusterCoherence,
+  buildCoherenceGatePacket,
   checkEmbeddingCohesion,
   checkEntityOverlap,
   checkTitleAlignment,
   checkTopicDrift,
+  THETA_EMBEDDING_COHESION,
+  THETA_ENTITY_OVERLAP,
+  THETA_TITLE_ALIGNMENT,
+  THETA_TOPIC_DRIFT,
   type EventCluster,
   type ClusterArticle,
+  type CoherenceGatePacket,
 } from './coherence-gate.js';
 import { computeEmbedding } from '../embedding/service/hash-vector.js';
 
@@ -127,8 +133,162 @@ describe('evaluateClusterCoherence', () => {
       ],
     };
     const result = evaluateClusterCoherence(cluster);
-    // title_content_mismatch should be among failed checks
     expect(result.failed_checks).toContain('title_content_mismatch');
+  });
+});
+
+describe('metrics and thresholds persistence', () => {
+  it('always returns metrics object with correct article_count', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-metrics',
+      headline: 'Test headline',
+      articles: [
+        makeArticle('a1', 'Title A', 'Text A content here'),
+        makeArticle('a2', 'Title B', 'Text B content here'),
+        makeArticle('a3', 'Title C', 'Text C content here'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+
+    expect(result.metrics).toBeDefined();
+    expect(result.metrics.article_count).toBe(3);
+    expect(typeof result.metrics.avg_cosine).toBe('number');
+    expect(typeof result.metrics.entity_jaccard).toBe('number');
+    expect(typeof result.metrics.title_jaccard).toBe('number');
+    expect(typeof result.metrics.stddev_drift).toBe('number');
+  });
+
+  it('always returns thresholds object matching current config', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-thresholds',
+      headline: 'Test',
+      articles: [
+        makeArticle('a1', 'Title', 'Text'),
+        makeArticle('a2', 'Title 2', 'Text 2'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+
+    expect(result.thresholds).toBeDefined();
+    expect(result.thresholds.min_avg_cosine).toBe(THETA_EMBEDDING_COHESION);
+    expect(result.thresholds.min_entity_jaccard).toBe(THETA_ENTITY_OVERLAP);
+    expect(result.thresholds.min_title_jaccard).toBe(THETA_TITLE_ALIGNMENT);
+    expect(result.thresholds.max_stddev_drift).toBe(THETA_TOPIC_DRIFT);
+  });
+
+  it('returns null avg_cosine and stddev_drift for single-article clusters', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-single',
+      headline: 'Single article test',
+      articles: [makeArticle('a1', 'Single article title', 'Some text content')],
+    };
+    const result = evaluateClusterCoherence(cluster);
+
+    expect(result.metrics.avg_cosine).toBeNull();
+    expect(result.metrics.stddev_drift).toBeNull();
+    expect(result.metrics.entity_jaccard).toBeNull();
+    expect(result.metrics.article_count).toBe(1);
+    // title_jaccard can still be computed for single article with headline
+    expect(result.metrics.title_jaccard).not.toBeNull();
+  });
+
+  it('returns all null metrics for empty cluster', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-zero',
+      headline: null,
+      articles: [],
+    };
+    const result = evaluateClusterCoherence(cluster);
+
+    expect(result.metrics.avg_cosine).toBeNull();
+    expect(result.metrics.entity_jaccard).toBeNull();
+    expect(result.metrics.title_jaccard).toBeNull();
+    expect(result.metrics.stddev_drift).toBeNull();
+    expect(result.metrics.article_count).toBe(0);
+  });
+
+  it('returns null avg_cosine when articles have no embeddings', () => {
+    const articles: ClusterArticle[] = [
+      { id: 'a1', title: 'Test 1', textNorm: 'text', embeddingVec: null },
+      { id: 'a2', title: 'Test 2', textNorm: 'text', embeddingVec: null },
+    ];
+    const cluster: EventCluster = {
+      event_id: 'evt-no-emb',
+      headline: 'Test',
+      articles,
+    };
+    const result = evaluateClusterCoherence(cluster);
+
+    expect(result.metrics.avg_cosine).toBeNull();
+    expect(result.metrics.stddev_drift).toBeNull();
+    // entity_jaccard and title_jaccard still computed from titles
+    expect(result.metrics.entity_jaccard).not.toBeNull();
+  });
+});
+
+describe('buildCoherenceGatePacket', () => {
+  it('builds PASS packet with metrics and thresholds', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-packet-pass',
+      headline: 'Test headline',
+      articles: [
+        makeArticle('a1', 'Reforma pensional Colombia aprobada', 'Reforma pensional aprobada en Colombia'),
+        makeArticle('a2', 'Reforma pensional aprobada en Senado', 'El Senado aprobó la reforma pensional'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    const packet = buildCoherenceGatePacket(result);
+
+    expect(packet.status).toBe(result.passed ? 'PASS' : 'FAIL');
+    expect(packet.failed_checks).toEqual(result.failed_checks);
+    expect(packet.metrics).toEqual(result.metrics);
+    expect(packet.thresholds).toEqual(result.thresholds);
+    expect(packet.metrics.article_count).toBe(2);
+  });
+
+  it('builds FAIL packet with complete structure', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-packet-fail',
+      headline: 'Elecciones presidenciales en Venezuela',
+      articles: [
+        makeArticle('a1', 'Terremoto sacude costa pacífica', 'Un fuerte terremoto sacudió la costa'),
+        makeArticle('a2', 'Selección gana partido de fútbol', 'La selección ganó el partido eliminatorio'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    const packet = buildCoherenceGatePacket(result);
+
+    // Verify complete structure
+    expect(packet).toHaveProperty('status');
+    expect(packet).toHaveProperty('failed_checks');
+    expect(packet).toHaveProperty('metrics');
+    expect(packet).toHaveProperty('thresholds');
+    expect(packet.metrics).toHaveProperty('avg_cosine');
+    expect(packet.metrics).toHaveProperty('entity_jaccard');
+    expect(packet.metrics).toHaveProperty('title_jaccard');
+    expect(packet.metrics).toHaveProperty('stddev_drift');
+    expect(packet.metrics).toHaveProperty('article_count');
+    expect(packet.thresholds).toHaveProperty('min_avg_cosine');
+    expect(packet.thresholds).toHaveProperty('min_entity_jaccard');
+    expect(packet.thresholds).toHaveProperty('min_title_jaccard');
+    expect(packet.thresholds).toHaveProperty('max_stddev_drift');
+  });
+
+  it('produces deterministic JSON structure', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-deterministic',
+      headline: 'Test',
+      articles: [
+        makeArticle('a1', 'Title one', 'Text one'),
+        makeArticle('a2', 'Title two', 'Text two'),
+      ],
+    };
+    const result1 = evaluateClusterCoherence(cluster);
+    const packet1 = buildCoherenceGatePacket(result1);
+    const result2 = evaluateClusterCoherence(cluster);
+    const packet2 = buildCoherenceGatePacket(result2);
+
+    expect(JSON.stringify(packet1)).toBe(JSON.stringify(packet2));
   });
 });
 

@@ -21,6 +21,7 @@ import { deriveTeaser } from '../../../core/llm/teaser.js';
 import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 import {
   evaluateClusterCoherence,
+  buildCoherenceGatePacket,
   type EventCluster,
   type CoherenceCheckResult,
 } from '../../events/coherence-gate.js';
@@ -383,8 +384,16 @@ export class OverviewGenerator {
         coherenceResult = evaluateClusterCoherence(cluster);
 
         if (!coherenceResult.passed) {
+          const gatePacket = buildCoherenceGatePacket(coherenceResult);
+
           logger.info(
-            { event_id, version_id, failed_checks: coherenceResult.failed_checks, score: coherenceResult.score },
+            {
+              event_id,
+              version_id,
+              failed_checks: gatePacket.failed_checks,
+              metrics: gatePacket.metrics,
+              article_count: gatePacket.metrics.article_count,
+            },
             'coherence_gate_blocked_overview',
           );
 
@@ -392,12 +401,7 @@ export class OverviewGenerator {
           if (version) {
             const updatedPacket = {
               ...existingPacket,
-              coherence_gate: {
-                status: 'FAIL' as const,
-                score: coherenceResult.score,
-                failed_checks: coherenceResult.failed_checks,
-                details: coherenceResult.details,
-              },
+              coherence_gate: gatePacket,
               overview_status: { state: 'blocked', reason: 'coherence_gate_failed' },
             };
             await this.versionRepo.update(version_id, {
@@ -413,9 +417,9 @@ export class OverviewGenerator {
             trace_id: traceId,
             data: {
               version_id,
-              score: coherenceResult.score,
-              failed_checks: coherenceResult.failed_checks,
-              article_count: cluster.articles.length,
+              failed_checks: gatePacket.failed_checks,
+              metrics: gatePacket.metrics,
+              article_count: gatePacket.metrics.article_count,
             },
           });
 
@@ -479,12 +483,7 @@ export class OverviewGenerator {
             overview_hash: newOverviewHash,
           },
           ...(coherenceResult && {
-            coherence_gate: {
-              status: 'PASS' as const,
-              score: coherenceResult.score,
-              failed_checks: coherenceResult.failed_checks,
-              details: coherenceResult.details,
-            },
+            coherence_gate: buildCoherenceGatePacket(coherenceResult),
           }),
         };
 
