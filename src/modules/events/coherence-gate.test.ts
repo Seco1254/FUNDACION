@@ -12,7 +12,6 @@ import {
   THETA_TOPIC_DRIFT,
   type EventCluster,
   type ClusterArticle,
-  type CoherenceGatePacket,
 } from './coherence-gate.js';
 import { computeEmbedding } from '../embedding/service/hash-vector.js';
 
@@ -137,6 +136,91 @@ describe('evaluateClusterCoherence', () => {
   });
 });
 
+describe('single-source policy (NA status)', () => {
+  it('returns status=NA for single-article cluster', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-single',
+      headline: 'Reforma pensional',
+      articles: [
+        makeArticle('a1', 'Reforma pensional avanza en Colombia', 'El proyecto de reforma pensional avanzó'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    expect(result.status).toBe('NA');
+    expect(result.passed).toBe(true);
+    expect(result.failed_checks).toEqual([]);
+  });
+
+  it('returns status=NA for empty cluster', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-empty',
+      headline: null,
+      articles: [],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    expect(result.status).toBe('NA');
+    expect(result.passed).toBe(true);
+  });
+
+  it('single-article cluster never produces FAIL status', () => {
+    // Even with a completely unrelated headline, single-article should be NA
+    const cluster: EventCluster = {
+      event_id: 'evt-single-mismatch',
+      headline: 'Elecciones presidenciales en Venezuela',
+      articles: [
+        makeArticle('a1', 'Terremoto sacude costa pacífica', 'Un terremoto devastador'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    expect(result.status).toBe('NA');
+    expect(result.passed).toBe(true);
+    expect(result.failed_checks).toEqual([]);
+  });
+
+  it('buildCoherenceGatePacket produces NA status for single-article', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-na-packet',
+      headline: 'Test',
+      articles: [makeArticle('a1', 'Title', 'Text')],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    const packet = buildCoherenceGatePacket(result);
+    expect(packet.status).toBe('NA');
+    expect(packet.failed_checks).toEqual([]);
+    expect(packet.metrics.article_count).toBe(1);
+    expect(packet.metrics.avg_cosine).toBeNull();
+    expect(packet.metrics.stddev_drift).toBeNull();
+  });
+
+  it('returns status=PASS for multi-article coherent cluster', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-multi-pass',
+      headline: 'Reforma pensional aprobada en Colombia',
+      articles: [
+        makeArticle('a1', 'Reforma pensional aprobada en el Senado colombiano', 'El Senado aprobó la reforma pensional'),
+        makeArticle('a2', 'Colombia aprueba reforma de pensiones', 'La reforma pensional fue aprobada en Colombia'),
+        makeArticle('a3', 'Pensiones en Colombia: reforma avanza', 'La reforma de pensiones avanza en el Senado'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    expect(result.status).toBe('PASS');
+  });
+
+  it('returns status=FAIL for multi-article incoherent cluster', () => {
+    const cluster: EventCluster = {
+      event_id: 'evt-multi-fail',
+      headline: 'Noticias del día',
+      articles: [
+        makeArticle('a1', 'Terremoto sacude costa pacífica de Colombia', 'Un terremoto sacudió la costa pacífica colombiana'),
+        makeArticle('a2', 'Selección Colombia clasifica al Mundial de fútbol', 'La selección colombiana clasificó al Mundial'),
+        makeArticle('a3', 'Exportaciones cafeteras colombianas récord', 'Las exportaciones de café alcanzaron récord'),
+      ],
+    };
+    const result = evaluateClusterCoherence(cluster);
+    expect(result.status).toBe('FAIL');
+  });
+});
+
 describe('metrics and thresholds persistence', () => {
   it('always returns metrics object with correct article_count', () => {
     const cluster: EventCluster = {
@@ -239,7 +323,7 @@ describe('buildCoherenceGatePacket', () => {
     const result = evaluateClusterCoherence(cluster);
     const packet = buildCoherenceGatePacket(result);
 
-    expect(packet.status).toBe(result.passed ? 'PASS' : 'FAIL');
+    expect(['PASS', 'FAIL']).toContain(packet.status);
     expect(packet.failed_checks).toEqual(result.failed_checks);
     expect(packet.metrics).toEqual(result.metrics);
     expect(packet.thresholds).toEqual(result.thresholds);

@@ -72,8 +72,16 @@ export interface CoherenceThresholds {
   max_stddev_drift: number;
 }
 
+/**
+ * Status values:
+ *   'PASS' — cluster evaluated and passed (article_count >= 2)
+ *   'FAIL' — cluster evaluated and failed (article_count >= 2, 2+ checks failed)
+ *   'NA'   — not applicable (article_count < 2, never blocks)
+ */
+export type CoherenceGateStatus = 'PASS' | 'FAIL' | 'NA';
+
 export interface CoherenceGatePacket {
-  status: 'PASS' | 'FAIL';
+  status: CoherenceGateStatus;
   failed_checks: string[];
   metrics: CoherenceMetrics;
   thresholds: CoherenceThresholds;
@@ -81,6 +89,7 @@ export interface CoherenceGatePacket {
 
 export interface CoherenceCheckResult {
   passed: boolean;
+  status: CoherenceGateStatus;
   score: number;
   failed_checks: string[];
   details: {
@@ -242,7 +251,8 @@ export function evaluateClusterCoherence(
   const thresholds = currentThresholds();
   const articleCount = cluster.articles.length;
 
-  // Single article or empty → auto-pass (metrics null for pairwise, computed where possible)
+  // Single article or empty → NA (not applicable, never blocks)
+  // Pairwise metrics are null; title_jaccard computed where possible for observability.
   if (articleCount <= 1) {
     const titleScore = articleCount === 1 && cluster.headline
       ? checkTitleAlignment(cluster.headline, cluster.articles).score
@@ -250,6 +260,7 @@ export function evaluateClusterCoherence(
 
     return {
       passed: true,
+      status: 'NA' as CoherenceGateStatus,
       score: 1,
       failed_checks: [],
       details: {
@@ -305,6 +316,7 @@ export function evaluateClusterCoherence(
   const compositeScore = scores.reduce((a, b) => a + b, 0) / scores.length;
 
   const passed = !COHERENCE_GATE_ENABLED || failedChecks.length < MIN_FAILED_CHECKS_TO_BLOCK;
+  const status: CoherenceGateStatus = passed ? 'PASS' : 'FAIL';
 
   const metrics: CoherenceMetrics = {
     avg_cosine: avgCosine,
@@ -331,6 +343,7 @@ export function evaluateClusterCoherence(
 
   return {
     passed,
+    status,
     score: compositeScore,
     failed_checks: failedChecks,
     details: {
@@ -352,7 +365,7 @@ export function buildCoherenceGatePacket(
   result: CoherenceCheckResult,
 ): CoherenceGatePacket {
   return {
-    status: result.passed ? 'PASS' : 'FAIL',
+    status: result.status,
     failed_checks: result.failed_checks,
     metrics: result.metrics,
     thresholds: result.thresholds,
