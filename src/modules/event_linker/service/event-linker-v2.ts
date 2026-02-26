@@ -59,6 +59,16 @@ export class EventLinkerV2 {
         return;
       }
 
+      // Content-type routing: only cluster NEWS articles
+      if (article.routingDecision && article.routingDecision !== 'NEWS') {
+        logger.info({
+          article_id,
+          routing_decision: article.routingDecision,
+        }, 'linker_skip_non_news');
+        metrics.incCounter('linking.skipped_non_news_total');
+        return;
+      }
+
       const articleVec = article.embeddingVec as number[];
       const now = this.clock.now();
 

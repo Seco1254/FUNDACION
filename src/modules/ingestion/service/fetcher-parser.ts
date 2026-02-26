@@ -12,6 +12,7 @@ import {
 } from '../scrapers/html-utils.js';
 import { logger } from '../../../core/logging/logger.js';
 import { classifyContent } from '../../text_sanitizer/content-classifier.js';
+import { evaluateRoutingDecision } from './content-router.js';
 
 export class FetcherParser {
   constructor(
@@ -185,6 +186,14 @@ export class FetcherParser {
       const contentType = classification?.content_type ?? null;
       const contentTypeScore = classification?.score ?? null;
 
+      // Content-type routing: assign bucket before clustering
+      const routingDecision = evaluateRoutingDecision({
+        contentType,
+        textContentLen,
+        title: parsed.title,
+        usableForOverview,
+      });
+
       let article;
       try {
         article = await this.articleRepo.create({
@@ -200,6 +209,7 @@ export class FetcherParser {
           usableForOverview,
           contentType,
           contentTypeScore,
+          routingDecision,
           publishedAt: parsed.publishedAt,
           status: 'NORMALIZED',
         });

@@ -51,6 +51,7 @@ model Article {
   blockedReason        BlockedReason?  @map("blocked_reason")
   contentType          String?         @map("content_type")
   contentTypeScore     Float?          @map("content_type_score")
+  routingDecision      String?         @map("routing_decision")
   embeddingModel String?         @map("embedding_model")
   embeddingVec   Json?           @map("embedding_vec")
   embeddingHash  String?         @map("embedding_hash")
