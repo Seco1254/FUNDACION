@@ -57,6 +57,28 @@ export interface EventCluster {
   articles: ClusterArticle[];
 }
 
+export interface CoherenceMetrics {
+  avg_cosine: number | null;
+  entity_jaccard: number | null;
+  title_jaccard: number | null;
+  stddev_drift: number | null;
+  article_count: number;
+}
+
+export interface CoherenceThresholds {
+  min_avg_cosine: number;
+  min_entity_jaccard: number;
+  min_title_jaccard: number;
+  max_stddev_drift: number;
+}
+
+export interface CoherenceGatePacket {
+  status: 'PASS' | 'FAIL';
+  failed_checks: string[];
+  metrics: CoherenceMetrics;
+  thresholds: CoherenceThresholds;
+}
+
 export interface CoherenceCheckResult {
   passed: boolean;
   score: number;
@@ -67,6 +89,8 @@ export interface CoherenceCheckResult {
     title_alignment: number | null;
     topic_drift_variance: number | null;
   };
+  metrics: CoherenceMetrics;
+  thresholds: CoherenceThresholds;
 }
 
 // ── Individual checks ───────────────────────────────────────────────
@@ -191,6 +215,18 @@ export function checkTopicDrift(
   return { score: stddev, failed: stddev > THETA_TOPIC_DRIFT };
 }
 
+/**
+ * Build the current thresholds snapshot (frozen at call time).
+ */
+export function currentThresholds(): CoherenceThresholds {
+  return {
+    min_avg_cosine: THETA_EMBEDDING_COHESION,
+    min_entity_jaccard: THETA_ENTITY_OVERLAP,
+    min_title_jaccard: THETA_TITLE_ALIGNMENT,
+    max_stddev_drift: THETA_TOPIC_DRIFT,
+  };
+}
+
 // ── Main gate function ──────────────────────────────────────────────
 
 /**
@@ -198,27 +234,20 @@ export function checkTopicDrift(
  * Returns passed=false if MIN_FAILED_CHECKS_TO_BLOCK or more checks fail.
  *
  * Single-article clusters always pass automatically.
+ * Metrics and thresholds are ALWAYS populated for observability.
  */
 export function evaluateClusterCoherence(
   cluster: EventCluster,
 ): CoherenceCheckResult {
-  // Single article or empty → auto-pass
-  if (cluster.articles.length <= 1) {
-    return {
-      passed: true,
-      score: 1,
-      failed_checks: [],
-      details: {
-        embedding_cohesion: null,
-        entity_overlap: null,
-        title_alignment: null,
-        topic_drift_variance: null,
-      },
-    };
-  }
+  const thresholds = currentThresholds();
+  const articleCount = cluster.articles.length;
 
-  // Gate disabled → auto-pass
-  if (!COHERENCE_GATE_ENABLED) {
+  // Single article or empty → auto-pass (metrics null for pairwise, computed where possible)
+  if (articleCount <= 1) {
+    const titleScore = articleCount === 1 && cluster.headline
+      ? checkTitleAlignment(cluster.headline, cluster.articles).score
+      : null;
+
     return {
       passed: true,
       score: 1,
@@ -226,9 +255,17 @@ export function evaluateClusterCoherence(
       details: {
         embedding_cohesion: null,
         entity_overlap: null,
-        title_alignment: null,
+        title_alignment: titleScore,
         topic_drift_variance: null,
       },
+      metrics: {
+        avg_cosine: null,
+        entity_jaccard: null,
+        title_jaccard: titleScore,
+        stddev_drift: null,
+        article_count: articleCount,
+      },
+      thresholds,
     };
   }
 
@@ -236,19 +273,26 @@ export function evaluateClusterCoherence(
 
   // 1. Embedding Cohesion
   const embCohesion = checkEmbeddingCohesion(cluster.articles);
-  if (embCohesion.failed) failedChecks.push('low_embedding_cohesion');
+  const hasVecs = cluster.articles.some((a) => a.embeddingVec != null && a.embeddingVec.length > 0);
+  const avgCosine = hasVecs ? embCohesion.score : null;
 
   // 2. Entity Overlap
   const entityOvlp = checkEntityOverlap(cluster.articles);
-  if (entityOvlp.failed) failedChecks.push('low_entity_overlap');
 
   // 3. Title Alignment
   const titleAlign = checkTitleAlignment(cluster.headline, cluster.articles);
-  if (titleAlign.failed) failedChecks.push('title_content_mismatch');
 
   // 4. Topic Drift Variance
   const topicDrift = checkTopicDrift(cluster.articles);
-  if (topicDrift.failed) failedChecks.push('topic_drift');
+  const stddevDrift = hasVecs ? topicDrift.score : null;
+
+  // Only apply gate logic if enabled
+  if (COHERENCE_GATE_ENABLED) {
+    if (embCohesion.failed) failedChecks.push('low_embedding_cohesion');
+    if (entityOvlp.failed) failedChecks.push('low_entity_overlap');
+    if (titleAlign.failed) failedChecks.push('title_content_mismatch');
+    if (topicDrift.failed) failedChecks.push('topic_drift');
+  }
 
   // Composite score: average of normalized check scores (0-1, higher = more coherent)
   const scores = [
@@ -260,18 +304,26 @@ export function evaluateClusterCoherence(
   ];
   const compositeScore = scores.reduce((a, b) => a + b, 0) / scores.length;
 
-  const passed = failedChecks.length < MIN_FAILED_CHECKS_TO_BLOCK;
+  const passed = !COHERENCE_GATE_ENABLED || failedChecks.length < MIN_FAILED_CHECKS_TO_BLOCK;
+
+  const metrics: CoherenceMetrics = {
+    avg_cosine: avgCosine,
+    entity_jaccard: entityOvlp.score,
+    title_jaccard: titleAlign.score,
+    stddev_drift: stddevDrift,
+    article_count: articleCount,
+  };
 
   logger.info(
     {
       event_id: cluster.event_id,
       coherence_score: compositeScore,
       failed_checks: failedChecks,
-      article_count: cluster.articles.length,
-      embedding_cohesion: embCohesion.score,
-      entity_overlap: entityOvlp.score,
-      title_alignment: titleAlign.score,
-      topic_drift_variance: topicDrift.score,
+      article_count: articleCount,
+      avg_cosine: metrics.avg_cosine,
+      entity_jaccard: metrics.entity_jaccard,
+      title_jaccard: metrics.title_jaccard,
+      stddev_drift: metrics.stddev_drift,
       passed,
     },
     'coherence_gate_evaluated',
@@ -287,5 +339,22 @@ export function evaluateClusterCoherence(
       title_alignment: titleAlign.score,
       topic_drift_variance: topicDrift.score,
     },
+    metrics,
+    thresholds,
+  };
+}
+
+/**
+ * Build the coherence_gate packet object for persistence in packet_json.
+ * Always includes metrics + thresholds regardless of PASS/FAIL.
+ */
+export function buildCoherenceGatePacket(
+  result: CoherenceCheckResult,
+): CoherenceGatePacket {
+  return {
+    status: result.passed ? 'PASS' : 'FAIL',
+    failed_checks: result.failed_checks,
+    metrics: result.metrics,
+    thresholds: result.thresholds,
   };
 }
