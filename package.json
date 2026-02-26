@@ -28,7 +28,8 @@
     "smoke": "./bin/smoke",
     "debug:ui": "./bin/debug-ui",
     "db:backfill:coherence": "tsx scripts/backfill-coherence-metrics.ts",
-    "debug:coherence:canary": "tsx scripts/coherence-canary.ts"
+    "debug:coherence:canary": "tsx scripts/coherence-canary.ts",
+    "debug:feed:doctor": "tsx scripts/feed-doctor.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
