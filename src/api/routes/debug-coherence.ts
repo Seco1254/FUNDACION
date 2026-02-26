@@ -34,13 +34,13 @@ function computePercentiles(values: number[]): { p25: number; p50: number; p75: 
 }
 
 /**
- * Fetch coherence gate data directly from packet_json (works with or without the SQL view).
+ * Fetch recent event versions, then filter in JS for those containing coherence_gate.
+ * Avoids Prisma JSON-path filters (P2019 on some Postgres versions).
+ * Over-fetches by 10x (min 500) so post-filter still yields enough rows.
  */
 async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<CoherenceRow[]> {
+  const fetchLimit = Math.max(limit * 10, 500);
   const versions = await prisma.eventVersion.findMany({
-    where: {
-      packetJson: { path: ['coherence_gate'], not: undefined as any },
-    },
     select: {
       eventId: true,
       createdAt: true,
@@ -48,7 +48,7 @@ async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<
       packetJson: true,
     },
     orderBy: { createdAt: 'desc' },
-    take: limit,
+    take: fetchLimit,
   });
 
   const rows: CoherenceRow[] = [];
@@ -69,6 +69,7 @@ async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<
       failed_checks: cg.failed_checks ?? null,
       thresholds: cg.thresholds ?? null,
     });
+    if (rows.length >= limit) break;
   }
   return rows;
 }
@@ -79,11 +80,12 @@ function buildSummary(rows: CoherenceRow[]) {
   const failCount = rows.filter((r) => r.status === 'FAIL').length;
   const naCount = rows.filter((r) => r.status === 'NA').length;
 
-  // Collect non-null metric values
-  const cosines = rows.map((r) => r.avg_cosine).filter((v): v is number => v != null);
-  const entities = rows.map((r) => r.entity_jaccard).filter((v): v is number => v != null);
-  const titles = rows.map((r) => r.title_jaccard).filter((v): v is number => v != null);
-  const drifts = rows.map((r) => r.stddev_drift).filter((v): v is number => v != null);
+  // Percentiles only from evaluated rows (status !== 'NA') with numeric metrics
+  const evaluated = rows.filter((r) => r.status !== 'NA');
+  const cosines = evaluated.map((r) => r.avg_cosine).filter((v): v is number => v != null);
+  const entities = evaluated.map((r) => r.entity_jaccard).filter((v): v is number => v != null);
+  const titles = evaluated.map((r) => r.title_jaccard).filter((v): v is number => v != null);
+  const drifts = evaluated.map((r) => r.stddev_drift).filter((v): v is number => v != null);
 
   // Distribution by article_count
   const byArticleCount: Record<number, { total: number; pass: number; fail: number; na: number }> = {};

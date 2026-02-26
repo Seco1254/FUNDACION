@@ -229,16 +229,63 @@ describe('debug-coherence routes — summary', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('passes limit to prisma findMany', async () => {
+  it('over-fetches from prisma to compensate for JS filtering', async () => {
     const prisma = makePrisma([]);
 
     app = Fastify();
     app.register(debugCoherenceRoutes(prisma));
 
+    // limit=50 → fetchLimit = Math.max(50*10, 500) = 500
     await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary?limit=50' });
     expect(prisma.eventVersion.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 50 }),
+      expect.objectContaining({ take: 500 }),
     );
+  });
+
+  it('does not crash when versions lack coherence_gate in packet_json', async () => {
+    const prisma = makePrisma([
+      // Version without coherence_gate
+      { eventId: 'evt-no-cg', createdAt: new Date(), headline: 'No gate', packetJson: { some_other_field: true } },
+      // Version with null packetJson
+      { eventId: 'evt-null', createdAt: new Date(), headline: null, packetJson: null },
+      // Version with coherence_gate
+      makeVersion('evt-ok', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 3 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json();
+    // Only the one with coherence_gate should appear
+    expect(body.total_events).toBe(1);
+    expect(body.pass_count).toBe(1);
+  });
+
+  it('percentiles exclude NA rows', async () => {
+    const prisma = makePrisma([
+      // NA row with title_jaccard = 0.9 — should NOT contribute to percentiles
+      makeVersion('evt-na', 'NA', { avg_cosine: null, entity_jaccard: null, title_jaccard: 0.9, stddev_drift: null, article_count: 1 }),
+      // PASS row with low title_jaccard
+      makeVersion('evt-pass', 'PASS', { avg_cosine: 0.7, entity_jaccard: 0.15, title_jaccard: 0.2, stddev_drift: 0.05, article_count: 3 }),
+    ]);
+
+    app = Fastify();
+    app.register(debugCoherenceRoutes(prisma));
+
+    const res = await app.inject({ method: 'GET', url: '/v1/debug/coherence/summary' });
+    const body = res.json();
+
+    // NA row counts for na_count but not percentiles
+    expect(body.na_count).toBe(1);
+    expect(body.pass_count).toBe(1);
+
+    // title_jaccard percentiles should only reflect the PASS row (0.2), not NA (0.9)
+    expect(body.percentiles.title_jaccard.p50).toBeCloseTo(0.2, 5);
+    // avg_cosine should only have the PASS row
+    expect(body.percentiles.avg_cosine.p50).toBeCloseTo(0.7, 5);
   });
 });
 
