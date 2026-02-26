@@ -13,6 +13,7 @@ import {
 import { logger } from '../../../core/logging/logger.js';
 import { classifyContent } from '../../text_sanitizer/content-classifier.js';
 import { evaluateRoutingDecision } from './content-router.js';
+import { cleanDom } from '../../text_sanitizer/dom-cleaner.js';
 
 export class FetcherParser {
   constructor(
@@ -121,9 +122,26 @@ export class FetcherParser {
       const snippet = parsed.snippet.slice(0, MAX_SNIPPET_CHARS);
 
       // --- Text acquisition ladder ---
-      // 1) Body extraction (from scraper's extractArticleBody)
-      let bestText = parsed.textContent || '';
-      let textContentSource: string = bestText.length > 0 ? 'body' : 'none';
+      // 0) DOM Cleaner: structure-aware HTML cleaning (strips boilerplate
+      //    nodes, sidebars, UGC, donation blocks, etc.) before extraction.
+      //    Falls through to legacy extraction if result is too short.
+      let bestText = '';
+      let textContentSource = 'none';
+
+      const domResult = cleanDom({ html, url });
+      if (domResult.text.length > 0) {
+        bestText = domResult.text;
+        textContentSource = 'dom_cleaner_v1';
+      }
+
+      // 1) Body extraction (from scraper's extractArticleBody) — legacy fallback
+      if (bestText.length < TEXT_MIN_LEN) {
+        const bodyText = parsed.textContent || '';
+        if (bodyText.length > bestText.length) {
+          bestText = bodyText;
+          textContentSource = bodyText.length > 0 ? 'body' : 'none';
+        }
+      }
 
       // 2) AMP fallback: if body text too short, try AMP page
       if (bestText.length < TEXT_MIN_LEN) {
@@ -162,20 +180,21 @@ export class FetcherParser {
       // Paywall detection
       const paywallDetected = detectPaywall(html);
 
+      // Sources that are "body-grade" (full article text, not just meta snippet)
+      const isBodyGrade = ['body', 'amp', 'rss', 'dom_cleaner_v1'].includes(textContentSource);
+
       // Extraction fail reason
       let extractionFailReason: string | null = null;
       if (paywallDetected) extractionFailReason = 'paywall';
       else if (textContentLen === 0) extractionFailReason = 'empty';
-      else if (
-        ['body', 'amp', 'rss'].includes(textContentSource) && textContentLen < TEXT_MIN_LEN
-      ) extractionFailReason = 'too_short';
+      else if (isBodyGrade && textContentLen < TEXT_MIN_LEN) extractionFailReason = 'too_short';
       else if (textContentSource === 'meta' && textContentLen < MIN_LEN_META) {
         extractionFailReason = 'too_short';
       }
 
       // Flexible usability threshold
       const usableForOverview = !paywallDetected && (
-        (['body', 'amp', 'rss'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
+        (isBodyGrade && textContentLen >= TEXT_MIN_LEN) ||
         (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
       );
 

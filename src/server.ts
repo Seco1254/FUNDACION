@@ -53,6 +53,7 @@ import { debugMediaRoutes } from './api/routes/debug-media.js';
 import { debugPipelineRoutes } from './api/routes/debug-pipeline.js';
 import { debugCoherenceRoutes } from './api/routes/debug-coherence.js';
 import { debugRoutingRoutes } from './api/routes/debug-routing.js';
+import { debugExtractorRoutes } from './api/routes/debug-extractor.js';
 import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
@@ -270,6 +271,7 @@ export function buildApp() {
   app.register(debugPipelineRoutes(prisma));
   app.register(debugCoherenceRoutes(prisma));
   app.register(debugRoutingRoutes(prisma));
+  app.register(debugExtractorRoutes(prisma));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }
