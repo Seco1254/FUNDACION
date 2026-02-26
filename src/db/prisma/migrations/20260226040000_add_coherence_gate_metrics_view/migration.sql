@@ -9,10 +9,23 @@ SELECT
   ev.headline,
   ev.version_index,
   (ev.packet_json->'coherence_gate'->>'status')                        AS status,
-  (ev.packet_json->'coherence_gate'->'metrics'->>'avg_cosine')::float  AS avg_cosine,
-  (ev.packet_json->'coherence_gate'->'metrics'->>'entity_jaccard')::float AS entity_jaccard,
-  (ev.packet_json->'coherence_gate'->'metrics'->>'title_jaccard')::float  AS title_jaccard,
-  (ev.packet_json->'coherence_gate'->'metrics'->>'stddev_drift')::float   AS stddev_drift,
+  -- Handle both old 'details' format and correct 'metrics' format
+  COALESCE(
+    (ev.packet_json->'coherence_gate'->'metrics'->>'avg_cosine')::float,
+    (ev.packet_json->'coherence_gate'->'details'->>'embedding_cohesion')::float
+  ) AS avg_cosine,
+  COALESCE(
+    (ev.packet_json->'coherence_gate'->'metrics'->>'entity_jaccard')::float,
+    (ev.packet_json->'coherence_gate'->'details'->>'entity_overlap')::float
+  ) AS entity_jaccard,
+  COALESCE(
+    (ev.packet_json->'coherence_gate'->'metrics'->>'title_jaccard')::float,
+    (ev.packet_json->'coherence_gate'->'details'->>'title_alignment')::float
+  ) AS title_jaccard,
+  COALESCE(
+    (ev.packet_json->'coherence_gate'->'metrics'->>'stddev_drift')::float,
+    (ev.packet_json->'coherence_gate'->'details'->>'topic_drift_variance')::float
+  ) AS stddev_drift,
   (ev.packet_json->'coherence_gate'->'metrics'->>'article_count')::int    AS article_count,
   ev.packet_json->'coherence_gate'->'failed_checks'                       AS failed_checks,
   ev.packet_json->'coherence_gate'->'thresholds'                          AS thresholds

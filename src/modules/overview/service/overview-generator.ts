@@ -559,12 +559,7 @@ export class OverviewGenerator {
               overview_hash: newOverviewHash,
             },
             ...(coherenceResult && {
-              coherence_gate: {
-                status: 'PASS' as const,
-                score: coherenceResult.score,
-                failed_checks: coherenceResult.failed_checks,
-                details: coherenceResult.details,
-              },
+              coherence_gate: buildCoherenceGatePacket(coherenceResult),
             }),
           };
 

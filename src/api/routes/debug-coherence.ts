@@ -56,16 +56,21 @@ async function fetchCoherenceRows(prisma: PrismaClient, limit: number): Promise<
     const packet = v.packetJson as any;
     const cg = packet?.coherence_gate;
     if (!cg) continue;
+
+    // Handle both old `details` format and correct `metrics` format
+    const m = cg.metrics ?? null;
+    const d = cg.details ?? null;
+
     rows.push({
       event_id: v.eventId,
       created_at: v.createdAt.toISOString(),
       headline: v.headline ?? null,
       status: cg.status ?? null,
-      avg_cosine: cg.metrics?.avg_cosine ?? null,
-      entity_jaccard: cg.metrics?.entity_jaccard ?? null,
-      title_jaccard: cg.metrics?.title_jaccard ?? null,
-      stddev_drift: cg.metrics?.stddev_drift ?? null,
-      article_count: cg.metrics?.article_count ?? null,
+      avg_cosine: m?.avg_cosine ?? d?.embedding_cohesion ?? null,
+      entity_jaccard: m?.entity_jaccard ?? d?.entity_overlap ?? null,
+      title_jaccard: m?.title_jaccard ?? d?.title_alignment ?? null,
+      stddev_drift: m?.stddev_drift ?? d?.topic_drift_variance ?? null,
+      article_count: m?.article_count ?? null,
       failed_checks: cg.failed_checks ?? null,
       thresholds: cg.thresholds ?? null,
     });

@@ -17,15 +17,16 @@ import { logger } from '../../core/logging/logger.js';
 
 export const COHERENCE_GATE_ENABLED = process.env.COHERENCE_GATE_ENABLED !== '0';
 
-// Note: thresholds calibrated for hash256-v0.1 (non-neural) embeddings.
+// Note: thresholds calibrated for hash256-v0.1 (non-neural) embeddings
+// against 11 multi-article events (2026-02-26 calibration run).
 // Hash embeddings produce lower cosine similarities than neural models;
 // THETA_MERGE in event_linker is 0.55 for reference.
 export const THETA_EMBEDDING_COHESION = parseFloat(
-  process.env.COHERENCE_EMBEDDING_COHESION_THRESHOLD ?? '0.55',
+  process.env.COHERENCE_EMBEDDING_COHESION_THRESHOLD ?? '0.60',
 );
 
 export const THETA_ENTITY_OVERLAP = parseFloat(
-  process.env.COHERENCE_ENTITY_OVERLAP_THRESHOLD ?? '0.05',
+  process.env.COHERENCE_ENTITY_OVERLAP_THRESHOLD ?? '0.06',
 );
 
 export const THETA_TITLE_ALIGNMENT = parseFloat(
@@ -33,7 +34,7 @@ export const THETA_TITLE_ALIGNMENT = parseFloat(
 );
 
 export const THETA_TOPIC_DRIFT = parseFloat(
-  process.env.COHERENCE_TOPIC_DRIFT_THRESHOLD ?? '0.35',
+  process.env.COHERENCE_TOPIC_DRIFT_THRESHOLD ?? '0.09',
 );
 
 export const MIN_FAILED_CHECKS_TO_BLOCK = parseInt(
