@@ -1,9 +1,14 @@
 /**
- * Hard Negative Gates v2.1 — cheap heuristics that block auto-link.
+ * Hard Negative Gates v2.2 — cheap heuristics that block auto-link.
  *
  * Gates only block auto-link (degrade to maybe-link), never block maybe-link
  * (to avoid "mil eventos" explosion). Exception: entity gate can block maybe
  * when entityJaccard is extremely low AND embedding is not high.
+ *
+ * v2.2 additions:
+ *   - Desk mismatch gate: URL-based desk/section extraction + compatibility matrix
+ *   - Topic confidence gate: block if topics differ AND both have confidence >= threshold
+ *   - Title gate thresholds tightened: title_jaccard < 0.03 AND entity_overlap < 0.02
  */
 
 import { logger } from '../../../core/logging/logger.js';
@@ -16,6 +21,8 @@ import {
   TITLE_GATE_ENABLED,
   TITLE_KEYWORD_JACCARD_MIN,
   TITLE_ENTITY_JACCARD_MIN,
+  DESK_GATE_ENABLED,
+  TOPIC_CONFIDENCE_MIN,
 } from './config.js';
 
 // ── Spanish stopwords (short list for title keyword extraction) ──
@@ -34,6 +41,94 @@ const ES_STOPWORDS = new Set([
   'por', 'que', 'más', 'sus', 'les',
 ]);
 
+// ── Desk extraction from URL path ────────────────────────────────
+
+const DESK_SEGMENT_MAP: Record<string, string> = {
+  'politica': 'POLITICA',
+  'gobierno': 'POLITICA',
+  'economia': 'ECONOMIA',
+  'finanzas': 'ECONOMIA',
+  'negocios': 'ECONOMIA',
+  'deportes': 'DEPORTES',
+  'deporte': 'DEPORTES',
+  'futbol': 'DEPORTES',
+  'salud': 'SALUD',
+  'vida': 'SALUD',
+  'seguridad': 'CRIMEN',
+  'justicia': 'CRIMEN',
+  'judicial': 'CRIMEN',
+  'crimen': 'CRIMEN',
+  'unidad-investigativa': 'CRIMEN',
+  'bogota': 'BOGOTA',
+  'colombia': 'COLOMBIA',
+  'mundo': 'MUNDO',
+  'internacional': 'MUNDO',
+  'medio-ambiente': 'MEDIO_AMBIENTE',
+  'ambiente': 'MEDIO_AMBIENTE',
+  'entretenimiento': 'ENTRETENIMIENTO',
+  'cultura': 'ENTRETENIMIENTO',
+  'gente': 'ENTRETENIMIENTO',
+  'opinion': 'OPINION',
+  'columnistas': 'OPINION',
+  'tecnologia': 'TECNOLOGIA',
+  'tech': 'TECNOLOGIA',
+};
+
+/**
+ * Extract a "desk" label from a URL's path segments.
+ * Returns null if no recognized segment is found.
+ */
+export function extractDesk(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    const segments = path.split('/').filter(Boolean);
+    for (const seg of segments) {
+      const desk = DESK_SEGMENT_MAP[seg];
+      if (desk) return desk;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Desk compatibility matrix ──
+// Desks within the same group are compatible; across groups they are NOT.
+// null desk is compatible with everything (no signal).
+
+const DESK_COMPAT_GROUPS: string[][] = [
+  ['CRIMEN', 'BOGOTA', 'COLOMBIA'],
+  ['POLITICA', 'ECONOMIA'],
+  ['SALUD'],
+  ['DEPORTES'],
+  ['MEDIO_AMBIENTE'],
+  ['ENTRETENIMIENTO'],
+  ['OPINION'],
+  ['TECNOLOGIA'],
+  ['MUNDO'],
+];
+
+const DESK_GROUP_INDEX = new Map<string, number>();
+for (let i = 0; i < DESK_COMPAT_GROUPS.length; i++) {
+  for (const d of DESK_COMPAT_GROUPS[i]) {
+    DESK_GROUP_INDEX.set(d, i);
+  }
+}
+
+/**
+ * Check if two desks are compatible.
+ * null desk → always compatible (no signal).
+ */
+export function desksCompatible(deskA: string | null, deskB: string | null): boolean {
+  if (deskA === null || deskB === null) return true;
+  if (deskA === deskB) return true;
+  const groupA = DESK_GROUP_INDEX.get(deskA);
+  const groupB = DESK_GROUP_INDEX.get(deskB);
+  if (groupA === undefined || groupB === undefined) return true;
+  return groupA === groupB;
+}
+
 export interface GateContext {
   articleTitle: string;
   articleTitleRaw?: string;
@@ -41,6 +136,10 @@ export interface GateContext {
   articleEntityJaccard: number;
   articleTopicTop1?: string | null;
   eventTopicTop1?: string | null;
+  articleUrl?: string | null;
+  eventUrl?: string | null;
+  articleTopicConfidence?: number | null;
+  eventTopicConfidence?: number | null;
 }
 
 export interface GateResult {
@@ -70,18 +169,33 @@ export function shouldBlockAutoLink(ctx: GateContext): GateResult {
     blockMaybe = true;
   }
 
-  // 2) Topic mismatch gate (top1 equality)
+  // 2) Topic mismatch gate (with confidence threshold)
   if (TOPIC_GATE_ENABLED && TOPIC_TOP1_MUST_MATCH) {
     if (ctx.articleTopicTop1 && ctx.eventTopicTop1) {
       if (ctx.articleTopicTop1 !== ctx.eventTopicTop1) {
-        reasons.push('TOPIC_MISMATCH');
+        const artConf = ctx.articleTopicConfidence ?? 0;
+        const evtConf = ctx.eventTopicConfidence ?? 0;
+        if (artConf >= TOPIC_CONFIDENCE_MIN && evtConf >= TOPIC_CONFIDENCE_MIN) {
+          reasons.push('TOPIC_MISMATCH_HIGH_CONF');
+        } else {
+          reasons.push('TOPIC_MISMATCH');
+        }
       }
     } else if (!ctx.articleTopicTop1 || !ctx.eventTopicTop1) {
       logger.debug({ article_topic: ctx.articleTopicTop1, event_topic: ctx.eventTopicTop1 }, 'topic_gate_missing_topics');
     }
   }
 
-  // 3) Title contradiction gate
+  // 3) Desk mismatch gate (URL-based)
+  if (DESK_GATE_ENABLED) {
+    const articleDesk = extractDesk(ctx.articleUrl);
+    const eventDesk = extractDesk(ctx.eventUrl);
+    if (!desksCompatible(articleDesk, eventDesk)) {
+      reasons.push('DESK_MISMATCH');
+    }
+  }
+
+  // 4) Title contradiction gate
   if (TITLE_GATE_ENABLED) {
     const titleCheck = checkTitleContradiction(ctx);
     if (titleCheck.blocked) {

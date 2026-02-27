@@ -31,6 +31,7 @@ import { writeFileSync } from 'fs';
 import { evaluatePublishGate } from '../src/core/llm/gates.js';
 import { isInstitutionalEvent } from '../src/modules/feed/service/feed-service.js';
 import { computeEventScore, type EventForScoring } from '../src/modules/ranking/service/event-scorer.js';
+import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -196,6 +197,8 @@ export function buildDoctorOutput(
   const topicDriftValues: number[] = [];
   const ineligibleReasons: Record<string, number> = {};
   const contentTypeCounts: Record<string, number> = {};
+  let splitProxyCount = 0;
+  const hardNegativeReasonCounts: Record<string, number> = {};
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -327,6 +330,11 @@ export function buildDoctorOutput(
       .slice(0, 5)
       .map(([r]) => r);
 
+    // Accumulate hard negative reasons for aggregate
+    for (const [reason, count] of Object.entries(topReasons)) {
+      hardNegativeReasonCounts[reason] = (hardNegativeReasonCounts[reason] ?? 0) + (count as number);
+    }
+
     // ── Coherence accumulators ──
     if (coherenceMetrics.avg_cosine != null) cohesionValues.push(coherenceMetrics.avg_cosine);
     if (coherenceMetrics.entity_jaccard != null) entityOverlapValues.push(coherenceMetrics.entity_jaccard);
@@ -383,11 +391,28 @@ export function buildDoctorOutput(
           failed_checks_count: coherenceGate?.failed_checks?.length ?? 0,
         },
       },
-      quality_flags: {
-        mixed_event: null,
-        boilerplate: null,
-        split_proxy: null,
-      },
+      quality_flags: (() => {
+        const splitResult = detectIntraSplitProxy(
+          articles.map((a: any) => ({
+            title: a.title ?? null,
+            url: a.url ?? null,
+            contentType: a.contentType ?? null,
+          })),
+        );
+        if (splitResult.split_proxy) splitProxyCount++;
+        return {
+          mixed_event: null,
+          boilerplate: null,
+          split_proxy: splitResult.split_proxy,
+          split_proxy_detail: splitResult.split_proxy ? {
+            top_topic: splitResult.top_topic,
+            top_topic_share: splitResult.top_topic_share,
+            top_desk: splitResult.top_desk,
+            top_desk_share: splitResult.top_desk_share,
+            reasons: splitResult.reasons,
+          } : null,
+        };
+      })(),
       linker_summary: {
         auto_links: autoLinks,
         maybe_links: maybeLinks,
@@ -466,6 +491,11 @@ export function buildDoctorOutput(
     },
     top_ineligible_reasons: topIneligible,
     top_content_types: topContentTypes,
+    split_proxy_count: splitProxyCount,
+    top_hard_negative_reasons: Object.entries(hardNegativeReasonCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([reason, count]) => ({ reason, count })),
   };
 
   // Page-type blocking summary (from audit logs)

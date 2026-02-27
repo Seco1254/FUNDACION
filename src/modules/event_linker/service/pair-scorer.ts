@@ -25,6 +25,8 @@ import { metrics } from '../../../core/metrics/metrics.js';
 import {
   shouldBlockAutoLink,
   checkTitleContradictionPair,
+  extractDesk,
+  desksCompatible,
   GateContext,
 } from './hard-negative-gates.js';
 import {
@@ -37,6 +39,8 @@ import {
   SIGNAL_MIN_ENTITY,
   SIGNAL_MIN_TOPIC,
   TITLE_GATE_ENABLED,
+  DESK_GATE_ENABLED,
+  TOPIC_CONFIDENCE_MIN,
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
@@ -204,6 +208,10 @@ export interface ArticleForPairing {
   hardBlockContext?: HardBlockContext;
   /** v2.1: topic assigned to this article (top1) */
   topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: article URL for desk extraction */
+  url?: string | null;
 }
 
 export interface EventCandidate {
@@ -219,6 +227,10 @@ export interface EventCandidate {
   representativeTitle?: string;
   /** v2.1: topic assigned to this event (top1) */
   topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: representative URL for desk extraction (first article's URL) */
+  representativeUrl?: string | null;
 }
 
 /**
@@ -286,10 +298,25 @@ export function scoreCandidates(
         gateMaybeBlock = true;
       }
 
-      // Topic gate (top1 equality)
+      // Topic gate (with confidence threshold)
       if (article.topicTop1 && candidate.topicTop1) {
         if (article.topicTop1 !== candidate.topicTop1) {
-          gateReasons.push('TOPIC_MISMATCH');
+          const artConf = article.topicConfidence ?? 0;
+          const evtConf = candidate.topicConfidence ?? 0;
+          if (artConf >= TOPIC_CONFIDENCE_MIN && evtConf >= TOPIC_CONFIDENCE_MIN) {
+            gateReasons.push('TOPIC_MISMATCH_HIGH_CONF');
+          } else {
+            gateReasons.push('TOPIC_MISMATCH');
+          }
+        }
+      }
+
+      // Desk mismatch gate (URL-based)
+      if (DESK_GATE_ENABLED) {
+        const articleDesk = extractDesk(article.url);
+        const eventDesk = extractDesk(candidate.representativeUrl);
+        if (!desksCompatible(articleDesk, eventDesk)) {
+          gateReasons.push('DESK_MISMATCH');
         }
       }
 

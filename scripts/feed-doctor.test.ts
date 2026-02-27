@@ -502,3 +502,60 @@ describe('article blocked_reason in event record', () => {
     expect(record.articles[0].blocked_reason).toBeNull();
   });
 });
+
+// ── split_proxy quality flag ──────────────────────────────────────
+
+describe('quality_flags.split_proxy', () => {
+  it('split_proxy=false for cohesive single-article event', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.quality_flags.split_proxy).toBe(false);
+    expect(record.quality_flags.split_proxy_detail).toBeNull();
+  });
+
+  it('populates split_proxy_detail when split_proxy=true (mixed topics)', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ id: 'a1', title: 'Gobierno reforma congreso senado presidente', url: 'https://a.com/politica/1' }) },
+        { createdAt: now, article: makeArticle({ id: 'a2', title: 'Selección Colombia gol fútbol mundial eliminatoria', url: 'https://b.com/deportes/2' }) },
+        { createdAt: now, article: makeArticle({ id: 'a3', title: 'Hospital médico vacuna paciente salud enfermedad', url: 'https://c.com/salud/3' }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.quality_flags.split_proxy).toBe(true);
+    expect(record.quality_flags.split_proxy_detail).not.toBeNull();
+    expect(record.quality_flags.split_proxy_detail.reasons.length).toBeGreaterThan(0);
+  });
+});
+
+// ── aggregate: split_proxy_count + top_hard_negative_reasons ──────
+
+describe('aggregate split_proxy_count and hard_negative_reasons', () => {
+  it('aggregate includes split_proxy_count field', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.split_proxy_count).toBe(0);
+  });
+
+  it('aggregate includes top_hard_negative_reasons field', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.top_hard_negative_reasons)).toBe(true);
+  });
+
+  it('accumulates hard_negative_reasons from linker logs', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['DESK_MISMATCH', 'TOPIC_MISMATCH_HIGH_CONF'] } },
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['DESK_MISMATCH'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    const deskEntry = agg.top_hard_negative_reasons.find((r: any) => r.reason === 'DESK_MISMATCH');
+    expect(deskEntry).toBeDefined();
+    expect(deskEntry.count).toBe(2);
+  });
+});
