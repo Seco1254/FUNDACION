@@ -51,6 +51,7 @@ const AUTHOR_URL_PATTERNS: RegExp[] = [
 const COMMERCIAL_URL_PATTERNS: RegExp[] = [
   /\/contenido-comercial\//i,
   /\/contenido-patrocinado\//i,
+  /\/mas-contenido\//i,
   /\/publireportaje\//i,
   /\/branded-content\//i,
   /\/sponsored\//i,

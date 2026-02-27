@@ -66,6 +66,13 @@ describe('classifyPageType — COMMERCIAL_CONTENT', () => {
     expect(r.pageType).toBe('COMMERCIAL_CONTENT');
   });
 
+  it('blocks /mas-contenido/ URL (El Tiempo sponsored section)', () => {
+    const r = classify('https://www.eltiempo.com/mas-contenido/car-65-anos-liderando-3530400');
+    expect(r.pageType).toBe('COMMERCIAL_CONTENT');
+    expect(r.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(r.flags.is_commercial).toBe(true);
+  });
+
   it('blocks /branded-content/ URL', () => {
     const r = classify('https://www.eltiempo.com/branded-content/tech-summit');
     expect(r.pageType).toBe('COMMERCIAL_CONTENT');

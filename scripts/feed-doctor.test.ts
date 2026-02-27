@@ -10,6 +10,7 @@ import {
   type DoctorConfig,
   type LinkerLog,
   type DebugContext,
+  type PageTypeBlock,
 } from './feed-doctor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ function makeArticle(overrides: Record<string, any> = {}) {
     contentType: overrides.contentType ?? 'news',
     routingDecision: overrides.routingDecision ?? 'NEWS',
     status: overrides.status ?? 'POLICY_OK',
+    blockedReason: overrides.blockedReason ?? null,
     textNorm: overrides.textNorm ?? null,
     media: overrides.media ?? { id: 'media-1', mediaKey: 'eltiempo', name: 'El Tiempo' },
   };
@@ -427,5 +429,76 @@ describe('run_meta includes new params', () => {
   it('run_meta.params.hours=0 for all-time', () => {
     const output = buildDoctorOutput([], [], defaultConfig);
     expect(output[0].params.hours).toBe(0);
+  });
+});
+
+// ── Page-type blocks in aggregate ─────────────────────────────────
+
+describe('page_type_blocks in aggregate', () => {
+  it('includes page_type_blocks when blocks are provided', () => {
+    const blocks: PageTypeBlock[] = [
+      { url: 'https://eltiempo.com/autor/juan', page_type: 'AUTHOR_PAGE', confidence: 0.95, reasons: ['URL_MATCH'] },
+      { url: 'https://eltiempo.com/contenido-comercial/offer', page_type: 'COMMERCIAL_CONTENT', confidence: 0.85, reasons: ['URL_MATCH'] },
+      { url: 'https://eltiempo.com/mas-contenido/car-65', page_type: 'COMMERCIAL_CONTENT', confidence: 0.85, reasons: ['URL_MATCH'] },
+    ];
+    const output = buildDoctorOutput([], [], defaultConfig, new Date(), undefined, blocks);
+    const agg = output[output.length - 1];
+    expect(agg.page_type_blocks).toBeDefined();
+    expect(agg.page_type_blocks.unique_urls_blocked).toBe(3);
+    expect(agg.page_type_blocks.by_type.AUTHOR_PAGE).toBe(1);
+    expect(agg.page_type_blocks.by_type.COMMERCIAL_CONTENT).toBe(2);
+    expect(agg.page_type_blocks.samples.AUTHOR_PAGE).toContain('https://eltiempo.com/autor/juan');
+  });
+
+  it('deduplicates URLs across multiple scrape runs', () => {
+    const blocks: PageTypeBlock[] = [
+      { url: 'https://eltiempo.com/autor/juan', page_type: 'AUTHOR_PAGE', confidence: 0.95, reasons: [] },
+      { url: 'https://eltiempo.com/autor/juan', page_type: 'AUTHOR_PAGE', confidence: 0.95, reasons: [] },
+    ];
+    const output = buildDoctorOutput([], [], defaultConfig, new Date(), undefined, blocks);
+    const agg = output[output.length - 1];
+    expect(agg.page_type_blocks.total_audit_entries).toBe(2);
+    expect(agg.page_type_blocks.unique_urls_blocked).toBe(1);
+  });
+
+  it('omits page_type_blocks when no blocks exist', () => {
+    const output = buildDoctorOutput([], [], defaultConfig, new Date(), undefined, []);
+    const agg = output[output.length - 1];
+    expect(agg.page_type_blocks).toBeUndefined();
+  });
+
+  it('limits samples to 3 per type', () => {
+    const blocks: PageTypeBlock[] = Array.from({ length: 5 }, (_, i) => ({
+      url: `https://eltiempo.com/autor/person-${i}`,
+      page_type: 'AUTHOR_PAGE',
+      confidence: 0.85,
+      reasons: [],
+    }));
+    const output = buildDoctorOutput([], [], defaultConfig, new Date(), undefined, blocks);
+    const agg = output[output.length - 1];
+    expect(agg.page_type_blocks.samples.AUTHOR_PAGE.length).toBe(3);
+  });
+});
+
+// ── blocked_reason per article ────────────────────────────────────
+
+describe('article blocked_reason in event record', () => {
+  it('includes blocked_reason when article has one', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ status: 'POLICY_BLOCKED', blockedReason: 'NO_EXTRACT' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.articles[0].blocked_reason).toBe('NO_EXTRACT');
+  });
+
+  it('blocked_reason is null for POLICY_OK articles', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.articles[0].blocked_reason).toBeNull();
   });
 });

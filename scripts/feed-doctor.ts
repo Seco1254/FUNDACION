@@ -117,6 +117,13 @@ export interface LinkerLog {
   data: any;
 }
 
+export interface PageTypeBlock {
+  url: string;
+  page_type: string;
+  confidence: number;
+  reasons: string[];
+}
+
 export interface DebugContext {
   total_events_in_db: number;
   total_published_in_db: number;
@@ -130,6 +137,7 @@ export function buildDoctorOutput(
   config: DoctorConfig,
   now: Date = new Date(),
   debugCtx?: DebugContext,
+  pageTypeBlocks: PageTypeBlock[] = [],
 ): any[] {
   const db = dbMeta(process.env.DATABASE_URL ?? '');
 
@@ -405,6 +413,7 @@ export function buildDoctorOutput(
         mediaKey: a.media?.mediaKey ?? null,
         content_type: a.contentType ?? null,
         policy_status: a.status,
+        blocked_reason: a.blockedReason ?? null,
         text_len: a.textContentLen ?? 0,
         title: a.title,
       }));
@@ -458,6 +467,35 @@ export function buildDoctorOutput(
     top_ineligible_reasons: topIneligible,
     top_content_types: topContentTypes,
   };
+
+  // Page-type blocking summary (from audit logs)
+  if (pageTypeBlocks.length > 0) {
+    const byType: Record<string, number> = {};
+    for (const b of pageTypeBlocks) {
+      byType[b.page_type] = (byType[b.page_type] ?? 0) + 1;
+    }
+    // Deduplicate: same URL may appear multiple times in audit logs across scrape runs
+    const seen = new Set<string>();
+    const unique = pageTypeBlocks.filter((b) => {
+      if (seen.has(b.url)) return false;
+      seen.add(b.url);
+      return true;
+    });
+    const byTypeUnique: Record<string, number> = {};
+    const samplesByType: Record<string, string[]> = {};
+    for (const b of unique) {
+      byTypeUnique[b.page_type] = (byTypeUnique[b.page_type] ?? 0) + 1;
+      const list = samplesByType[b.page_type] ?? [];
+      if (list.length < 3) list.push(b.url);
+      samplesByType[b.page_type] = list;
+    }
+    aggregate.page_type_blocks = {
+      total_audit_entries: pageTypeBlocks.length,
+      unique_urls_blocked: unique.length,
+      by_type: byTypeUnique,
+      samples: samplesByType,
+    };
+  }
 
   if (debugCtx) {
     aggregate.debug = {
@@ -523,7 +561,7 @@ async function main() {
               id: true, url: true, title: true, snippet: true,
               textContentLen: true, textContentSource: true,
               usableForOverview: true, contentType: true,
-              routingDecision: true, status: true,
+              routingDecision: true, status: true, blockedReason: true,
               textNorm: config.includeTextSamples,
               media: { select: { id: true, mediaKey: true, name: true } },
             },
@@ -559,7 +597,22 @@ async function main() {
       })
     : [];
 
-  const output = buildDoctorOutput(events, linkerLogs, config, now, debugCtx);
+  // ── Fetch page-type blocking audit entries ──
+  const pageTypeAudits = await prisma.auditLog.findMany({
+    where: { action: 'PAGE_TYPE_BLOCKED' },
+    select: { entityId: true, data: true },
+  });
+  const pageTypeBlocks: PageTypeBlock[] = pageTypeAudits.map((a) => {
+    const d = a.data as any;
+    return {
+      url: d?.url ?? a.entityId,
+      page_type: d?.page_type ?? 'UNKNOWN',
+      confidence: d?.confidence ?? 0,
+      reasons: Array.isArray(d?.reasons) ? d.reasons : [],
+    };
+  });
+
+  const output = buildDoctorOutput(events, linkerLogs, config, now, debugCtx, pageTypeBlocks);
 
   // ── Output ──
   const text = formatOutput(output, config.format);
