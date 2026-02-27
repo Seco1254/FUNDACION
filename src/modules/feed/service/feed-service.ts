@@ -256,10 +256,26 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
  * Apply the publish gate to a feed item.
  * Returns the gate result and optionally mutates item to 'failed' status.
  */
-function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
+function applyPublishGate(item: FeedItem, packet: any, row?: any): PublishGateResult {
   const ai = packet?.ai_overview;
   const hasDisclaimer = typeof ai?.why === 'string'
     && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
+
+  // Extract page_types from articles (contentType maps to page_type heuristic)
+  // Since non-article pages are blocked at ingestion, all surviving articles are ARTICLE.
+  // This serves as defense-in-depth for any that slip through.
+  const pageTypes: string[] | undefined = row?.eventArticles
+    ? (row.eventArticles as any[]).map((ea: any) => {
+        const ct = ea.article?.contentType;
+        // Map contentType to page_type for publish gate (best-effort without URL re-analysis)
+        if (ct === 'institutional_static' || ct === 'institutional') return ct;
+        return 'ARTICLE';
+      })
+    : undefined;
+
+  // Extract title_alignment from coherence metrics if available
+  const coherenceGate = packet?.coherence_gate;
+  const titleAlignment: number | null = coherenceGate?.metrics?.title_jaccard ?? null;
 
   const gateResult = evaluatePublishGate({
     unique_sources_count: item.unique_sources_count ?? 0,
@@ -267,6 +283,8 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
     key_facts_count: item.key_facts_count ?? 0,
     overview_status: item.overview_status ?? 'pending',
     has_disclaimer: hasDisclaimer,
+    page_types: pageTypes,
+    title_alignment: titleAlignment,
   });
 
   if (!gateResult.eligible) {
@@ -337,7 +355,7 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     overview_status: deriveOverviewStatus(packet),
     ...enrichFeedItem(row, packet),
   };
-  const gate = applyPublishGate(item, packet);
+  const gate = applyPublishGate(item, packet, row);
 
   // Fallback overview for non-ready items that pass the gate
   if (gate.eligible && item.overview_status !== 'ready' && !item.ai_overview) {

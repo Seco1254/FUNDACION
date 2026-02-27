@@ -14,6 +14,7 @@ import { logger } from '../../../core/logging/logger.js';
 import { classifyContent } from '../../text_sanitizer/content-classifier.js';
 import { evaluateRoutingDecision } from './content-router.js';
 import { cleanDom } from '../../text_sanitizer/dom-cleaner.js';
+import { classifyPageType, shouldBlockPageType } from '../page-type.js';
 
 export class FetcherParser {
   constructor(
@@ -114,6 +115,41 @@ export class FetcherParser {
           occurred_at: new Date().toISOString(),
           trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
           payload: { url, reason_code: 'PARSE_FAIL' },
+        };
+        await this.eventBus.publish(blockedEnvelope);
+        return;
+      }
+
+      // --- Page-type gate (block non-article pages early) ---
+      const pageClassification = classifyPageType({
+        url,
+        title: parsed.title,
+        mediaKey: media_key,
+      });
+
+      if (shouldBlockPageType(pageClassification.pageType)) {
+        logger.info(
+          { url, pageType: pageClassification.pageType, reasons: pageClassification.reasons },
+          'article_blocked_page_type',
+        );
+        await this.auditWriter.write({
+          entity_type: 'ARTICLE',
+          entity_id: url,
+          action: 'PAGE_TYPE_BLOCKED',
+          trace_id: traceId,
+          data: {
+            url,
+            page_type: pageClassification.pageType,
+            confidence: pageClassification.confidence,
+            reasons: pageClassification.reasons,
+          },
+        });
+        const blockedEnvelope: EventEnvelope = {
+          event_name: 'ArticlePolicyBlocked',
+          event_id: ulid(),
+          occurred_at: new Date().toISOString(),
+          trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
+          payload: { url, reason_code: `PAGE_TYPE:${pageClassification.pageType}` },
         };
         await this.eventBus.publish(blockedEnvelope);
         return;

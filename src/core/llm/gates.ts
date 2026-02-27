@@ -124,6 +124,7 @@ const GATE_MULTI_SOURCES = parseInt(process.env.GATE_MULTI_SOURCES ?? '2', 10);
 const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
 const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
 const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '0', 10);
+const GATE_SINGLE_TITLE_ALIGN_MIN = parseFloat(process.env.GATE_SINGLE_TITLE_ALIGN_MIN ?? '0.20');
 
 export interface PublishGateInput {
   unique_sources_count: number;
@@ -131,6 +132,10 @@ export interface PublishGateInput {
   key_facts_count: number;
   overview_status: string;
   has_disclaimer: boolean;
+  /** Optional: page_types of articles in the event (e.g. ['ARTICLE','COMMERCIAL_CONTENT']). */
+  page_types?: string[];
+  /** Optional: title_alignment score from coherence metrics (0..1). */
+  title_alignment?: number | null;
 }
 
 export interface PublishGateResult {
@@ -182,7 +187,36 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
     return { eligible: false, gate_name: null, reasons };
   }
 
-  // Gate Single: single-source event (no disclaimer requirement for feed eligibility)
+  // Gate Single: single-source event — stricter rules to prevent junk in feed
+  if (input.unique_sources_count >= 1 && input.unique_sources_count < GATE_MULTI_SOURCES) {
+    // Block non-article page types (defense-in-depth; pipeline blocks these earlier)
+    const pageTypes = input.page_types ?? [];
+    if (pageTypes.length > 0) {
+      const hasNonArticle = pageTypes.some((pt) => pt !== 'ARTICLE');
+      if (hasNonArticle) {
+        reasons.push('SINGLE_SOURCE_NON_ARTICLE');
+      }
+      const hasCommercial = pageTypes.some((pt) => pt === 'COMMERCIAL_CONTENT');
+      if (hasCommercial) {
+        reasons.push('SINGLE_SOURCE_COMMERCIAL');
+      }
+    }
+
+    // Title alignment: block single-source events with poor title alignment
+    if (
+      input.title_alignment != null &&
+      input.title_alignment < GATE_SINGLE_TITLE_ALIGN_MIN
+    ) {
+      reasons.push('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    }
+
+    if (reasons.length === 0) {
+      return { eligible: true, gate_name: 'single', reasons: [] };
+    }
+    return { eligible: false, gate_name: null, reasons };
+  }
+
+  // Fallback: single source >= 1 (when GATE_MULTI_SOURCES is 1, handled above)
   if (input.unique_sources_count >= 1) {
     if (reasons.length === 0) {
       return { eligible: true, gate_name: 'single', reasons: [] };

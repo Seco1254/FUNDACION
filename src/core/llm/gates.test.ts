@@ -211,5 +211,128 @@ describe('gates', () => {
       expect(result.reasons).toContain('NO_SOURCES');
       expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
+
+    // ── Single-source page_type rules ──
+
+    it('blocks single-source when page_types includes non-ARTICLE', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['AUTHOR_PAGE'],
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_NON_ARTICLE');
+    });
+
+    it('blocks single-source when page_types includes COMMERCIAL_CONTENT', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['COMMERCIAL_CONTENT'],
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_NON_ARTICLE');
+      expect(result.reasons).toContain('SINGLE_SOURCE_COMMERCIAL');
+    });
+
+    it('passes single-source when page_types are all ARTICLE', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('passes single-source when page_types is empty (backward compat)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: [],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('passes single-source when page_types is omitted (backward compat)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('blocks single-source when title_alignment below threshold', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        title_alignment: 0.10,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('passes single-source when title_alignment meets threshold', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        title_alignment: 0.25,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('passes single-source when title_alignment is null (not computed)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        title_alignment: null,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('does NOT apply single-source rules to multi-source events', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 3,
+        total_usable_text_len: 2000,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['COMMERCIAL_CONTENT', 'ARTICLE'],
+        title_alignment: 0.05,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
+    });
   });
 });
