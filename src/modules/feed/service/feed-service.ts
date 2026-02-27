@@ -2,9 +2,17 @@ import { FeedRepository } from '../repo/feed-repo.js';
 import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
-import { evaluatePublishGate } from '../../../core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
+import { classifyTopic } from '../../topics/service/topic-heuristic.js';
 import { logger } from '../../../core/logging/logger.js';
+
+// ── Topic filter config ──────────────────────────────────────────────
+const FEED_TOPIC_FILTER_ENABLED = process.env.FEED_TOPIC_FILTER_ENABLED === '1';
+const FEED_ALLOWED_TOPICS: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -256,7 +264,7 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
  * Apply the publish gate to a feed item.
  * Returns the gate result and optionally mutates item to 'failed' status.
  */
-function applyPublishGate(item: FeedItem, packet: any, row?: any): PublishGateResult {
+function applyPublishGate(item: FeedItem, packet: any, row?: any, importanceScore?: number): PublishGateResult {
   const ai = packet?.ai_overview;
   const hasDisclaimer = typeof ai?.why === 'string'
     && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
@@ -285,6 +293,7 @@ function applyPublishGate(item: FeedItem, packet: any, row?: any): PublishGateRe
     has_disclaimer: hasDisclaimer,
     page_types: pageTypes,
     title_alignment: titleAlignment,
+    importance_score: importanceScore ?? null,
   });
 
   if (!gateResult.eligible) {
@@ -343,6 +352,33 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
 
   const latestVersion = row.versions?.[0] ?? null;
   const packet = (latestVersion?.packetJson as any) ?? {};
+
+  // ── Topic classification ─────────────────────────────────────────
+  const headline = latestVersion?.headline ?? '';
+  const firstArticleUrl = row.eventArticles?.[0]?.article?.url ?? '';
+  // Use overview bullets if available for better classification
+  const aiWhText = Array.isArray(packet.ai_overview?.what_happened)
+    ? packet.ai_overview.what_happened.join(' ')
+    : '';
+  const topicResult = classifyTopic({ title: headline, url: firstArticleUrl, text: aiWhText });
+  const topicKey = topicResult.topic_key;
+
+  // ── Topic filter (early exit before building full item) ──────────
+  if (FEED_TOPIC_FILTER_ENABLED && FEED_ALLOWED_TOPICS.length > 0) {
+    if (!FEED_ALLOWED_TOPICS.includes(topicKey)) {
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: headline || null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+        topic_key: topicKey,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['TOPIC_FILTERED'] };
+    }
+  }
+
   const teaser: string | null = packet.ai_teaser || null;
   const item: FeedItem = {
     event_id: row.id,
@@ -353,9 +389,22 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     cover_image_url: teaser,
     ai_overview: extractAiOverview(packet),
     overview_status: deriveOverviewStatus(packet),
+    topic_key: topicKey,
     ...enrichFeedItem(row, packet),
   };
-  const gate = applyPublishGate(item, packet, row);
+
+  // ── Importance score for single-source gate ──────────────────────
+  const hoursAge = row.publishedAt
+    ? (Date.now() - new Date(row.publishedAt).getTime()) / (3600 * 1000)
+    : null;
+  const importanceScore = computeImportanceScore({
+    topic_key: topicKey,
+    text_len: item.total_usable_text_len ?? 0,
+    hours_since_published: hoursAge,
+  });
+  item.importance_score = importanceScore;
+
+  const gate = applyPublishGate(item, packet, row, importanceScore);
 
   // Fallback overview for non-ready items that pass the gate
   if (gate.eligible && item.overview_status !== 'ready' && !item.ai_overview) {

@@ -554,4 +554,127 @@ describe('FeedService', () => {
       expect(feed.empty_reason).toBe('GATE_FILTERED_ALL');
     });
   });
+
+  describe('topic classification on feed items', () => {
+    it('populates topic_key on feed items based on headline', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Gobierno anuncia reforma tributaria en Colombia',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(feed.items[0].topic_key).toBe('POLITICA');
+    });
+
+    it('classifies sports headline as DEPORTES', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Colombia goleó 3-0 a Perú en eliminatoria mundialista',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(feed.items[0].topic_key).toBe('DEPORTES');
+    });
+
+    it('classifies crime headline as CRIMEN_SEGURIDAD', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Capturan a narcotraficante en operativo de la fiscalía',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(feed.items[0].topic_key).toBe('CRIMEN_SEGURIDAD');
+    });
+
+    it('populates OTROS for non-classifiable headline', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Bonito día de sol en la ciudad',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(feed.items[0].topic_key).toBe('OTROS');
+    });
+  });
+
+  describe('importance score on feed items', () => {
+    it('populates importance_score on feed items', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Gobierno anuncia reforma',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(typeof feed.items[0].importance_score).toBe('number');
+      expect(feed.items[0].importance_score).toBeGreaterThan(0);
+      expect(feed.items[0].importance_score).toBeLessThanOrEqual(1);
+    });
+
+    it('importance_score reflects topic weight (POLITICA > OTROS)', async () => {
+      // POLITICA event
+      const rowPol = makeMockRow({
+        id: 'evt-pol',
+        versions: [{
+          id: 'ver-1',
+          headline: 'Gobierno anuncia nueva reforma',
+          packetJson: {},
+        }],
+      });
+      // OTROS event (same text length, same publishedAt)
+      const rowOtros = makeMockRow({
+        id: 'evt-otros',
+        versions: [{
+          id: 'ver-2',
+          headline: 'Bonito día de sol en la costa',
+          packetJson: {},
+        }],
+      });
+
+      const repo = makeRepoReturning([rowPol, rowOtros]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+
+      const polItem = feed.items.find((i) => i.event_id === 'evt-pol');
+      const otrosItem = feed.items.find((i) => i.event_id === 'evt-otros');
+
+      expect(polItem).toBeDefined();
+      expect(otrosItem).toBeDefined();
+      expect(polItem!.importance_score).toBeGreaterThan(otrosItem!.importance_score!);
+    });
+  });
 });

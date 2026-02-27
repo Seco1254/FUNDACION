@@ -125,6 +125,8 @@ const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
 const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
 const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '0', 10);
 const GATE_SINGLE_TITLE_ALIGN_MIN = parseFloat(process.env.GATE_SINGLE_TITLE_ALIGN_MIN ?? '0.20');
+const GATE_SINGLE_MIN_TEXT_LEN = parseInt(process.env.GATE_SINGLE_MIN_TEXT_LEN ?? '1200', 10);
+const GATE_SINGLE_MIN_IMPORTANCE = parseFloat(process.env.GATE_SINGLE_MIN_IMPORTANCE_SCORE ?? '0.35');
 
 export interface PublishGateInput {
   unique_sources_count: number;
@@ -136,6 +138,8 @@ export interface PublishGateInput {
   page_types?: string[];
   /** Optional: title_alignment score from coherence metrics (0..1). */
   title_alignment?: number | null;
+  /** Optional: heuristic importance score (0..1). When provided, enables single-source importance gate. */
+  importance_score?: number | null;
 }
 
 export interface PublishGateResult {
@@ -210,6 +214,16 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
       reasons.push('SINGLE_SOURCE_LOW_TITLE_ALIGN');
     }
 
+    // Importance gate: only applied when importance_score is provided (backward compat)
+    if (input.importance_score != null) {
+      if (input.total_usable_text_len < GATE_SINGLE_MIN_TEXT_LEN) {
+        reasons.push('SINGLE_SOURCE_SHORT_TEXT');
+      }
+      if (input.importance_score < GATE_SINGLE_MIN_IMPORTANCE) {
+        reasons.push('SINGLE_SOURCE_LOW_IMPORTANCE');
+      }
+    }
+
     if (reasons.length === 0) {
       return { eligible: true, gate_name: 'single', reasons: [] };
     }
@@ -227,4 +241,53 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
   // No sources at all
   reasons.push('NO_SOURCES');
   return { eligible: false, gate_name: null, reasons };
+}
+
+// ── IMPORTANCE SCORE ──────────────────────────────────────────────────
+
+const IMPORTANCE_TOPIC_WEIGHTS: Record<string, number> = {
+  POLITICA: 0.9,
+  CRIMEN_SEGURIDAD: 0.85,
+  DEPORTES: 0.8,
+  ECONOMIA: 0.75,
+  SALUD: 0.7,
+  MEDIO_AMBIENTE: 0.65,
+  ENTRETENIMIENTO: 0.5,
+  OPINION: 0.3,
+  OTROS: 0.2,
+};
+
+/**
+ * Compute a heuristic importance score (0..1) for an event.
+ * Used by the single-source gate to filter low-value content.
+ *
+ * Factors:
+ *  - 40% recency   (fresher content scores higher)
+ *  - 30% text_len  (longer, more substantive text scores higher)
+ *  - 30% topic     (hard-news topics score higher)
+ */
+export function computeImportanceScore(input: {
+  topic_key: string;
+  text_len: number;
+  hours_since_published: number | null;
+}): number {
+  // Recency signal
+  let recency = 0.3; // default for unknown age
+  if (input.hours_since_published != null) {
+    const h = input.hours_since_published;
+    if (h < 6) recency = 1.0;
+    else if (h < 12) recency = 0.8;
+    else if (h < 24) recency = 0.6;
+    else if (h < 48) recency = 0.4;
+    else recency = 0.2;
+  }
+
+  // Text signal: longer text = more substance (capped at 3000 chars)
+  const textSignal = Math.min(input.text_len / 3000, 1.0);
+
+  // Topic signal: hard news topics boost
+  const topicSignal = IMPORTANCE_TOPIC_WEIGHTS[input.topic_key] ?? 0.2;
+
+  const score = 0.4 * recency + 0.3 * textSignal + 0.3 * topicSignal;
+  return Math.round(score * 1000) / 1000;
 }

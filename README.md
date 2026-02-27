@@ -289,6 +289,16 @@ All variables are documented in `.env.example`. Key groups:
 | `GATE_MULTI_TEXT` | `1200` | Min text for multi-source |
 | `GATE_SINGLE_TEXT` | `800` | Min text for single-source |
 | `GATE_KEY_FACTS_MIN` | `0` | Min key facts (0 = disabled) |
+| `GATE_SINGLE_TITLE_ALIGN_MIN` | `0.20` | Min title alignment for single-source |
+| `GATE_SINGLE_MIN_TEXT_LEN` | `1200` | Min text for single-source importance gate |
+| `GATE_SINGLE_MIN_IMPORTANCE_SCORE` | `0.35` | Min importance score for single-source |
+
+### Feed topic filter
+
+| Variable | Default | Description |
+|---|---|---|
+| `FEED_TOPIC_FILTER_ENABLED` | `0` | Enable topic-based feed filtering |
+| `FEED_ALLOWED_TOPICS` | (empty) | Comma-separated topic keys to allow (e.g. `POLITICA,CRIMEN_SEGURIDAD,DEPORTES`) |
 
 ### Text sanitizer
 

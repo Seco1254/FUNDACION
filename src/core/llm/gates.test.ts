@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate } from './gates.js';
+import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate, computeImportanceScore } from './gates.js';
 
 describe('gates', () => {
   describe('validateOverviewEvidence', () => {
@@ -333,6 +333,147 @@ describe('gates', () => {
       });
       expect(result.eligible).toBe(true);
       expect(result.gate_name).toBe('multi');
+    });
+
+    // ── Single-source importance gate ──
+
+    it('blocks single-source when importance_score below threshold', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        importance_score: 0.20,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_IMPORTANCE');
+    });
+
+    it('blocks single-source when text below GATE_SINGLE_MIN_TEXT_LEN', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        importance_score: 0.60,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_SHORT_TEXT');
+    });
+
+    it('passes single-source with sufficient text and high importance', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 1500,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        importance_score: 0.60,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('skips importance gate when importance_score is null (backward compat)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+        importance_score: null,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('skips importance gate when importance_score is omitted', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        page_types: ['ARTICLE'],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('does NOT apply importance gate to multi-source events', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 3,
+        total_usable_text_len: 2000,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        importance_score: 0.10,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
+    });
+  });
+
+  // ── computeImportanceScore ──
+
+  describe('computeImportanceScore', () => {
+    it('scores fresh POLITICA article high', () => {
+      const score = computeImportanceScore({
+        topic_key: 'POLITICA',
+        text_len: 2000,
+        hours_since_published: 3,
+      });
+      // recency=1.0, text=0.667, topic=0.9 → 0.4+0.2+0.27 = 0.87
+      expect(score).toBeGreaterThan(0.80);
+    });
+
+    it('scores old OTROS article low', () => {
+      const score = computeImportanceScore({
+        topic_key: 'OTROS',
+        text_len: 500,
+        hours_since_published: 72,
+      });
+      // recency=0.2, text=0.167, topic=0.2 → 0.08+0.05+0.06 = 0.19
+      expect(score).toBeLessThan(0.35);
+    });
+
+    it('returns moderate score for mid-age DEPORTES article', () => {
+      const score = computeImportanceScore({
+        topic_key: 'DEPORTES',
+        text_len: 1500,
+        hours_since_published: 18,
+      });
+      // recency=0.6, text=0.5, topic=0.8 → 0.24+0.15+0.24 = 0.63
+      expect(score).toBeGreaterThan(0.50);
+      expect(score).toBeLessThan(0.80);
+    });
+
+    it('uses default recency when hours_since_published is null', () => {
+      const score = computeImportanceScore({
+        topic_key: 'ECONOMIA',
+        text_len: 2000,
+        hours_since_published: null,
+      });
+      // recency=0.3, text=0.667, topic=0.75 → 0.12+0.2+0.225 = 0.545
+      expect(score).toBeGreaterThan(0.40);
+      expect(score).toBeLessThan(0.70);
+    });
+
+    it('caps text_signal at 1.0 for very long text', () => {
+      const score = computeImportanceScore({
+        topic_key: 'POLITICA',
+        text_len: 10000,
+        hours_since_published: 1,
+      });
+      // recency=1.0, text=1.0, topic=0.9 → 0.4+0.3+0.27 = 0.97
+      expect(score).toBeGreaterThan(0.90);
+      expect(score).toBeLessThanOrEqual(1.0);
     });
   });
 });
