@@ -41,6 +41,8 @@ export interface FeedItem {
   evidence_level?: EvidenceLevel;
   overview_mode?: string | null;
   why_no_overview?: string | null;
+  topic_key?: string;
+  importance_score?: number;
 }
 
 export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';
