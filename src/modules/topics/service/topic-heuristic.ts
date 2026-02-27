@@ -264,6 +264,114 @@ export function classifyTopicKeys(input: HeuristicTopicInput): string[] {
   return sorted.length > 0 ? sorted : ['OTROS'];
 }
 
+// ── Event-level topic aggregator ─────────────────────────────────
+
+export interface ArticleTopicVote {
+  topic_key: string;
+  score: number;
+  article_index: number;
+}
+
+export interface EventTopicResult {
+  topic_key: string;
+  topic_confidence: number;  // 0..1
+  votes: ArticleTopicVote[];
+  reasons: string[];
+}
+
+export interface EventArticleInput {
+  title?: string | null;
+  url?: string | null;
+  contentType?: string | null;
+}
+
+const MAX_SAMPLE = 5;
+
+/**
+ * Deterministic sampling of up to MAX_SAMPLE articles spread evenly.
+ * Returns indices into the original array.
+ */
+function sampleIndices(length: number): number[] {
+  if (length <= MAX_SAMPLE) return Array.from({ length }, (_, i) => i);
+  // Spread evenly: first, 1/4, 1/2, 3/4, last
+  const last = length - 1;
+  return [
+    0,
+    Math.floor(last / 4),
+    Math.floor(last / 2),
+    Math.floor((3 * last) / 4),
+    last,
+  ];
+}
+
+/**
+ * Aggregate topic across multiple articles in an event.
+ *
+ * Each sampled article (up to 5) casts a weighted vote via classifyTopic.
+ * The headline + overviewText get a bonus-weighted vote (1.5x) to anchor
+ * the classification. Final topic = weighted mode across all votes.
+ *
+ * topic_confidence = winner_weight / total_weight, clamped to 0..1.
+ */
+export function aggregateEventTopic(
+  headline: string | null,
+  articles: EventArticleInput[],
+  overviewText?: string | null,
+): EventTopicResult {
+  const votes: ArticleTopicVote[] = [];
+  const topicWeights = new Map<string, number>();
+  const reasons: string[] = [];
+
+  // Headline + overview vote (anchor, weight 1.5)
+  const headlineResult = classifyTopic({
+    title: headline,
+    text: overviewText ?? null,
+    url: articles[0]?.url ?? null,
+  });
+  const headlineWeight = headlineResult.score * 1.5;
+  topicWeights.set(headlineResult.topic_key, headlineWeight);
+  reasons.push(`HEADLINE_VOTE:${headlineResult.topic_key}(${headlineResult.score})`);
+
+  // Sample articles for voting
+  const indices = sampleIndices(articles.length);
+
+  for (const idx of indices) {
+    const art = articles[idx];
+    const result = classifyTopic({
+      title: art.title,
+      url: art.url,
+      contentType: art.contentType,
+    });
+    votes.push({ topic_key: result.topic_key, score: result.score, article_index: idx });
+    topicWeights.set(
+      result.topic_key,
+      (topicWeights.get(result.topic_key) ?? 0) + result.score,
+    );
+  }
+
+  // Pick winner by weighted votes
+  const totalWeight = Array.from(topicWeights.values()).reduce((a, b) => a + b, 0);
+  const sorted = Array.from(topicWeights.entries()).sort((a, b) => {
+    // Primary: weight descending. Secondary: alphabetical for determinism.
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
+  });
+
+  const [winnerKey, winnerWeight] = sorted[0] ?? ['OTROS', 0];
+  const confidence = totalWeight > 0
+    ? Math.round((winnerWeight / totalWeight) * 1000) / 1000
+    : 0;
+
+  reasons.push(`WINNER:${winnerKey}(${winnerWeight.toFixed(3)}/${totalWeight.toFixed(3)})`);
+
+  return {
+    topic_key: winnerKey,
+    topic_confidence: Math.min(confidence, 1),
+    votes,
+    reasons,
+  };
+}
+
 /** All valid topic keys for feed filtering. */
 export const ALL_TOPIC_KEYS = [
   'POLITICA', 'CRIMEN_SEGURIDAD', 'DEPORTES', 'ECONOMIA',

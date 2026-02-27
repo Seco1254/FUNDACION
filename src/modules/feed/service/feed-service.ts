@@ -4,7 +4,7 @@ import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 import { evaluatePublishGate, computeImportanceScore } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
-import { classifyTopic } from '../../topics/service/topic-heuristic.js';
+import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { logger } from '../../../core/logging/logger.js';
 
 // ── Topic filter config ──────────────────────────────────────────────
@@ -353,15 +353,19 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
   const latestVersion = row.versions?.[0] ?? null;
   const packet = (latestVersion?.packetJson as any) ?? {};
 
-  // ── Topic classification ─────────────────────────────────────────
+  // ── Topic classification (multi-article voting) ─────────────────
   const headline = latestVersion?.headline ?? '';
-  const firstArticleUrl = row.eventArticles?.[0]?.article?.url ?? '';
-  // Use overview bullets if available for better classification
   const aiWhText = Array.isArray(packet.ai_overview?.what_happened)
     ? packet.ai_overview.what_happened.join(' ')
     : '';
-  const topicResult = classifyTopic({ title: headline, url: firstArticleUrl, text: aiWhText });
+  const articleInputs = (row.eventArticles ?? []).map((ea: any) => ({
+    title: ea.article?.title ?? null,
+    url: ea.article?.url ?? null,
+    contentType: ea.article?.contentType ?? null,
+  }));
+  const topicResult = aggregateEventTopic(headline, articleInputs, aiWhText || null);
   const topicKey = topicResult.topic_key;
+  const topicConfidence = topicResult.topic_confidence;
 
   // ── Topic filter (early exit before building full item) ──────────
   if (FEED_TOPIC_FILTER_ENABLED && FEED_ALLOWED_TOPICS.length > 0) {
@@ -390,10 +394,11 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     ai_overview: extractAiOverview(packet),
     overview_status: deriveOverviewStatus(packet),
     topic_key: topicKey,
+    topic_confidence: topicConfidence,
     ...enrichFeedItem(row, packet),
   };
 
-  // ── Importance score for single-source gate ──────────────────────
+  // ── Importance score v2 (multi vs single formula) ────────────────
   const hoursAge = row.publishedAt
     ? (Date.now() - new Date(row.publishedAt).getTime()) / (3600 * 1000)
     : null;
@@ -401,6 +406,7 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     topic_key: topicKey,
     text_len: item.total_usable_text_len ?? 0,
     hours_since_published: hoursAge,
+    unique_sources_count: item.unique_sources_count ?? 1,
   });
   item.importance_score = importanceScore;
 

@@ -73,6 +73,7 @@ export class EventRepository {
                 id: true,
                 mediaId: true,
                 url: true,
+                title: true,
                 status: true,
                 textContentLen: true,
                 textContentSource: true,

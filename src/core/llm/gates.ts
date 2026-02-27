@@ -245,7 +245,9 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
 
 // ── IMPORTANCE SCORE ──────────────────────────────────────────────────
 
-const IMPORTANCE_TOPIC_WEIGHTS: Record<string, number> = {
+// ── Topic weights per gate tier ──────────────────────────────────────
+
+const IMPORTANCE_TOPIC_WEIGHTS_MULTI: Record<string, number> = {
   POLITICA: 0.9,
   CRIMEN_SEGURIDAD: 0.85,
   DEPORTES: 0.8,
@@ -257,19 +259,38 @@ const IMPORTANCE_TOPIC_WEIGHTS: Record<string, number> = {
   OTROS: 0.2,
 };
 
+const IMPORTANCE_TOPIC_WEIGHTS_SINGLE: Record<string, number> = {
+  POLITICA: 0.9,
+  CRIMEN_SEGURIDAD: 0.85,
+  DEPORTES: 0.8,
+  ECONOMIA: 0.75,
+  SALUD: 0.7,
+  MEDIO_AMBIENTE: 0.65,
+  ENTRETENIMIENTO: 0.4,
+  OPINION: 0.15,
+  OTROS: 0.10,
+};
+
 /**
  * Compute a heuristic importance score (0..1) for an event.
- * Used by the single-source gate to filter low-value content.
+ * Used by the single-source gate and for feed ranking signals.
  *
- * Factors:
- *  - 40% recency   (fresher content scores higher)
- *  - 30% text_len  (longer, more substantive text scores higher)
- *  - 30% topic     (hard-news topics score higher)
+ * Two formulas depending on source diversity:
+ *
+ * **Multi-source** (unique_sources >= 2):
+ *   20% recency + 25% text + 25% topic + 30% diversity
+ *   Rewards broader coverage, lowers recency weight to avoid
+ *   "anything new" bias.
+ *
+ * **Single-source** (unique_sources < 2):
+ *   40% recency + 30% text + 30% topic
+ *   Maintains recency weight but applies harsher OPINION/OTROS penalties.
  */
 export function computeImportanceScore(input: {
   topic_key: string;
   text_len: number;
   hours_since_published: number | null;
+  unique_sources_count?: number;
 }): number {
   // Recency signal
   let recency = 0.3; // default for unknown age
@@ -285,9 +306,19 @@ export function computeImportanceScore(input: {
   // Text signal: longer text = more substance (capped at 3000 chars)
   const textSignal = Math.min(input.text_len / 3000, 1.0);
 
-  // Topic signal: hard news topics boost
-  const topicSignal = IMPORTANCE_TOPIC_WEIGHTS[input.topic_key] ?? 0.2;
+  const sources = input.unique_sources_count ?? 1;
 
-  const score = 0.4 * recency + 0.3 * textSignal + 0.3 * topicSignal;
+  let score: number;
+  if (sources >= 2) {
+    // Multi-source: boost diversity, lower recency
+    const topicSignal = IMPORTANCE_TOPIC_WEIGHTS_MULTI[input.topic_key] ?? 0.2;
+    const diversitySignal = Math.min(sources / 4, 1.0);
+    score = 0.20 * recency + 0.25 * textSignal + 0.25 * topicSignal + 0.30 * diversitySignal;
+  } else {
+    // Single-source: keep recency, penalize OPINION/OTROS harder
+    const topicSignal = IMPORTANCE_TOPIC_WEIGHTS_SINGLE[input.topic_key] ?? 0.10;
+    score = 0.40 * recency + 0.30 * textSignal + 0.30 * topicSignal;
+  }
+
   return Math.round(score * 1000) / 1000;
 }

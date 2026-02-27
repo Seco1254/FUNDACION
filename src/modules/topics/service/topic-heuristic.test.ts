@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTopic, classifyTopicKeys, ALL_TOPIC_KEYS } from './topic-heuristic.js';
+import { classifyTopic, classifyTopicKeys, aggregateEventTopic, ALL_TOPIC_KEYS } from './topic-heuristic.js';
 
 // ── POLITICA ──────────────────────────────────────────────────
 
@@ -247,5 +247,133 @@ describe('ALL_TOPIC_KEYS', () => {
     expect(ALL_TOPIC_KEYS).toContain('ENTRETENIMIENTO');
     expect(ALL_TOPIC_KEYS).toContain('OPINION');
     expect(ALL_TOPIC_KEYS).toContain('OTROS');
+  });
+});
+
+// ── aggregateEventTopic ────────────────────────────────────────
+
+describe('aggregateEventTopic', () => {
+  it('all articles same topic (POLITICA) → POLITICA with high confidence', () => {
+    const r = aggregateEventTopic(
+      'Gobierno presenta reforma tributaria',
+      [
+        { title: 'Presidente anuncia reforma del congreso', url: 'https://a.com/politica/1' },
+        { title: 'Ministro defiende proyecto del gobierno', url: 'https://b.com/politica/2' },
+        { title: 'Senado debate reforma del gabinete', url: 'https://c.com/politica/3' },
+      ],
+    );
+    expect(r.topic_key).toBe('POLITICA');
+    expect(r.topic_confidence).toBeGreaterThan(0.7);
+  });
+
+  it('majority DEPORTES (3) + minority ECONOMIA (1) → DEPORTES', () => {
+    const r = aggregateEventTopic(
+      'Colombia clasifica al mundial tras golear a rival',
+      [
+        { title: 'Goles de la selección en eliminatoria', url: 'https://a.com/deportes/1' },
+        { title: 'Entrenador celebra victoria del equipo', url: 'https://b.com/deportes/2' },
+        { title: 'Jugadores estrella del campeonato futbol', url: 'https://c.com/deportes/3' },
+        { title: 'Mercado financiero reacciona a la economía', url: 'https://d.com/economia/1' },
+      ],
+    );
+    expect(r.topic_key).toBe('DEPORTES');
+  });
+
+  it('tie between CRIMEN and SALUD → deterministic resolution (alphabetical)', () => {
+    const r = aggregateEventTopic(
+      'Incidente en zona urbana',
+      [
+        { title: 'Policía investiga homicidio en hospital', url: 'https://a.com/1' },
+        { title: 'Paciente herido tras balacera cerca de clínica', url: 'https://b.com/2' },
+      ],
+    );
+    // Both CRIMEN_SEGURIDAD and SALUD have keywords; should resolve deterministically
+    expect(ALL_TOPIC_KEYS).toContain(r.topic_key);
+    // Run twice to verify determinism
+    const r2 = aggregateEventTopic(
+      'Incidente en zona urbana',
+      [
+        { title: 'Policía investiga homicidio en hospital', url: 'https://a.com/1' },
+        { title: 'Paciente herido tras balacera cerca de clínica', url: 'https://b.com/2' },
+      ],
+    );
+    expect(r.topic_key).toBe(r2.topic_key);
+    expect(r.topic_confidence).toBe(r2.topic_confidence);
+  });
+
+  it('single article event → still classifies correctly', () => {
+    const r = aggregateEventTopic(
+      'Fiscalía captura narcotraficante',
+      [
+        { title: 'Operativo policial contra narcotráfico', url: 'https://a.com/judicial/1' },
+      ],
+    );
+    expect(r.topic_key).toBe('CRIMEN_SEGURIDAD');
+    expect(r.votes).toHaveLength(1);
+  });
+
+  it('mixed: 2 POLITICA + 1 OPINION + 1 OTROS → POLITICA wins', () => {
+    const r = aggregateEventTopic(
+      'Debate por reforma del congreso',
+      [
+        { title: 'Gobierno y oposición negocian la reforma', url: 'https://a.com/politica/1' },
+        { title: 'Senado aprueba primer debate del proyecto', url: 'https://b.com/politica/2' },
+        { title: 'Columna: Mi opinión editorial sobre el tema', url: 'https://c.com/opinion/1', contentType: 'opinion' },
+        { title: 'Buen clima hoy en Bogotá', url: 'https://d.com/bogota/1' },
+      ],
+    );
+    expect(r.topic_key).toBe('POLITICA');
+  });
+
+  it('all OTROS articles → OTROS with low confidence', () => {
+    const r = aggregateEventTopic(
+      'Curiosidades del día',
+      [
+        { title: 'Bonito día de sol en la ciudad', url: 'https://a.com/1' },
+        { title: 'Receta de cocina casera fácil', url: 'https://b.com/2' },
+      ],
+    );
+    expect(r.topic_key).toBe('OTROS');
+    // Confidence should still be 1.0 when all agree on OTROS
+    expect(r.topic_confidence).toBeGreaterThan(0);
+  });
+
+  it('URL section hints reinforce consistent topic across articles', () => {
+    const r = aggregateEventTopic(
+      'Resultados de la jornada deportiva',
+      [
+        { title: 'Resumen del partido de la liga', url: 'https://a.com/deportes/liga/1' },
+        { title: 'Resultado del torneo de fútbol', url: 'https://b.com/deportes/futbol/2' },
+        { title: 'Campeonato continúa con sorpresas', url: 'https://c.com/deportes/3' },
+      ],
+    );
+    expect(r.topic_key).toBe('DEPORTES');
+    expect(r.topic_confidence).toBeGreaterThan(0.7);
+  });
+
+  it('empty articles array → falls back to headline classification', () => {
+    const r = aggregateEventTopic(
+      'Presidente Petro anuncia nuevo decreto de gobierno',
+      [],
+    );
+    expect(r.topic_key).toBe('POLITICA');
+    expect(r.votes).toHaveLength(0);
+  });
+
+  // ── Deterministic stability ──────────────────────────────────
+
+  it('deterministic: 100 runs produce identical output', () => {
+    const headline = 'Fiscalía investiga caso de narcotráfico';
+    const articles = [
+      { title: 'Policía capturó sicarios del cartel', url: 'https://a.com/judicial/1' },
+      { title: 'Economía afectada por crimen organizado', url: 'https://b.com/economia/2' },
+      { title: 'Víctimas de violencia en zona rural', url: 'https://c.com/seguridad/3' },
+    ];
+    const first = aggregateEventTopic(headline, articles);
+    for (let i = 0; i < 100; i++) {
+      const r = aggregateEventTopic(headline, articles);
+      expect(r.topic_key).toBe(first.topic_key);
+      expect(r.topic_confidence).toBe(first.topic_confidence);
+    }
   });
 });

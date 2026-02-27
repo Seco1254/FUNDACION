@@ -18,6 +18,7 @@ function makeMockRow(overrides: Record<string, any> = {}) {
       article: {
         id: 'art-1',
         url: 'https://www.eltiempo.com/article-1',
+        title: 'Test headline article 1',
         media: { id: 'media-1', mediaKey: 'eltiempo', name: 'El Tiempo' },
         textContentLen: 1500,
         textContentSource: 'body',
@@ -30,6 +31,7 @@ function makeMockRow(overrides: Record<string, any> = {}) {
       article: {
         id: 'art-2',
         url: 'https://www.elespectador.com/article-1',
+        title: 'Test headline article 2',
         media: { id: 'media-2', mediaKey: 'elespectador', name: 'El Espectador' },
         textContentLen: 1200,
         textContentSource: 'body',
@@ -555,8 +557,8 @@ describe('FeedService', () => {
     });
   });
 
-  describe('topic classification on feed items', () => {
-    it('populates topic_key on feed items based on headline', async () => {
+  describe('topic classification on feed items (aggregated)', () => {
+    it('populates topic_key + topic_confidence on feed items', async () => {
       const row = makeMockRow({
         versions: [{
           id: 'ver-1',
@@ -571,6 +573,8 @@ describe('FeedService', () => {
 
       expect(feed.items).toHaveLength(1);
       expect(feed.items[0].topic_key).toBe('POLITICA');
+      expect(feed.items[0].topic_confidence).toBeGreaterThan(0);
+      expect(feed.items[0].topic_confidence).toBeLessThanOrEqual(1);
     });
 
     it('classifies sports headline as DEPORTES', async () => {
@@ -623,9 +627,45 @@ describe('FeedService', () => {
       expect(feed.items).toHaveLength(1);
       expect(feed.items[0].topic_key).toBe('OTROS');
     });
+
+    it('aggregates topic from multiple article titles + headline', async () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Policía captura narcos en operativo',
+          packetJson: {},
+        }],
+        eventArticles: [
+          {
+            article: {
+              id: 'art-1', url: 'https://a.com/judicial/1', title: 'Fiscalía investiga narcotráfico',
+              media: { id: 'm1', mediaKey: 'a', name: 'A' }, textContentLen: 1500,
+              textContentSource: 'body', extractionFailReason: null,
+              paywallDetected: false, usableForOverview: true, contentType: 'news',
+            },
+          },
+          {
+            article: {
+              id: 'art-2', url: 'https://b.com/seguridad/2', title: 'Captura de sicarios en Medellín',
+              media: { id: 'm2', mediaKey: 'b', name: 'B' }, textContentLen: 1200,
+              textContentSource: 'body', extractionFailReason: null,
+              paywallDetected: false, usableForOverview: true, contentType: 'news',
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+
+      expect(feed.items).toHaveLength(1);
+      expect(feed.items[0].topic_key).toBe('CRIMEN_SEGURIDAD');
+      expect(feed.items[0].topic_confidence).toBeGreaterThan(0.5);
+    });
   });
 
-  describe('importance score on feed items', () => {
+  describe('importance score v2 on feed items', () => {
     it('populates importance_score on feed items', async () => {
       const row = makeMockRow({
         versions: [{
@@ -646,7 +686,6 @@ describe('FeedService', () => {
     });
 
     it('importance_score reflects topic weight (POLITICA > OTROS)', async () => {
-      // POLITICA event
       const rowPol = makeMockRow({
         id: 'evt-pol',
         versions: [{
@@ -655,7 +694,6 @@ describe('FeedService', () => {
           packetJson: {},
         }],
       });
-      // OTROS event (same text length, same publishedAt)
       const rowOtros = makeMockRow({
         id: 'evt-otros',
         versions: [{

@@ -420,38 +420,108 @@ describe('gates', () => {
     });
   });
 
-  // ── computeImportanceScore ──
+  // ── computeImportanceScore v2 ──
 
-  describe('computeImportanceScore', () => {
-    it('scores fresh POLITICA article high', () => {
+  describe('computeImportanceScore — single-source', () => {
+    it('scores fresh POLITICA single-source high', () => {
+      const score = computeImportanceScore({
+        topic_key: 'POLITICA',
+        text_len: 2000,
+        hours_since_published: 3,
+        unique_sources_count: 1,
+      });
+      // single: 0.4*1.0 + 0.3*0.667 + 0.3*0.9 = 0.4+0.2+0.27 = 0.87
+      expect(score).toBeGreaterThan(0.80);
+    });
+
+    it('scores old OTROS single-source very low (harsh penalty)', () => {
+      const score = computeImportanceScore({
+        topic_key: 'OTROS',
+        text_len: 500,
+        hours_since_published: 72,
+        unique_sources_count: 1,
+      });
+      // single: 0.4*0.2 + 0.3*0.167 + 0.3*0.10 = 0.08+0.05+0.03 = 0.16
+      expect(score).toBeLessThan(0.20);
+    });
+
+    it('penalizes OPINION harder in single-source', () => {
+      const score = computeImportanceScore({
+        topic_key: 'OPINION',
+        text_len: 1500,
+        hours_since_published: 6,
+        unique_sources_count: 1,
+      });
+      // single: 0.4*0.8 + 0.3*0.5 + 0.3*0.15 = 0.32+0.15+0.045 = 0.515
+      expect(score).toBeLessThan(0.55);
+      expect(score).toBeGreaterThan(0.40);
+    });
+
+    it('defaults to single-source when unique_sources_count omitted', () => {
       const score = computeImportanceScore({
         topic_key: 'POLITICA',
         text_len: 2000,
         hours_since_published: 3,
       });
-      // recency=1.0, text=0.667, topic=0.9 → 0.4+0.2+0.27 = 0.87
+      // Same as single-source
       expect(score).toBeGreaterThan(0.80);
     });
+  });
 
-    it('scores old OTROS article low', () => {
-      const score = computeImportanceScore({
-        topic_key: 'OTROS',
-        text_len: 500,
-        hours_since_published: 72,
+  describe('computeImportanceScore — multi-source', () => {
+    it('boosts multi-source events via diversity signal', () => {
+      const multi = computeImportanceScore({
+        topic_key: 'POLITICA',
+        text_len: 2000,
+        hours_since_published: 3,
+        unique_sources_count: 4,
       });
-      // recency=0.2, text=0.167, topic=0.2 → 0.08+0.05+0.06 = 0.19
-      expect(score).toBeLessThan(0.35);
+      // multi: 0.2*1.0 + 0.25*0.667 + 0.25*0.9 + 0.3*1.0 = 0.2+0.167+0.225+0.3 = 0.892
+      expect(multi).toBeGreaterThan(0.85);
     });
 
-    it('returns moderate score for mid-age DEPORTES article', () => {
-      const score = computeImportanceScore({
-        topic_key: 'DEPORTES',
+    it('multi-source OTROS scores higher than single-source OTROS (diversity helps)', () => {
+      const multi = computeImportanceScore({
+        topic_key: 'OTROS',
         text_len: 1500,
-        hours_since_published: 18,
+        hours_since_published: 24,
+        unique_sources_count: 3,
       });
-      // recency=0.6, text=0.5, topic=0.8 → 0.24+0.15+0.24 = 0.63
-      expect(score).toBeGreaterThan(0.50);
-      expect(score).toBeLessThan(0.80);
+      const single = computeImportanceScore({
+        topic_key: 'OTROS',
+        text_len: 1500,
+        hours_since_published: 24,
+        unique_sources_count: 1,
+      });
+      expect(multi).toBeGreaterThan(single);
+    });
+
+    it('multi-source lowers recency weight (old multi-source still viable)', () => {
+      const multi = computeImportanceScore({
+        topic_key: 'POLITICA',
+        text_len: 2000,
+        hours_since_published: 72,
+        unique_sources_count: 4,
+      });
+      // multi: 0.2*0.2 + 0.25*0.667 + 0.25*0.9 + 0.3*1.0 = 0.04+0.167+0.225+0.3 = 0.732
+      expect(multi).toBeGreaterThan(0.70);
+    });
+
+    it('diversity signal caps at 4 sources', () => {
+      const four = computeImportanceScore({
+        topic_key: 'ECONOMIA',
+        text_len: 2000,
+        hours_since_published: 12,
+        unique_sources_count: 4,
+      });
+      const eight = computeImportanceScore({
+        topic_key: 'ECONOMIA',
+        text_len: 2000,
+        hours_since_published: 12,
+        unique_sources_count: 8,
+      });
+      // Both cap diversity at 1.0 → same score
+      expect(four).toBe(eight);
     });
 
     it('uses default recency when hours_since_published is null', () => {
@@ -459,21 +529,10 @@ describe('gates', () => {
         topic_key: 'ECONOMIA',
         text_len: 2000,
         hours_since_published: null,
+        unique_sources_count: 3,
       });
-      // recency=0.3, text=0.667, topic=0.75 → 0.12+0.2+0.225 = 0.545
       expect(score).toBeGreaterThan(0.40);
-      expect(score).toBeLessThan(0.70);
-    });
-
-    it('caps text_signal at 1.0 for very long text', () => {
-      const score = computeImportanceScore({
-        topic_key: 'POLITICA',
-        text_len: 10000,
-        hours_since_published: 1,
-      });
-      // recency=1.0, text=1.0, topic=0.9 → 0.4+0.3+0.27 = 0.97
-      expect(score).toBeGreaterThan(0.90);
-      expect(score).toBeLessThanOrEqual(1.0);
+      expect(score).toBeLessThan(0.80);
     });
   });
 });

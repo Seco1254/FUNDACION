@@ -42,6 +42,7 @@ export interface FeedItem {
   overview_mode?: string | null;
   why_no_overview?: string | null;
   topic_key?: string;
+  topic_confidence?: number;
   importance_score?: number;
 }
 
