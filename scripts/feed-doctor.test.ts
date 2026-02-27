@@ -9,6 +9,7 @@ import {
   formatOutput,
   type DoctorConfig,
   type LinkerLog,
+  type DebugContext,
 } from './feed-doctor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -58,12 +59,14 @@ function makeEvent(overrides: Record<string, any> = {}) {
 
 const defaultConfig: DoctorConfig = {
   limit: 200,
-  hours: 24,
+  hours: 0,
   format: 'ndjson',
   includeArticles: true,
   includeTextSamples: false,
   minArticles: 1,
   minSources: 1,
+  publishedOnly: false,
+  stateFilter: null,
 };
 
 // ── Unit tests for helpers ───────────────────────────────────────
@@ -134,15 +137,17 @@ describe('dbMeta', () => {
 });
 
 describe('configFromArgs', () => {
-  it('applies defaults', () => {
+  it('applies defaults (hours=0 means all-time)', () => {
     const cfg = configFromArgs({});
     expect(cfg.limit).toBe(200);
-    expect(cfg.hours).toBe(24);
+    expect(cfg.hours).toBe(0);
     expect(cfg.format).toBe('ndjson');
     expect(cfg.includeArticles).toBe(true);
     expect(cfg.includeTextSamples).toBe(false);
     expect(cfg.minArticles).toBe(1);
     expect(cfg.minSources).toBe(1);
+    expect(cfg.publishedOnly).toBe(false);
+    expect(cfg.stateFilter).toBeNull();
   });
 
   it('overrides from args', () => {
@@ -152,6 +157,21 @@ describe('configFromArgs', () => {
     expect(cfg.format).toBe('json');
     expect(cfg.includeArticles).toBe(false);
     expect(cfg.includeTextSamples).toBe(true);
+  });
+
+  it('parses --published_only=1', () => {
+    const cfg = configFromArgs({ published_only: '1' });
+    expect(cfg.publishedOnly).toBe(true);
+  });
+
+  it('parses --state=DETECTED (case-insensitive)', () => {
+    const cfg = configFromArgs({ state: 'detected' });
+    expect(cfg.stateFilter).toBe('DETECTED');
+  });
+
+  it('ignores invalid --state values', () => {
+    const cfg = configFromArgs({ state: 'INVALID' });
+    expect(cfg.stateFilter).toBeNull();
   });
 });
 
@@ -173,7 +193,7 @@ describe('buildDoctorOutput', () => {
     expect(meta.time_iso).toBe('2026-02-26T12:00:00.000Z');
     expect(meta.node_version).toBe(process.version);
     expect(meta.params.limit).toBe(200);
-    expect(meta.params.hours).toBe(24);
+    expect(meta.params.hours).toBe(0);
     expect(meta.env).toHaveProperty('PUBLISH_DELAY_MS');
     expect(meta.env).toHaveProperty('GATE_MULTI_SOURCES');
   });
@@ -187,7 +207,9 @@ describe('buildDoctorOutput', () => {
     const output = buildDoctorOutput([ev1, ev2], [], defaultConfig);
     const agg = output[output.length - 1];
     expect(agg.kind).toBe('aggregate');
-    expect(agg.totals.events).toBe(2);
+    expect(agg.totals.events_fetched).toBe(2);
+    expect(agg.totals.events_emitted).toBe(2);
+    expect(agg.totals.events_published).toBe(2);
   });
 
   it('produces event records with required sections', () => {
@@ -227,9 +249,10 @@ describe('buildDoctorOutput', () => {
   it('respects minArticles filter', () => {
     const ev = makeEvent(); // 1 article
     const output = buildDoctorOutput([ev], [], { ...defaultConfig, minArticles: 5 });
-    // Event should be filtered out
+    // Event should be filtered out from records but counted in fetched
     expect(output.length).toBe(2); // run_meta + aggregate only
-    expect(output[1].totals.events).toBe(1); // raw count stays
+    expect(output[1].totals.events_fetched).toBe(1); // raw count stays
+    expect(output[1].totals.events_emitted).toBe(0);
   });
 
   it('respects minSources filter', () => {
@@ -344,6 +367,65 @@ describe('buildDoctorOutput full pipeline', () => {
     expect(parsed[1].coverage.num_sources_unique).toBe(2);
 
     // Verify aggregate
-    expect(parsed[3].totals.events).toBe(2);
+    expect(parsed[3].totals.events_fetched).toBe(2);
+    expect(parsed[3].totals.events_emitted).toBe(2);
+  });
+});
+
+// ── New tests: --hours=0, --published_only, --state, debug block ──
+
+describe('buildDoctorOutput with mixed states', () => {
+  it('events_published counts only PUBLISHED events', () => {
+    const events = [
+      makeEvent({ id: 'evt-pub', state: 'PUBLISHED' }),
+      makeEvent({ id: 'evt-det', state: 'DETECTED' }),
+      makeEvent({ id: 'evt-pen', state: 'PENDING_PUBLISH' }),
+    ];
+    const output = buildDoctorOutput(events, [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.totals.events_fetched).toBe(3);
+    expect(agg.totals.events_published).toBe(1);
+    expect(agg.totals.events_emitted).toBe(3);
+  });
+});
+
+describe('debug context in aggregate', () => {
+  it('includes debug block when debugCtx is provided', () => {
+    const ctx: DebugContext = {
+      total_events_in_db: 13,
+      total_published_in_db: 11,
+      applied_time_filter: 'none (all-time)',
+      applied_state_filter: 'PUBLISHED',
+    };
+    const output = buildDoctorOutput([], [], defaultConfig, new Date(), ctx);
+    const agg = output[output.length - 1];
+    expect(agg.debug).toBeDefined();
+    expect(agg.debug.total_events_in_db).toBe(13);
+    expect(agg.debug.total_published_in_db).toBe(11);
+    expect(agg.debug.applied_time_filter).toBe('none (all-time)');
+    expect(agg.debug.applied_state_filter).toBe('PUBLISHED');
+    expect(agg.debug.min_articles).toBe(1);
+    expect(agg.debug.min_sources).toBe(1);
+  });
+
+  it('omits debug block when debugCtx is not provided', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.debug).toBeUndefined();
+  });
+});
+
+describe('run_meta includes new params', () => {
+  it('run_meta.params includes published_only and state_filter', () => {
+    const cfg: DoctorConfig = { ...defaultConfig, publishedOnly: true, stateFilter: 'DETECTED' };
+    const output = buildDoctorOutput([], [], cfg);
+    const meta = output[0];
+    expect(meta.params.published_only).toBe(true);
+    expect(meta.params.state_filter).toBe('DETECTED');
+  });
+
+  it('run_meta.params.hours=0 for all-time', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    expect(output[0].params.hours).toBe(0);
   });
 });

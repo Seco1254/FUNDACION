@@ -1,14 +1,27 @@
 #!/usr/bin/env tsx
 /**
- * Feed Doctor — CLI audit of all PUBLISHED events.
+ * Feed Doctor — CLI audit of events in the database.
  *
  * Outputs NDJSON (1 line per record): run_meta, event*, aggregate.
  * Reuses runtime gate logic (publish gate, institutional gate, coherence gate).
  *
+ * Flags:
+ *   --hours=0          All-time (default). >0 = only events within last N hours.
+ *   --limit=200        Max events to process.
+ *   --published_only=1 Only PUBLISHED events (default 0 = all states).
+ *   --state=PUBLISHED  Explicit state filter (overrides --published_only).
+ *   --format=ndjson    Output format: ndjson (default) or json.
+ *   --out=/tmp/f.ndjson Write to file instead of stdout.
+ *   --include_articles=1  Include article list per event (default 1).
+ *   --include_text_samples=1  Include text snippets (default 0).
+ *   --min_articles=N   Min articles per event (applied after time/state filter).
+ *   --min_sources=N    Min unique sources per event (applied after time/state filter).
+ *
  * Usage:
- *   npm run debug:feed:doctor -- --hours=24 --limit=50
- *   npm run debug:feed:doctor -- --out=/tmp/feed_doctor.ndjson
- *   npm run debug:feed:doctor -- --include_text_samples=1 --format=json
+ *   npm run debug:feed:doctor                                     # all events, all-time
+ *   npm run debug:feed:doctor -- --published_only=1 --limit=50    # only PUBLISHED
+ *   npm run debug:feed:doctor -- --hours=24 --state=PUBLISHED     # last 24h, PUBLISHED
+ *   npm run debug:feed:doctor -- --format=json --out=/tmp/doc.json
  */
 
 import '../src/env.js';
@@ -59,25 +72,40 @@ export function bucketKey(n: number): string {
 
 // ── Config ──────────────────────────────────────────────────────
 
+const VALID_STATES = ['DETECTED', 'PENDING_PUBLISH', 'PUBLISHED', 'UPDATING', 'DORMANT', 'CLOSED'] as const;
+type EventStateName = (typeof VALID_STATES)[number];
+
 export interface DoctorConfig {
   limit: number;
+  /** 0 = all-time (no time filter), >0 = only events within last N hours */
   hours: number;
   format: 'json' | 'ndjson';
   includeArticles: boolean;
   includeTextSamples: boolean;
   minArticles: number;
   minSources: number;
+  /** If true, only include PUBLISHED events (overridden by stateFilter) */
+  publishedOnly: boolean;
+  /** Explicit state filter; overrides publishedOnly when set */
+  stateFilter: EventStateName | null;
 }
 
 export function configFromArgs(args: Record<string, string>): DoctorConfig {
+  const stateRaw = args['state']?.toUpperCase() ?? null;
+  const stateFilter = stateRaw && VALID_STATES.includes(stateRaw as EventStateName)
+    ? (stateRaw as EventStateName)
+    : null;
+
   return {
     limit: parseInt(args['limit'] ?? '200', 10),
-    hours: parseInt(args['hours'] ?? '24', 10),
+    hours: parseInt(args['hours'] ?? '0', 10),
     format: (args['format'] ?? 'ndjson') as 'json' | 'ndjson',
     includeArticles: args['include_articles'] !== '0',
     includeTextSamples: args['include_text_samples'] === '1',
     minArticles: parseInt(args['min_articles'] ?? '1', 10),
     minSources: parseInt(args['min_sources'] ?? '1', 10),
+    publishedOnly: args['published_only'] === '1',
+    stateFilter,
   };
 }
 
@@ -89,11 +117,19 @@ export interface LinkerLog {
   data: any;
 }
 
+export interface DebugContext {
+  total_events_in_db: number;
+  total_published_in_db: number;
+  applied_time_filter: string;
+  applied_state_filter: string;
+}
+
 export function buildDoctorOutput(
   events: any[],
   linkerLogs: LinkerLog[],
   config: DoctorConfig,
   now: Date = new Date(),
+  debugCtx?: DebugContext,
 ): any[] {
   const db = dbMeta(process.env.DATABASE_URL ?? '');
 
@@ -127,6 +163,8 @@ export function buildDoctorOutput(
       include_text_samples: config.includeTextSamples,
       min_articles: config.minArticles,
       min_sources: config.minSources,
+      published_only: config.publishedOnly,
+      state_filter: config.stateFilter,
     },
   };
 
@@ -398,11 +436,15 @@ export function buildDoctorOutput(
     .slice(0, 10)
     .map(([content_type, count]) => ({ content_type, count }));
 
-  const aggregate = {
+  const eventsEmitted = output.length - 1; // minus run_meta
+  const eventsPublished = events.filter((e) => e.state === 'PUBLISHED').length;
+
+  const aggregate: any = {
     kind: 'aggregate' as const,
     totals: {
-      events: events.length,
-      events_published: events.length,
+      events_fetched: events.length,
+      events_published: eventsPublished,
+      events_emitted: eventsEmitted,
       feed_eligible: feedEligible,
       feed_ineligible: feedIneligible,
     },
@@ -416,6 +458,15 @@ export function buildDoctorOutput(
     top_ineligible_reasons: topIneligible,
     top_content_types: topContentTypes,
   };
+
+  if (debugCtx) {
+    aggregate.debug = {
+      ...debugCtx,
+      min_articles: config.minArticles,
+      min_sources: config.minSources,
+    };
+  }
+
   output.push(aggregate);
 
   return output;
@@ -439,16 +490,29 @@ async function main() {
 
   const prisma = new PrismaClient();
   const now = new Date();
-  const since = new Date(now.getTime() - config.hours * 60 * 60 * 1000);
+
+  // ── Build where clause ──
+  const where: any = { canonicalEventId: null };
+
+  // State filter: --state overrides --published_only
+  const effectiveState = config.stateFilter
+    ?? (config.publishedOnly ? 'PUBLISHED' : null);
+  if (effectiveState) {
+    where.state = effectiveState;
+  }
+
+  // Time filter: hours=0 means all-time (no filter)
+  let appliedTimeFilter = 'none (all-time)';
+  if (config.hours > 0) {
+    const since = new Date(now.getTime() - config.hours * 60 * 60 * 1000);
+    where.createdAt = { gte: since };
+    appliedTimeFilter = `createdAt >= ${since.toISOString()} (last ${config.hours}h)`;
+  }
 
   // ── Fetch events ──
   const events = await prisma.event.findMany({
-    where: {
-      state: 'PUBLISHED',
-      canonicalEventId: null,
-      publishedAt: { gte: since },
-    },
-    orderBy: { publishedAt: 'desc' },
+    where,
+    orderBy: { createdAt: 'desc' },
     take: config.limit,
     include: {
       versions: { orderBy: { versionIndex: 'desc' as const }, take: 1 },
@@ -469,6 +533,19 @@ async function main() {
     },
   });
 
+  // ── Debug context (always fetched so aggregate is useful) ──
+  const [totalEventsInDb, totalPublishedInDb] = await Promise.all([
+    prisma.event.count({ where: { canonicalEventId: null } }),
+    prisma.event.count({ where: { canonicalEventId: null, state: 'PUBLISHED' } }),
+  ]);
+
+  const debugCtx: DebugContext = {
+    total_events_in_db: totalEventsInDb,
+    total_published_in_db: totalPublishedInDb,
+    applied_time_filter: appliedTimeFilter,
+    applied_state_filter: effectiveState ?? 'none (all states)',
+  };
+
   // ── Fetch audit log linker decisions (batch) ──
   const eventIds = events.map((e) => e.id);
   const linkerLogs = eventIds.length > 0
@@ -482,7 +559,7 @@ async function main() {
       })
     : [];
 
-  const output = buildDoctorOutput(events, linkerLogs, config, now);
+  const output = buildDoctorOutput(events, linkerLogs, config, now, debugCtx);
 
   // ── Output ──
   const text = formatOutput(output, config.format);
