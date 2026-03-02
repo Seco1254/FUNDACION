@@ -125,8 +125,9 @@ const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
 const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
 const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '0', 10);
 const GATE_SINGLE_TITLE_ALIGN_MIN = parseFloat(process.env.GATE_SINGLE_TITLE_ALIGN_MIN ?? '0.20');
-const GATE_SINGLE_MIN_TEXT_LEN = parseInt(process.env.GATE_SINGLE_MIN_TEXT_LEN ?? '1200', 10);
-const GATE_SINGLE_MIN_IMPORTANCE = parseFloat(process.env.GATE_SINGLE_MIN_IMPORTANCE_SCORE ?? '0.35');
+const GATE_SINGLE_MIN_TEXT_LEN = parseInt(process.env.GATE_SINGLE_MIN_TEXT_LEN ?? '1500', 10);
+const GATE_SINGLE_MIN_IMPORTANCE = parseFloat(process.env.GATE_SINGLE_MIN_IMPORTANCE_SCORE ?? '0.45');
+const GATE_SINGLE_TOPIC_CONFIDENCE_MIN = parseFloat(process.env.GATE_SINGLE_TOPIC_CONFIDENCE_MIN ?? '0.6');
 
 export interface PublishGateInput {
   unique_sources_count: number;
@@ -140,6 +141,12 @@ export interface PublishGateInput {
   title_alignment?: number | null;
   /** Optional: heuristic importance score (0..1). When provided, enables single-source importance gate. */
   importance_score?: number | null;
+  /** Optional: topic key for single-source topic gate. */
+  topic_key?: string | null;
+  /** Optional: topic confidence (0..1). */
+  topic_confidence?: number | null;
+  /** Optional: allowed topic keys (if empty, topic gate is disabled). */
+  allowed_topics?: string[];
 }
 
 export interface PublishGateResult {
@@ -224,6 +231,16 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
       }
     }
 
+    // Topic allowlist gate: block disallowed topics with high confidence
+    const allowedTopics = input.allowed_topics ?? [];
+    if (allowedTopics.length > 0 && input.topic_key) {
+      if (!allowedTopics.includes(input.topic_key)) {
+        if ((input.topic_confidence ?? 0) >= GATE_SINGLE_TOPIC_CONFIDENCE_MIN) {
+          reasons.push('SINGLE_SOURCE_DISALLOWED_TOPIC');
+        }
+      }
+    }
+
     if (reasons.length === 0) {
       return { eligible: true, gate_name: 'single', reasons: [] };
     }
@@ -241,6 +258,63 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
   // No sources at all
   reasons.push('NO_SOURCES');
   return { eligible: false, gate_name: null, reasons };
+}
+
+// ── DEMOTION MULTIPLIERS ─────────────────────────────────────────────
+
+const DEMOTION_SINGLE_SOURCE = parseFloat(process.env.DEMOTION_SINGLE_SOURCE ?? '0.75');
+const DEMOTION_LOW_TOPIC_CONF = parseFloat(process.env.DEMOTION_LOW_TOPIC_CONF ?? '0.85');
+const DEMOTION_OPINION = parseFloat(process.env.DEMOTION_OPINION ?? '0.70');
+const DEMOTION_SHORT_TEXT = parseFloat(process.env.DEMOTION_SHORT_TEXT ?? '0.60');
+const DEMOTION_SHORT_TEXT_THRESHOLD = parseInt(process.env.DEMOTION_SHORT_TEXT_THRESHOLD ?? '1200', 10);
+
+export interface DemotionResult {
+  multiplier: number;
+  reasons: string[];
+}
+
+/**
+ * Compute a demotion multiplier (0..1) for feed ranking.
+ * Applied AFTER the publish gate — only affects ordering, not eligibility.
+ * Multi-source events (>=2 sources) are NOT demoted.
+ */
+export function computeDemotionMultiplier(input: {
+  unique_sources_count: number;
+  topic_confidence?: number | null;
+  topic_key?: string | null;
+  total_usable_text_len: number;
+}): DemotionResult {
+  const reasons: string[] = [];
+  let multiplier = 1.0;
+
+  // Only apply demotions to single-source events
+  if (input.unique_sources_count >= 2) {
+    return { multiplier: 1.0, reasons: [] };
+  }
+
+  // Single-source demotion
+  multiplier *= DEMOTION_SINGLE_SOURCE;
+  reasons.push('SINGLE_SOURCE');
+
+  // Low topic confidence
+  if (input.topic_confidence != null && input.topic_confidence < GATE_SINGLE_TOPIC_CONFIDENCE_MIN) {
+    multiplier *= DEMOTION_LOW_TOPIC_CONF;
+    reasons.push('LOW_TOPIC_CONFIDENCE');
+  }
+
+  // Opinion content (topic_key = OPINION)
+  if (input.topic_key === 'OPINION') {
+    multiplier *= DEMOTION_OPINION;
+    reasons.push('OPINION_CONTENT');
+  }
+
+  // Short text
+  if (input.total_usable_text_len < DEMOTION_SHORT_TEXT_THRESHOLD) {
+    multiplier *= DEMOTION_SHORT_TEXT;
+    reasons.push('SHORT_TEXT');
+  }
+
+  return { multiplier: Math.round(multiplier * 1000) / 1000, reasons };
 }
 
 // ── IMPORTANCE SCORE ──────────────────────────────────────────────────

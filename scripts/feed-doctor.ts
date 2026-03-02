@@ -28,10 +28,12 @@ import '../src/env.js';
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
-import { evaluatePublishGate } from '../src/core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from '../src/core/llm/gates.js';
 import { isInstitutionalEvent } from '../src/modules/feed/service/feed-service.js';
 import { computeEventScore, type EventForScoring } from '../src/modules/ranking/service/event-scorer.js';
 import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
+import { aggregateEventTopic } from '../src/modules/topics/service/topic-heuristic.js';
+import { extractDesk } from '../src/modules/event_linker/service/hard-negative-gates.js';
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -161,9 +163,13 @@ export function buildDoctorOutput(
       GATE_MULTI_SOURCES: process.env.GATE_MULTI_SOURCES ?? '2',
       GATE_MULTI_TEXT: process.env.GATE_MULTI_TEXT ?? '1200',
       GATE_SINGLE_TEXT: process.env.GATE_SINGLE_TEXT ?? '800',
+      GATE_SINGLE_MIN_TEXT_LEN: process.env.GATE_SINGLE_MIN_TEXT_LEN ?? '1500',
+      GATE_SINGLE_MIN_IMPORTANCE_SCORE: process.env.GATE_SINGLE_MIN_IMPORTANCE_SCORE ?? '0.45',
+      GATE_SINGLE_TOPIC_CONFIDENCE_MIN: process.env.GATE_SINGLE_TOPIC_CONFIDENCE_MIN ?? '0.6',
       THETA_AUTO_LINK: process.env.THETA_AUTO_LINK ?? '0.45',
       THETA_MAYBE_LINK: process.env.THETA_MAYBE_LINK ?? '0.30',
       FEED_SPLIT_PROXY_QUARANTINE_ENABLED: process.env.FEED_SPLIT_PROXY_QUARANTINE_ENABLED ?? '1',
+      FEED_ALLOWED_TOPICS: process.env.FEED_ALLOWED_TOPICS ?? '',
     },
     params: {
       limit: config.limit,
@@ -200,6 +206,10 @@ export function buildDoctorOutput(
   const contentTypeCounts: Record<string, number> = {};
   let splitProxyCount = 0;
   const hardNegativeReasonCounts: Record<string, number> = {};
+  const binsTopics: Record<string, number> = {};
+  const binsDesks: Record<string, number> = {};
+  const singleSourceBlockedByReason: Record<string, number> = {};
+  const demotionReasonCounts: Record<string, number> = {};
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -280,12 +290,48 @@ export function buildDoctorOutput(
     const keyFactsCount: number = packet.key_facts_count ?? 0;
     const overviewStatus = packet.ai_overview ? 'ready' : 'pending';
 
+    // Topic classification (v2: multi-article voting, same as feed-service)
+    const headline = version?.headline ?? '';
+    const aiWhText = Array.isArray(packet.ai_overview?.what_happened)
+      ? packet.ai_overview.what_happened.join(' ')
+      : '';
+    const articleInputs = articles.map((a: any) => ({
+      title: a.title ?? null,
+      url: a.url ?? null,
+      contentType: a.contentType ?? null,
+    }));
+    const topicResult = aggregateEventTopic(headline, articleInputs, aiWhText || null);
+    const eventTopicKey = topicResult.topic_key;
+    const eventTopicConfidence = topicResult.topic_confidence;
+
+    // Desk extraction from representative article
+    const repDesk = repArt ? extractDesk(repArt.url) : null;
+
+    // Importance score (v2)
+    const hoursAge = ev.publishedAt
+      ? (now.getTime() - new Date(ev.publishedAt).getTime()) / (3600 * 1000)
+      : null;
+    const eventImportanceScore = computeImportanceScore({
+      topic_key: eventTopicKey,
+      text_len: totalUsableTextLen,
+      hours_since_published: hoursAge,
+      unique_sources_count: numSources,
+    });
+
+    // FEED_ALLOWED_TOPICS from env (same as feed-service)
+    const feedAllowedTopics: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+
     const publishGate = evaluatePublishGate({
       unique_sources_count: numSources,
       total_usable_text_len: totalUsableTextLen,
       key_facts_count: keyFactsCount,
       overview_status: overviewStatus,
       has_disclaimer: false,
+      topic_key: eventTopicKey,
+      topic_confidence: eventTopicConfidence,
+      allowed_topics: feedAllowedTopics.length > 0 ? feedAllowedTopics : undefined,
+      importance_score: eventImportanceScore,
     });
     if (!publishGate.eligible) {
       for (const r of publishGate.reasons) reasons.push(`GATE:${r}`);
@@ -293,6 +339,45 @@ export function buildDoctorOutput(
 
     const eligible = reasons.length === 0;
     if (eligible) feedEligible++; else feedIneligible++;
+
+    // Track single-source blocked reasons
+    if (!eligible && numSources < 2) {
+      for (const r of reasons) {
+        singleSourceBlockedByReason[r] = (singleSourceBlockedByReason[r] ?? 0) + 1;
+      }
+    }
+
+    // Demotion multiplier (v2)
+    const demotion = computeDemotionMultiplier({
+      unique_sources_count: numSources,
+      topic_confidence: eventTopicConfidence,
+      topic_key: eventTopicKey,
+      total_usable_text_len: totalUsableTextLen,
+    });
+    for (const dr of demotion.reasons) {
+      demotionReasonCounts[dr] = (demotionReasonCounts[dr] ?? 0) + 1;
+    }
+
+    // Gate trace: record which checks were applied
+    const gateTrace: string[] = [];
+    if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
+    else if (coherenceStatus === 'PASS') gateTrace.push('COHERENCE_GATE:PASS');
+    if (instCheck.excluded) gateTrace.push(`INSTITUTIONAL:BLOCKED(${instCheck.reason})`);
+    else gateTrace.push('INSTITUTIONAL:PASS');
+    gateTrace.push(`PUBLISH_GATE:${publishGate.eligible ? `PASS(${publishGate.gate_name ?? 'none'})` : `BLOCKED(${publishGate.reasons.join(',')})`}`);
+    if (demotion.reasons.length > 0) gateTrace.push(`DEMOTION:${demotion.reasons.join(',')}`);
+
+    // Reason summary
+    let reasonSummary: string;
+    if (eligible && publishGate.gate_name === 'multi') {
+      reasonSummary = 'ENTRÓ POR: multi_source';
+    } else if (eligible && publishGate.gate_name === 'single') {
+      reasonSummary = `ENTRÓ POR: single_source score=${eventImportanceScore}`;
+    } else if (!eligible) {
+      reasonSummary = `BLOQUEADO POR: ${reasons.join(', ')}`;
+    } else {
+      reasonSummary = 'ENTRÓ POR: gate_disabled';
+    }
 
     for (const r of reasons) {
       ineligibleReasons[r] = (ineligibleReasons[r] ?? 0) + 1;
@@ -346,6 +431,9 @@ export function buildDoctorOutput(
     binsArticles[artBin] = (binsArticles[artBin] ?? 0) + 1;
     const srcBin = bucketKey(numSources);
     binsSources[srcBin] = (binsSources[srcBin] ?? 0) + 1;
+    binsTopics[eventTopicKey] = (binsTopics[eventTopicKey] ?? 0) + 1;
+    const deskBin = repDesk ?? 'unknown';
+    binsDesks[deskBin] = (binsDesks[deskBin] ?? 0) + 1;
 
     // ── Build event record ──
     const record: any = {
@@ -374,13 +462,24 @@ export function buildDoctorOutput(
           url: repArt.url,
           mediaKey: repArt.media?.mediaKey ?? null,
           content_type: repArt.contentType ?? null,
+          page_type: (repArt.contentType === 'institutional_static' || repArt.contentType === 'institutional') ? repArt.contentType : 'ARTICLE',
+          desk: repDesk,
           text_len: repArt.textContentLen ?? 0,
           title: repArt.title,
         } : null,
+        topic_key: eventTopicKey,
+        topic_confidence: Math.round(eventTopicConfidence * 1000) / 1000,
+        importance_score: eventImportanceScore,
       },
       eligibility: {
         feed_eligible: eligible,
         reasons,
+        gate_trace: gateTrace,
+        reason_summary: reasonSummary,
+      },
+      demotion: {
+        multiplier: demotion.multiplier,
+        reasons: demotion.reasons,
       },
       coherence_gate: {
         status: coherenceStatus,
@@ -497,6 +596,40 @@ export function buildDoctorOutput(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
+    bins_topics: Object.entries(binsTopics)
+      .sort((a, b) => b[1] - a[1])
+      .map(([topic, count]) => ({ topic, count })),
+    bins_desks: Object.entries(binsDesks)
+      .sort((a, b) => b[1] - a[1])
+      .map(([desk, count]) => ({ desk, count })),
+    single_source_blocked_by_reason: Object.entries(singleSourceBlockedByReason)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([reason, count]) => ({ reason, count })),
+    top_demotion_reasons: Object.entries(demotionReasonCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([reason, count]) => ({ reason, count })),
+    what_to_fix_next: (() => {
+      // Heuristic: suggest the highest-impact fix
+      const suggestions: string[] = [];
+      const totalEvents = events.length;
+      if (totalEvents === 0) return suggestions;
+      const singleSourcePct = (binsSources['1'] ?? 0) / totalEvents;
+      if (singleSourcePct > 0.5) suggestions.push('HIGH_SINGLE_SOURCE_RATIO: >50% events have 1 source — improve crawl breadth');
+      const blockedEntries = Object.entries(singleSourceBlockedByReason).sort((a, b) => b[1] - a[1]);
+      if (blockedEntries.length > 0) {
+        suggestions.push(`TOP_SINGLE_BLOCK: ${blockedEntries[0][0]} (${blockedEntries[0][1]} events)`);
+      }
+      const topDemotion = Object.entries(demotionReasonCounts).sort((a, b) => b[1] - a[1]);
+      if (topDemotion.length > 0) {
+        suggestions.push(`TOP_DEMOTION: ${topDemotion[0][0]} (${topDemotion[0][1]} events)`);
+      }
+      if (splitProxyCount > 0) {
+        suggestions.push(`SPLIT_PROXY: ${splitProxyCount} events with mixed topics — review linker thresholds`);
+      }
+      return suggestions;
+    })(),
     linker_accounting: (() => {
       let mergesAttempted = 0;
       let mergesApplied = 0;

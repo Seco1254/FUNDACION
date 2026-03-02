@@ -2,7 +2,7 @@ import { FeedRepository } from '../repo/feed-repo.js';
 import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
-import { evaluatePublishGate, computeImportanceScore } from '../../../core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
@@ -268,7 +268,14 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
  * Apply the publish gate to a feed item.
  * Returns the gate result and optionally mutates item to 'failed' status.
  */
-function applyPublishGate(item: FeedItem, packet: any, row?: any, importanceScore?: number): PublishGateResult {
+function applyPublishGate(
+  item: FeedItem,
+  packet: any,
+  row?: any,
+  importanceScore?: number,
+  topicKey?: string | null,
+  topicConfidence?: number | null,
+): PublishGateResult {
   const ai = packet?.ai_overview;
   const hasDisclaimer = typeof ai?.why === 'string'
     && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
@@ -298,6 +305,9 @@ function applyPublishGate(item: FeedItem, packet: any, row?: any, importanceScor
     page_types: pageTypes,
     title_alignment: titleAlignment,
     importance_score: importanceScore ?? null,
+    topic_key: topicKey ?? null,
+    topic_confidence: topicConfidence ?? null,
+    allowed_topics: FEED_ALLOWED_TOPICS.length > 0 ? FEED_ALLOWED_TOPICS : undefined,
   });
 
   if (!gateResult.eligible) {
@@ -438,7 +448,19 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
   });
   item.importance_score = importanceScore;
 
-  const gate = applyPublishGate(item, packet, row, importanceScore);
+  const gate = applyPublishGate(item, packet, row, importanceScore, topicKey, topicConfidence);
+
+  // Apply demotion multiplier (affects ranking, not eligibility)
+  if (gate.eligible) {
+    const demotion = computeDemotionMultiplier({
+      unique_sources_count: item.unique_sources_count ?? 1,
+      topic_confidence: topicConfidence,
+      topic_key: topicKey,
+      total_usable_text_len: item.total_usable_text_len ?? 0,
+    });
+    item.demotion_multiplier = demotion.multiplier;
+    item.demotion_reasons = demotion.reasons;
+  }
 
   // Fallback overview for non-ready items that pass the gate
   if (gate.eligible && item.overview_status !== 'ready' && !item.ai_overview) {

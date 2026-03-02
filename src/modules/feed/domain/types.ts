@@ -44,6 +44,8 @@ export interface FeedItem {
   topic_key?: string;
   topic_confidence?: number;
   importance_score?: number;
+  demotion_multiplier?: number;
+  demotion_reasons?: string[];
 }
 
 export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';
