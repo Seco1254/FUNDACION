@@ -559,3 +559,53 @@ describe('aggregate split_proxy_count and hard_negative_reasons', () => {
     expect(deskEntry.count).toBe(2);
   });
 });
+
+// ── linker_accounting in aggregate ────────────────────────────────────
+
+describe('aggregate linker_accounting', () => {
+  it('includes linker_accounting with zero counters when no logs', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.linker_accounting).toBeDefined();
+    expect(agg.linker_accounting.merges_attempted).toBe(0);
+    expect(agg.linker_accounting.merges_applied).toBe(0);
+    expect(agg.linker_accounting.hard_negative_blocks_total).toBe(0);
+  });
+
+  it('counts merges_applied from MERGED_EVENT_V2 logs', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MERGED_EVENT_V2', data: { from_event_id: 'evt-2', to_event_id: 'evt-1' } },
+      { entityId: 'evt-1', action: 'MERGED_EVENT_V2', data: { from_event_id: 'evt-3', to_event_id: 'evt-1' } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.linker_accounting.merges_applied).toBe(2);
+  });
+
+  it('counts merges_attempted from linking decisions', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'LINKED_EXISTING_V2', data: {} },
+      { entityId: 'evt-1', action: 'CREATED_EVENT_V2', data: {} },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.linker_accounting.merges_attempted).toBe(2);
+  });
+
+  it('counts hard_negative_blocks_total and merge_block_reasons', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['DESK_MISMATCH'] } },
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['TOPIC_MISMATCH_HIGH_CONF', 'DESK_MISMATCH'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.linker_accounting.hard_negative_blocks_total).toBe(2);
+    expect(agg.linker_accounting.merge_block_reasons.length).toBeGreaterThan(0);
+    const deskBlock = agg.linker_accounting.merge_block_reasons.find((r: any) => r.reason === 'DESK_MISMATCH');
+    expect(deskBlock).toBeDefined();
+    expect(deskBlock.count).toBe(2);
+  });
+});

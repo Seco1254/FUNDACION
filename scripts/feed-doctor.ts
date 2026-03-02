@@ -163,6 +163,7 @@ export function buildDoctorOutput(
       GATE_SINGLE_TEXT: process.env.GATE_SINGLE_TEXT ?? '800',
       THETA_AUTO_LINK: process.env.THETA_AUTO_LINK ?? '0.45',
       THETA_MAYBE_LINK: process.env.THETA_MAYBE_LINK ?? '0.30',
+      FEED_SPLIT_PROXY_QUARANTINE_ENABLED: process.env.FEED_SPLIT_PROXY_QUARANTINE_ENABLED ?? '1',
     },
     params: {
       limit: config.limit,
@@ -496,6 +497,38 @@ export function buildDoctorOutput(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
+    linker_accounting: (() => {
+      let mergesAttempted = 0;
+      let mergesApplied = 0;
+      let hardNegativeBlocksTotal = 0;
+      const mergeBlockReasons: Record<string, number> = {};
+      for (const log of linkerLogs) {
+        if (log.action === 'MERGED_EVENT_V2' || log.action === 'MERGED_EVENT') {
+          mergesApplied++;
+        }
+        if (log.action === 'LINKED_EXISTING_V2' || log.action === 'CREATED_EVENT_V2') {
+          mergesAttempted++;
+        }
+        if (log.action === 'HARD_NEGATIVE_BLOCK') {
+          hardNegativeBlocksTotal++;
+          const reasons = Array.isArray(log.data?.reasons)
+            ? log.data.reasons
+            : (log.data?.reason ? [log.data.reason] : []);
+          for (const r of reasons) {
+            mergeBlockReasons[r] = (mergeBlockReasons[r] ?? 0) + 1;
+          }
+        }
+      }
+      return {
+        merges_attempted: mergesAttempted,
+        merges_applied: mergesApplied,
+        hard_negative_blocks_total: hardNegativeBlocksTotal,
+        merge_block_reasons: Object.entries(mergeBlockReasons)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10)
+          .map(([reason, count]) => ({ reason, count })),
+      };
+    })(),
   };
 
   // Page-type blocking summary (from audit logs)
