@@ -715,4 +715,96 @@ describe('FeedService', () => {
       expect(polItem!.importance_score).toBeGreaterThan(otrosItem!.importance_score!);
     });
   });
+
+  describe('split proxy quarantine', () => {
+    it('quarantines event with fragmented topics (3+ articles, mixed desks/topics)', async () => {
+      const row = makeMockRow({
+        id: 'evt-mixed',
+        eventArticles: [
+          {
+            article: {
+              id: 'a1', url: 'https://a.com/politica/1', title: 'Gobierno reforma congreso senado presidente',
+              media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' },
+              textContentLen: 1500, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'a2', url: 'https://b.com/deportes/1', title: 'Selección fútbol gol mundial copa eliminatoria',
+              media: { id: 'm2', mediaKey: 'semana', name: 'Semana' },
+              textContentLen: 1200, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'a3', url: 'https://c.com/salud/1', title: 'Hospital médico vacuna paciente salud enfermedad',
+              media: { id: 'm3', mediaKey: 'rcn', name: 'RCN' },
+              textContentLen: 1100, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+        versions: [{ id: 'ver-1', headline: 'Mixed event', packetJson: {} }],
+      });
+
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+
+      // Event should be quarantined (not in feed)
+      expect(feed.items.find((i) => i.event_id === 'evt-mixed')).toBeUndefined();
+    });
+
+    it('does NOT quarantine cohesive multi-article event', async () => {
+      const row = makeMockRow({
+        id: 'evt-cohesive',
+        eventArticles: [
+          {
+            article: {
+              id: 'a1', url: 'https://a.com/politica/1', title: 'Gobierno reforma congreso senado presidente',
+              media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' },
+              textContentLen: 1500, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'a2', url: 'https://b.com/politica/2', title: 'Presidente defiende la reforma tributaria del congreso',
+              media: { id: 'm2', mediaKey: 'semana', name: 'Semana' },
+              textContentLen: 1200, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'a3', url: 'https://c.com/politica/3', title: 'Congreso aprueba reforma tributaria gobierno senado',
+              media: { id: 'm3', mediaKey: 'rcn', name: 'RCN' },
+              textContentLen: 1100, textContentSource: 'body', usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+        versions: [{ id: 'ver-1', headline: 'Reforma tributaria', packetJson: {} }],
+      });
+
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+
+      // Event should NOT be quarantined
+      expect(feed.items.find((i) => i.event_id === 'evt-cohesive')).toBeDefined();
+    });
+
+    it('does NOT quarantine events with fewer than 3 articles', async () => {
+      // Default makeMockRow has 2 articles — should not trigger split proxy
+      const row = makeMockRow({ id: 'evt-2art' });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+
+      expect(feed.items.find((i) => i.event_id === 'evt-2art')).toBeDefined();
+    });
+  });
 });

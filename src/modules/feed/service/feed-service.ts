@@ -5,6 +5,7 @@ import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 import { evaluatePublishGate, computeImportanceScore } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
+import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
 import { logger } from '../../../core/logging/logger.js';
 
 // ── Topic filter config ──────────────────────────────────────────────
@@ -13,6 +14,9 @@ const FEED_ALLOWED_TOPICS: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+// ── Split proxy quarantine config ────────────────────────────────────
+const FEED_SPLIT_PROXY_QUARANTINE_ENABLED = process.env.FEED_SPLIT_PROXY_QUARANTINE_ENABLED !== '0';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -348,6 +352,30 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
       cover_image_url: null,
     };
     return { item: minimalItem, eligible: false, gateReasons: [institutionalCheck.reason] };
+  }
+
+  // ── Split proxy quarantine gate ─────────────────────────────────
+  if (FEED_SPLIT_PROXY_QUARANTINE_ENABLED) {
+    const splitArticles = (row.eventArticles ?? []).map((ea: any) => ({
+      title: ea.article?.title ?? null,
+      url: ea.article?.url ?? null,
+      contentType: ea.article?.contentType ?? null,
+    }));
+    const splitResult = detectIntraSplitProxy(splitArticles);
+    if (splitResult.split_proxy) {
+      const latestV = row.versions?.[0] ?? null;
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: latestV?.headline ?? null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+        overview_status: 'failed',
+        why_no_overview: `Split proxy quarantine: ${splitResult.reasons.join(', ')}`,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['SPLIT_PROXY_QUARANTINE', ...splitResult.reasons] };
+    }
   }
 
   const latestVersion = row.versions?.[0] ?? null;
