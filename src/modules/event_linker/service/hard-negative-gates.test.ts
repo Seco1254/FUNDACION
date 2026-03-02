@@ -5,6 +5,7 @@ import {
   checkTitleContradictionPair,
   jaccardSets,
   extractDesk,
+  extractDeskDetailed,
   desksCompatible,
   shouldBlockAutoLink,
 } from './hard-negative-gates.js';
@@ -193,6 +194,124 @@ describe('extractDesk', () => {
 
   it('extracts first recognized segment from deep path', () => {
     expect(extractDesk('https://www.eltiempo.com/deportes/futbol/liga-betplay-12345')).toBe('DEPORTES');
+  });
+
+  // ── eltiempo.com additional paths ──
+
+  it('extracts CRIMEN from /justicia/ (eltiempo)', () => {
+    expect(extractDesk('https://www.eltiempo.com/justicia/investigacion-fiscal-12345')).toBe('CRIMEN');
+  });
+
+  it('extracts MEDIO_AMBIENTE from /medio-ambiente/ (eltiempo)', () => {
+    expect(extractDesk('https://www.eltiempo.com/medio-ambiente/inundaciones-12345')).toBe('MEDIO_AMBIENTE');
+  });
+
+  it('extracts ENTRETENIMIENTO from /cultura/ (eltiempo)', () => {
+    expect(extractDesk('https://www.eltiempo.com/cultura/teatro-12345')).toBe('ENTRETENIMIENTO');
+  });
+
+  // ── razonpublica.com ──
+
+  it('maps razonpublica article slug to OPINION (default)', () => {
+    expect(extractDesk('https://razonpublica.com/reforma-pensional-impacto-trabajadores-colombianos/')).toBe('OPINION');
+  });
+
+  it('maps razonpublica /categoria/temas/politica-y-gobierno/ to POLITICA', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/politica-y-gobierno/')).toBe('POLITICA');
+  });
+
+  it('maps razonpublica /categoria/temas/economia-y-sociedad/ to ECONOMIA', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/economia-y-sociedad/')).toBe('ECONOMIA');
+  });
+
+  it('maps razonpublica /categoria/temas/conflicto-drogas-y-paz/ to CRIMEN', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/conflicto-drogas-y-paz/')).toBe('CRIMEN');
+  });
+
+  it('maps razonpublica /categoria/temas/medio-ambiente/ to MEDIO_AMBIENTE', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/medio-ambiente/')).toBe('MEDIO_AMBIENTE');
+  });
+
+  it('maps razonpublica /categoria/temas/internacional/ to MUNDO', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/internacional/')).toBe('MUNDO');
+  });
+
+  it('maps razonpublica /categoria/temas/regiones/ to COLOMBIA', () => {
+    expect(extractDesk('https://razonpublica.com/categoria/temas/regiones/')).toBe('COLOMBIA');
+  });
+
+  it('maps razonpublica with www prefix to OPINION', () => {
+    expect(extractDesk('https://www.razonpublica.com/crisis-climatica-colombia/')).toBe('OPINION');
+  });
+
+  // ── consonante.org ──
+
+  it('maps consonante /noticia/acueducto-... to MEDIO_AMBIENTE (keyword: acueducto)', () => {
+    expect(extractDesk('https://consonante.org/noticia/acueducto-comunitario-tado-choco-resistencia/')).toBe('MEDIO_AMBIENTE');
+  });
+
+  it('maps consonante /noticia/ with violence keyword to CRIMEN', () => {
+    expect(extractDesk('https://consonante.org/noticia/eln-ataque-comunidad-rural/')).toBe('CRIMEN');
+  });
+
+  it('maps consonante /noticia/ with government keyword to POLITICA', () => {
+    expect(extractDesk('https://consonante.org/noticia/gobierno-alcalde-carmen-atrato/')).toBe('POLITICA');
+  });
+
+  it('maps consonante /noticia/ generic slug to COLOMBIA (default)', () => {
+    expect(extractDesk('https://consonante.org/noticia/jovenes-carmen-atrato-rescatan-tradiciones-ancestrales/')).toBe('COLOMBIA');
+  });
+
+  it('maps consonante /cat/ to COLOMBIA', () => {
+    expect(extractDesk('https://consonante.org/cat/carmen-de-atrato/')).toBe('COLOMBIA');
+  });
+
+  it('maps consonante root to null', () => {
+    expect(extractDesk('https://consonante.org/')).toBeNull();
+  });
+
+  // ── Edge cases ──
+
+  it('handles URL with querystring and hash (strips them)', () => {
+    expect(extractDesk('https://www.eltiempo.com/deportes/nota-123?ref=home#top')).toBe('DEPORTES');
+  });
+
+  it('handles URL with trailing slashes', () => {
+    expect(extractDesk('https://www.eltiempo.com/economia///')).toBe('ECONOMIA');
+  });
+});
+
+// ── extractDeskDetailed ─────────────────────────────────────────
+
+describe('extractDeskDetailed', () => {
+  it('returns url_segment source for eltiempo', () => {
+    const r = extractDeskDetailed('https://www.eltiempo.com/politica/decreto-123');
+    expect(r.desk).toBe('POLITICA');
+    expect(r.desk_source).toBe('url_segment');
+  });
+
+  it('returns domain_rule source for razonpublica', () => {
+    const r = extractDeskDetailed('https://razonpublica.com/articulo-de-opinion/');
+    expect(r.desk).toBe('OPINION');
+    expect(r.desk_source).toBe('domain_rule');
+  });
+
+  it('returns domain_rule source for consonante', () => {
+    const r = extractDeskDetailed('https://consonante.org/noticia/mujeres-lideresas/');
+    expect(r.desk).toBe('COLOMBIA');
+    expect(r.desk_source).toBe('domain_rule');
+  });
+
+  it('returns none source when no desk found', () => {
+    const r = extractDeskDetailed('https://example.com/random/page');
+    expect(r.desk).toBeNull();
+    expect(r.desk_source).toBe('none');
+  });
+
+  it('returns none source for null input', () => {
+    const r = extractDeskDetailed(null);
+    expect(r.desk).toBeNull();
+    expect(r.desk_source).toBe('none');
   });
 });
 

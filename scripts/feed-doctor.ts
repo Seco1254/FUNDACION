@@ -33,7 +33,7 @@ import { isInstitutionalEvent } from '../src/modules/feed/service/feed-service.j
 import { computeEventScore, type EventForScoring } from '../src/modules/ranking/service/event-scorer.js';
 import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
 import { aggregateEventTopic } from '../src/modules/topics/service/topic-heuristic.js';
-import { extractDesk } from '../src/modules/event_linker/service/hard-negative-gates.js';
+import { extractDeskDetailed } from '../src/modules/event_linker/service/hard-negative-gates.js';
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -210,6 +210,9 @@ export function buildDoctorOutput(
   const binsDesks: Record<string, number> = {};
   const singleSourceBlockedByReason: Record<string, number> = {};
   const demotionReasonCounts: Record<string, number> = {};
+  const binsDeskSource: Record<string, number> = {};
+  let lowTopicConfidenceCount = 0;
+  let deskNullCount = 0;
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -304,8 +307,10 @@ export function buildDoctorOutput(
     const eventTopicKey = topicResult.topic_key;
     const eventTopicConfidence = topicResult.topic_confidence;
 
-    // Desk extraction from representative article
-    const repDesk = repArt ? extractDesk(repArt.url) : null;
+    // Desk extraction from representative article (with source tracking)
+    const repDeskResult = repArt ? extractDeskDetailed(repArt.url) : { desk: null, desk_source: 'none' as const };
+    const repDesk = repDeskResult.desk;
+    const repDeskSource = repDeskResult.desk_source;
 
     // Importance score (v2)
     const hoursAge = ev.publishedAt
@@ -434,6 +439,9 @@ export function buildDoctorOutput(
     binsTopics[eventTopicKey] = (binsTopics[eventTopicKey] ?? 0) + 1;
     const deskBin = repDesk ?? 'unknown';
     binsDesks[deskBin] = (binsDesks[deskBin] ?? 0) + 1;
+    binsDeskSource[repDeskSource] = (binsDeskSource[repDeskSource] ?? 0) + 1;
+    if (eventTopicConfidence < 0.6) lowTopicConfidenceCount++;
+    if (repDesk === null) deskNullCount++;
 
     // ── Build event record ──
     const record: any = {
@@ -464,11 +472,14 @@ export function buildDoctorOutput(
           content_type: repArt.contentType ?? null,
           page_type: (repArt.contentType === 'institutional_static' || repArt.contentType === 'institutional') ? repArt.contentType : 'ARTICLE',
           desk: repDesk,
+          desk_source: repDeskSource,
           text_len: repArt.textContentLen ?? 0,
           title: repArt.title,
         } : null,
         topic_key: eventTopicKey,
         topic_confidence: Math.round(eventTopicConfidence * 1000) / 1000,
+        topic_signals: topicResult.topic_signals ?? [],
+        topic_reason: topicResult.topic_reason ?? null,
         importance_score: eventImportanceScore,
       },
       eligibility: {
@@ -610,6 +621,11 @@ export function buildDoctorOutput(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
+    bins_desk_source: Object.entries(binsDeskSource)
+      .sort((a, b) => b[1] - a[1])
+      .map(([source, count]) => ({ source, count })),
+    low_topic_confidence_count: lowTopicConfidenceCount,
+    desk_null_count: deskNullCount,
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];

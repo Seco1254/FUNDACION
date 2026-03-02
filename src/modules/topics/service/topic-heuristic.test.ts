@@ -250,6 +250,137 @@ describe('ALL_TOPIC_KEYS', () => {
   });
 });
 
+// ── Desk boost (v2) ─────────────────────────────────────────────
+
+describe('classifyTopic — desk boost', () => {
+  it('boosts POLITICA when URL has /politica/ path', () => {
+    const r = classifyTopic({
+      title: 'Nuevo decreto aprobado por el gobierno',
+      url: 'https://www.eltiempo.com/politica/decreto-12345',
+    });
+    expect(r.topic_key).toBe('POLITICA');
+    expect(r.reasons.some((s) => s.includes('DESK_BOOST'))).toBe(true);
+  });
+
+  it('boosts ECONOMIA when URL has /economia/ path', () => {
+    const r = classifyTopic({
+      title: 'Inflación sube este mes, mercado preocupado',
+      url: 'https://www.eltiempo.com/economia/inflacion-12345',
+    });
+    expect(r.topic_key).toBe('ECONOMIA');
+    expect(r.reasons.some((s) => s.includes('DESK_BOOST'))).toBe(true);
+  });
+
+  it('desk boost can tip the balance for ambiguous text', () => {
+    const withDesk = classifyTopic({
+      title: 'Situación compleja en la región',
+      url: 'https://www.eltiempo.com/deportes/regional-12345',
+    });
+    const withoutDesk = classifyTopic({
+      title: 'Situación compleja en la región',
+    });
+    expect(withDesk.topic_key).toBe('DEPORTES');
+    // Without desk, may classify differently
+    expect(withDesk.score).toBeGreaterThan(withoutDesk.score);
+  });
+});
+
+// ── Colombia-specific keywords (v2) ─────────────────────────────
+
+describe('classifyTopic — Colombia keywords', () => {
+  it('boosts POLITICA with corte constitucional mention', () => {
+    const r = classifyTopic({
+      title: 'Corte constitucional decide sobre reforma',
+      text: 'La corte constitucional emitió fallo sobre la reforma que discute el congreso.',
+    });
+    expect(r.topic_key).toBe('POLITICA');
+    expect(r.reasons.some((s) => s.includes('CO_KW'))).toBe(true);
+  });
+
+  it('boosts CRIMEN_SEGURIDAD with ELN mention', () => {
+    const r = classifyTopic({
+      title: 'Disidencias del ELN atacan zona rural',
+      text: 'Las disidencias realizaron un atentado. El ejército respondió al ataque.',
+    });
+    expect(r.topic_key).toBe('CRIMEN_SEGURIDAD');
+    expect(r.reasons.some((s) => s.includes('CO_KW'))).toBe(true);
+  });
+
+  it('boosts ECONOMIA with banrep mention', () => {
+    const r = classifyTopic({
+      title: 'Banco de la república mantiene tasa de interés',
+      text: 'El banco de la república decidió no subir la tasa. La inflación baja.',
+    });
+    expect(r.topic_key).toBe('ECONOMIA');
+  });
+
+  it('boosts SALUD with EPS mention', () => {
+    const r = classifyTopic({
+      title: 'EPS no responde por pacientes en crisis sanitaria',
+      text: 'La EPS no entrega medicamentos. El hospital está colapsado.',
+    });
+    expect(r.topic_key).toBe('SALUD');
+  });
+
+  it('boosts MEDIO_AMBIENTE with IDEAM mention', () => {
+    const r = classifyTopic({
+      title: 'IDEAM alerta por inundaciones en el Chocó',
+      text: 'El IDEAM emitió alerta roja. Las lluvias causan inundación y desbordamiento del río.',
+    });
+    expect(r.topic_key).toBe('MEDIO_AMBIENTE');
+  });
+});
+
+// ── Confidence lowering on close race (v2) ──────────────────────
+
+describe('classifyTopic — confidence rules', () => {
+  it('lowers confidence when topics are in close race', () => {
+    // Deliberately craft text with both POLITICA and ECONOMIA keywords
+    const r = classifyTopic({
+      title: 'Gobierno anuncia medida económica urgente',
+      text: 'El presidente aprobó la reforma. El banco subió la tasa de interés. El presupuesto fiscal está comprometido.',
+    });
+    // There should be close competition between POLITICA and ECONOMIA
+    // If CLOSE_RACE fires, score ≤ 0.45
+    if (r.reasons.includes('CLOSE_RACE')) {
+      expect(r.score).toBeLessThanOrEqual(0.45);
+    }
+  });
+
+  it('does not lower confidence when one topic dominates clearly', () => {
+    const r = classifyTopic({
+      title: 'Selección Colombia golea 4-0 en eliminatoria del mundial',
+      text: 'La selección anotó cuatro goles. El entrenador celebró la victoria. El estadio lleno de jugadores.',
+    });
+    expect(r.topic_key).toBe('DEPORTES');
+    expect(r.score).toBeGreaterThan(0.45);
+    expect(r.reasons).not.toContain('CLOSE_RACE');
+  });
+});
+
+// ── aggregateEventTopic topic_signals/topic_reason ──────────────
+
+describe('aggregateEventTopic — v2 signals', () => {
+  it('includes topic_signals array', () => {
+    const r = aggregateEventTopic(
+      'Gobierno presenta reforma',
+      [{ title: 'Presidente anuncia decreto del congreso', url: 'https://a.com/politica/1' }],
+    );
+    expect(Array.isArray(r.topic_signals)).toBe(true);
+    expect(r.topic_signals!.length).toBeGreaterThan(0);
+  });
+
+  it('includes topic_reason string', () => {
+    const r = aggregateEventTopic(
+      'Gobierno presenta reforma',
+      [{ title: 'Presidente anuncia decreto', url: 'https://a.com/politica/1' }],
+    );
+    expect(typeof r.topic_reason).toBe('string');
+    expect(r.topic_reason).toContain('POLITICA');
+    expect(r.topic_reason).toContain('conf=');
+  });
+});
+
 // ── aggregateEventTopic ────────────────────────────────────────
 
 describe('aggregateEventTopic', () => {

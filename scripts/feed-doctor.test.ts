@@ -560,6 +560,96 @@ describe('aggregate split_proxy_count and hard_negative_reasons', () => {
   });
 });
 
+// ── Feed Doctor v2: desk_source, topic_signals, topic_reason ──────────
+
+describe('event record v2 observability', () => {
+  it('includes desk_source in representative_article', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://eltiempo.com/politica/reforma-123' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const rep = output[1].routing.representative_article;
+    expect(rep.desk_source).toBe('url_segment');
+  });
+
+  it('desk_source is domain_rule for razonpublica', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://razonpublica.com/articulo-opinion/' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const rep = output[1].routing.representative_article;
+    expect(rep.desk).toBe('OPINION');
+    expect(rep.desk_source).toBe('domain_rule');
+  });
+
+  it('includes topic_signals in routing', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ title: 'Gobierno reforma congreso senado presidente decreto', url: 'https://a.com/politica/1' }),
+      }],
+      versions: [{ id: 'v1', headline: 'Gobierno reforma congreso', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    expect(Array.isArray(output[1].routing.topic_signals)).toBe(true);
+  });
+
+  it('includes topic_reason in routing', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    expect(typeof output[1].routing.topic_reason).toBe('string');
+  });
+});
+
+// ── Feed Doctor v2: aggregate observability ───────────────────────────
+
+describe('aggregate v2 observability', () => {
+  it('includes bins_desk_source in aggregate', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://eltiempo.com/politica/decreto-123' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.bins_desk_source)).toBe(true);
+    expect(agg.bins_desk_source.length).toBeGreaterThan(0);
+    expect(agg.bins_desk_source[0]).toHaveProperty('source');
+    expect(agg.bins_desk_source[0]).toHaveProperty('count');
+  });
+
+  it('includes low_topic_confidence_count in aggregate', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(typeof agg.low_topic_confidence_count).toBe('number');
+  });
+
+  it('includes desk_null_count in aggregate', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(typeof agg.desk_null_count).toBe('number');
+  });
+
+  it('counts desk_null_count correctly for URLs without desk', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://example.com/random-page' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.desk_null_count).toBe(1);
+  });
+});
+
 // ── Feed Doctor v2: per-event fields ──────────────────────────────────
 
 describe('event record v2 fields', () => {

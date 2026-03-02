@@ -98,6 +98,54 @@ const TOPIC_KEYWORDS: Record<string, string[]> = {
   ],
 };
 
+// ── Colombia-specific high-confidence keywords ──────────────────
+// Presence of these yields a +0.15 boost per hit (capped).
+const COLOMBIA_BOOST_KEYWORDS: Record<string, string[]> = {
+  POLITICA: [
+    'registraduría', 'fiscal general', 'corte constitucional', 'corte suprema',
+    'procuraduría', 'contraloría', 'ministerio', 'cámara de representantes',
+    'consejo de estado', 'jep',
+  ],
+  CRIMEN_SEGURIDAD: [
+    'disidencias', 'eln', 'bacrim', 'explosivos', 'minas antipersona',
+    'desmovilizado', 'extradición', 'dea', 'incautación', 'cartel',
+  ],
+  ECONOMIA: [
+    'banrep', 'banco de la república', 'tasa de interés', 'dane',
+    'tasa de cambio', 'superfinanciera', 'dian', 'iva',
+  ],
+  DEPORTES: [
+    'liga betplay', 'dimayor', 'millonarios', 'nacional', 'américa de cali',
+    'junior', 'santa fe', 'cali', 'selección colombia',
+  ],
+  SALUD: [
+    'eps', 'minsalud', 'supersalud', 'invima', 'sisben', 'ips',
+  ],
+  MEDIO_AMBIENTE: [
+    'ideam', 'anla', 'parques nacionales', 'car', 'amazonia',
+    'pacífico', 'corponariño', 'corpoboyacá',
+  ],
+};
+
+// ── Desk-to-topic mapping for desk boost ─────────────────────────
+const DESK_TOPIC_MAP: Record<string, string> = {
+  POLITICA: 'POLITICA',
+  ECONOMIA: 'ECONOMIA',
+  DEPORTES: 'DEPORTES',
+  SALUD: 'SALUD',
+  MEDIO_AMBIENTE: 'MEDIO_AMBIENTE',
+  OPINION: 'OPINION',
+  CRIMEN: 'CRIMEN_SEGURIDAD',
+  BOGOTA: 'POLITICA',
+  COLOMBIA: 'POLITICA',
+  MUNDO: 'POLITICA',
+  ENTRETENIMIENTO: 'ENTRETENIMIENTO',
+  TECNOLOGIA: 'ECONOMIA',
+};
+
+const DESK_BOOST = 0.20;
+const COLOMBIA_KEYWORD_BOOST = 0.15;
+
 // ── URL section hints (path segment → topic bonus) ──────────────
 
 const URL_SECTION_HINTS: Record<string, string> = {
@@ -122,6 +170,35 @@ const URL_SECTION_HINTS: Record<string, string> = {
   'opinion': 'OPINION',
   'columnistas': 'OPINION',
 };
+
+// ── Lightweight desk extraction for topic boost (avoids cross-module dep) ──
+
+const DESK_HINTS: Record<string, string> = {
+  'politica': 'POLITICA', 'gobierno': 'POLITICA',
+  'economia': 'ECONOMIA', 'finanzas': 'ECONOMIA', 'negocios': 'ECONOMIA',
+  'deportes': 'DEPORTES', 'deporte': 'DEPORTES', 'futbol': 'DEPORTES',
+  'salud': 'SALUD', 'vida': 'SALUD',
+  'seguridad': 'CRIMEN', 'justicia': 'CRIMEN', 'judicial': 'CRIMEN',
+  'crimen': 'CRIMEN', 'unidad-investigativa': 'CRIMEN',
+  'bogota': 'BOGOTA', 'colombia': 'COLOMBIA',
+  'mundo': 'MUNDO', 'internacional': 'MUNDO',
+  'medio-ambiente': 'MEDIO_AMBIENTE', 'ambiente': 'MEDIO_AMBIENTE',
+  'entretenimiento': 'ENTRETENIMIENTO', 'cultura': 'ENTRETENIMIENTO',
+  'opinion': 'OPINION', 'columnistas': 'OPINION',
+};
+
+function extractDeskForTopic(url: string): string | null {
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    for (const seg of path.split('/').filter(Boolean)) {
+      const desk = DESK_HINTS[seg];
+      if (desk) return desk;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // ── Normalizer ─────────────────────────────────────────────────
 
@@ -195,6 +272,30 @@ export function classifyTopic(input: HeuristicTopicInput): HeuristicTopicResult 
     reasons.push('CONTENT_TYPE:opinion');
   }
 
+  // 4. Desk boost: if URL yields a desk, boost the corresponding topic
+  if (input.url) {
+    const desk = extractDeskForTopic(input.url);
+    if (desk) {
+      const topicForDesk = DESK_TOPIC_MAP[desk];
+      if (topicForDesk) {
+        scores.set(topicForDesk, (scores.get(topicForDesk) ?? 0) + DESK_BOOST);
+        reasons.push(`DESK_BOOST:${desk}→${topicForDesk}`);
+      }
+    }
+  }
+
+  // 5. Colombia-specific high-confidence keywords
+  for (const [topic, keywords] of Object.entries(COLOMBIA_BOOST_KEYWORDS)) {
+    for (const kw of keywords) {
+      const kwNorm = normalize(kw);
+      if (text.includes(kwNorm)) {
+        scores.set(topic, (scores.get(topic) ?? 0) + COLOMBIA_KEYWORD_BOOST);
+        reasons.push(`CO_KW:${kw}→${topic}`);
+        break; // one boost per topic from Colombia keywords
+      }
+    }
+  }
+
   // Pick the best topic
   const sorted = Array.from(scores.entries())
     .filter(([, w]) => w > 0)
@@ -202,8 +303,15 @@ export function classifyTopic(input: HeuristicTopicInput): HeuristicTopicResult 
 
   if (sorted.length > 0) {
     const [topKey, topWeight] = sorted[0];
-    // Clamp score to 0..1
-    const score = Math.min(topWeight, 1.0);
+    // Confidence adjustment: if 2nd-place is close, lower confidence
+    const runnerUp = sorted.length > 1 ? sorted[1][1] : 0;
+    const gap = topWeight - runnerUp;
+    let score = Math.min(topWeight, 1.0);
+    if (gap < 0.05 && sorted.length > 1) {
+      // Close race — lower confidence
+      score = Math.min(score, 0.45);
+      reasons.push('CLOSE_RACE');
+    }
     reasons.push(`KEYWORD_MATCH:${topKey}`);
     return { topic_key: topKey, score: Math.round(score * 1000) / 1000, reasons };
   }
@@ -277,6 +385,10 @@ export interface EventTopicResult {
   topic_confidence: number;  // 0..1
   votes: ArticleTopicVote[];
   reasons: string[];
+  /** Top signals that drove the classification (max 5), for observability. */
+  topic_signals?: string[];
+  /** Short human-readable explanation of the classification. */
+  topic_reason?: string;
 }
 
 export interface EventArticleInput {
@@ -364,11 +476,33 @@ export function aggregateEventTopic(
 
   reasons.push(`WINNER:${winnerKey}(${winnerWeight.toFixed(3)}/${totalWeight.toFixed(3)})`);
 
+  // Build topic_signals: collect unique signal types from headline + article reasons
+  const allSignals: string[] = [];
+  for (const r of headlineResult.reasons) {
+    if (r.startsWith('DESK_BOOST:') || r.startsWith('CO_KW:') || r.startsWith('URL_SECTION:') || r.startsWith('CONTENT_TYPE:')) {
+      allSignals.push(r);
+    }
+  }
+  // Also scan for keyword-based signals
+  if (headlineResult.reasons.some((r) => r.startsWith('KEYWORD_MATCH:'))) {
+    allSignals.push(`kw:headline→${headlineResult.topic_key}`);
+  }
+  for (const v of votes) {
+    allSignals.push(`kw:art${v.article_index}→${v.topic_key}`);
+  }
+  const topicSignals = [...new Set(allSignals)].slice(0, 5);
+
+  // topic_reason
+  const confLabel = confidence >= 0.7 ? 'high' : confidence >= 0.5 ? 'medium' : 'low';
+  const topicReason = `${winnerKey} conf=${confidence} (${confLabel}), ${votes.length} votes`;
+
   return {
     topic_key: winnerKey,
     topic_confidence: Math.min(confidence, 1),
     votes,
     reasons,
+    topic_signals: topicSignals,
+    topic_reason: topicReason,
   };
 }
 
