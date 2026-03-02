@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate, computeImportanceScore } from './gates.js';
+import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from './gates.js';
 
 describe('gates', () => {
   describe('validateOverviewEvidence', () => {
@@ -533,6 +533,224 @@ describe('gates', () => {
       });
       expect(score).toBeGreaterThan(0.40);
       expect(score).toBeLessThan(0.80);
+    });
+  });
+
+  // ── Single-source topic allowlist gate ──
+
+  describe('evaluatePublishGate — topic allowlist gate', () => {
+    const baseSingleSource = {
+      unique_sources_count: 1,
+      total_usable_text_len: 2000,
+      key_facts_count: 0,
+      overview_status: 'pending' as const,
+      has_disclaimer: false,
+      page_types: ['ARTICLE'] as string[],
+      importance_score: 0.60,
+    };
+
+    it('blocks single-source with disallowed topic and high confidence', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'ENTRETENIMIENTO',
+        topic_confidence: 0.85,
+        allowed_topics: ['POLITICA', 'ECONOMIA', 'CRIMEN_SEGURIDAD'],
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_DISALLOWED_TOPIC');
+    });
+
+    it('allows single-source with disallowed topic but LOW confidence (< 0.6)', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'ENTRETENIMIENTO',
+        topic_confidence: 0.45,
+        allowed_topics: ['POLITICA', 'ECONOMIA'],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('allows single-source when topic IS in allowed list', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'POLITICA',
+        topic_confidence: 0.90,
+        allowed_topics: ['POLITICA', 'ECONOMIA'],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('skips topic gate when allowed_topics is empty (backward compat)', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'ENTRETENIMIENTO',
+        topic_confidence: 0.90,
+        allowed_topics: [],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+    });
+
+    it('skips topic gate when allowed_topics is omitted', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'ENTRETENIMIENTO',
+        topic_confidence: 0.90,
+      });
+      expect(result.eligible).toBe(true);
+    });
+
+    it('skips topic gate when topic_key is null', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: null,
+        topic_confidence: 0.90,
+        allowed_topics: ['POLITICA'],
+      });
+      expect(result.eligible).toBe(true);
+    });
+
+    it('does NOT apply topic gate to multi-source events', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 3,
+        total_usable_text_len: 2000,
+        key_facts_count: 0,
+        overview_status: 'pending',
+        has_disclaimer: false,
+        topic_key: 'ENTRETENIMIENTO',
+        topic_confidence: 0.95,
+        allowed_topics: ['POLITICA'],
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
+    });
+
+    it('blocks at exact confidence threshold (0.6)', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'OTROS',
+        topic_confidence: 0.6,
+        allowed_topics: ['POLITICA'],
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_DISALLOWED_TOPIC');
+    });
+
+    it('allows just below confidence threshold (0.59)', () => {
+      const result = evaluatePublishGate({
+        ...baseSingleSource,
+        topic_key: 'OTROS',
+        topic_confidence: 0.59,
+        allowed_topics: ['POLITICA'],
+      });
+      expect(result.eligible).toBe(true);
+    });
+  });
+
+  // ── Demotion multiplier ──
+
+  describe('computeDemotionMultiplier', () => {
+    it('returns 1.0 for multi-source events (no demotion)', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 3,
+        topic_confidence: 0.4,
+        topic_key: 'OPINION',
+        total_usable_text_len: 500,
+      });
+      expect(result.multiplier).toBe(1.0);
+      expect(result.reasons).toHaveLength(0);
+    });
+
+    it('applies SINGLE_SOURCE demotion (*0.75)', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+      });
+      expect(result.multiplier).toBe(0.75);
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.reasons).not.toContain('LOW_TOPIC_CONFIDENCE');
+    });
+
+    it('stacks SINGLE_SOURCE + LOW_TOPIC_CONFIDENCE (*0.75 * 0.85)', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.45,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+      });
+      expect(result.multiplier).toBeCloseTo(0.75 * 0.85, 2);
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.reasons).toContain('LOW_TOPIC_CONFIDENCE');
+    });
+
+    it('stacks SINGLE_SOURCE + OPINION_CONTENT (*0.75 * 0.70)', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'OPINION',
+        total_usable_text_len: 2000,
+      });
+      expect(result.multiplier).toBeCloseTo(0.75 * 0.70, 2);
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.reasons).toContain('OPINION_CONTENT');
+    });
+
+    it('stacks SINGLE_SOURCE + SHORT_TEXT (*0.75 * 0.60)', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 800,
+      });
+      expect(result.multiplier).toBeCloseTo(0.75 * 0.60, 2);
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.reasons).toContain('SHORT_TEXT');
+    });
+
+    it('stacks all four demotions', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.3,
+        topic_key: 'OPINION',
+        total_usable_text_len: 500,
+      });
+      expect(result.multiplier).toBeCloseTo(0.75 * 0.85 * 0.70 * 0.60, 2);
+      expect(result.reasons).toHaveLength(4);
+    });
+
+    it('no LOW_TOPIC_CONFIDENCE when topic_confidence is null', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: null,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+      });
+      expect(result.reasons).not.toContain('LOW_TOPIC_CONFIDENCE');
+      expect(result.multiplier).toBe(0.75);
+    });
+
+    it('text at exactly 1200 does NOT trigger SHORT_TEXT', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 1200,
+      });
+      expect(result.reasons).not.toContain('SHORT_TEXT');
+    });
+
+    it('text at 1199 triggers SHORT_TEXT', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 1199,
+      });
+      expect(result.reasons).toContain('SHORT_TEXT');
     });
   });
 });

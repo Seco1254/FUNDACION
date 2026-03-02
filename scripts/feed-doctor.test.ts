@@ -560,6 +560,175 @@ describe('aggregate split_proxy_count and hard_negative_reasons', () => {
   });
 });
 
+// ── Feed Doctor v2: per-event fields ──────────────────────────────────
+
+describe('event record v2 fields', () => {
+  it('includes topic_key and topic_confidence in routing', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ title: 'Gobierno reforma congreso senado presidente decreto legislatura', url: 'https://a.com/politica/1' }),
+      }],
+      versions: [{ id: 'v1', headline: 'Gobierno presenta reforma', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.routing.topic_key).toBeDefined();
+    expect(typeof record.routing.topic_confidence).toBe('number');
+  });
+
+  it('includes importance_score in routing', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(typeof record.routing.importance_score).toBe('number');
+    expect(record.routing.importance_score).toBeGreaterThan(0);
+  });
+
+  it('includes desk in representative_article', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://eltiempo.com/politica/reforma-123' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const rep = output[1].routing.representative_article;
+    expect(rep).not.toBeNull();
+    expect(rep.desk).toBe('POLITICA');
+  });
+
+  it('includes page_type in representative_article (ARTICLE for news)', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const rep = output[1].routing.representative_article;
+    expect(rep.page_type).toBe('ARTICLE');
+  });
+
+  it('includes gate_trace array in eligibility', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const elig = output[1].eligibility;
+    expect(Array.isArray(elig.gate_trace)).toBe(true);
+    expect(elig.gate_trace.length).toBeGreaterThan(0);
+    expect(elig.gate_trace.some((g: string) => g.startsWith('PUBLISH_GATE:'))).toBe(true);
+  });
+
+  it('includes reason_summary in eligibility', () => {
+    const ev = makeEvent({
+      eventArticles: [
+        { createdAt: new Date(), article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
+        { createdAt: new Date(), article: makeArticle({ id: 'art-2', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const elig = output[1].eligibility;
+    expect(typeof elig.reason_summary).toBe('string');
+    expect(elig.reason_summary).toContain('ENTRÓ POR:');
+  });
+
+  it('reason_summary shows BLOQUEADO when ineligible', () => {
+    const ev = makeEvent({
+      versions: [{ id: 'v1', headline: 'Test', versionIndex: 1, packetJson: { coherence_gate: { status: 'FAIL', failed_checks: ['embedding_cohesion'] } } }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const elig = output[1].eligibility;
+    expect(elig.reason_summary).toContain('BLOQUEADO POR:');
+  });
+
+  it('includes demotion section with multiplier and reasons', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.demotion).toBeDefined();
+    expect(typeof record.demotion.multiplier).toBe('number');
+    expect(Array.isArray(record.demotion.reasons)).toBe(true);
+  });
+
+  it('single-source event gets demotion multiplier < 1.0', () => {
+    const ev = makeEvent(); // default: 1 source
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    expect(output[1].demotion.multiplier).toBeLessThan(1.0);
+    expect(output[1].demotion.reasons).toContain('SINGLE_SOURCE');
+  });
+
+  it('multi-source event gets demotion multiplier = 1.0', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ id: 'a1', media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
+        { createdAt: now, article: makeArticle({ id: 'a2', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    expect(output[1].demotion.multiplier).toBe(1.0);
+    expect(output[1].demotion.reasons).toHaveLength(0);
+  });
+});
+
+// ── Feed Doctor v2: aggregate bins ────────────────────────────────────
+
+describe('aggregate v2 bins and sections', () => {
+  it('includes bins_topics in aggregate', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ title: 'Gobierno reforma congreso senado presidente decreto', url: 'https://a.com/politica/1' }),
+      }],
+      versions: [{ id: 'v1', headline: 'Gobierno reforma', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.bins_topics)).toBe(true);
+    expect(agg.bins_topics.length).toBeGreaterThan(0);
+    expect(agg.bins_topics[0]).toHaveProperty('topic');
+    expect(agg.bins_topics[0]).toHaveProperty('count');
+  });
+
+  it('includes bins_desks in aggregate', () => {
+    const ev = makeEvent({
+      eventArticles: [{
+        createdAt: new Date(),
+        article: makeArticle({ url: 'https://eltiempo.com/deportes/futbol-123' }),
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.bins_desks)).toBe(true);
+    expect(agg.bins_desks.length).toBeGreaterThan(0);
+  });
+
+  it('includes single_source_blocked_by_reason in aggregate', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.single_source_blocked_by_reason)).toBe(true);
+  });
+
+  it('includes top_demotion_reasons in aggregate', () => {
+    const ev = makeEvent(); // single-source → will have demotion reasons
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.top_demotion_reasons)).toBe(true);
+    expect(agg.top_demotion_reasons.length).toBeGreaterThan(0);
+    expect(agg.top_demotion_reasons[0]).toHaveProperty('reason');
+    expect(agg.top_demotion_reasons[0]).toHaveProperty('count');
+  });
+
+  it('includes what_to_fix_next in aggregate', () => {
+    const output = buildDoctorOutput([], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(Array.isArray(agg.what_to_fix_next)).toBe(true);
+  });
+
+  it('what_to_fix_next suggests HIGH_SINGLE_SOURCE_RATIO when > 50% single-source', () => {
+    const events = Array.from({ length: 4 }, (_, i) => makeEvent({ id: `evt-${i}` }));
+    const output = buildDoctorOutput(events, [], defaultConfig);
+    const agg = output[output.length - 1];
+    const suggestion = agg.what_to_fix_next.find((s: string) => s.includes('HIGH_SINGLE_SOURCE_RATIO'));
+    expect(suggestion).toBeDefined();
+  });
+});
+
 // ── linker_accounting in aggregate ────────────────────────────────────
 
 describe('aggregate linker_accounting', () => {
