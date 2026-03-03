@@ -491,6 +491,52 @@ describe('aggregateEventTopic', () => {
     expect(r.votes).toHaveLength(0);
   });
 
+  // ── FP fix: bare "nacional" must NOT trigger DEPORTES ──────
+
+  it('FP fix: article with "nacional" in non-sports context does NOT classify as DEPORTES', () => {
+    const r = classifyTopic({
+      title: 'Violencia vicaria: un problema a nivel nacional',
+      text: 'El fenómeno de violencia vicaria se extiende por todo el territorio nacional. Las autoridades reportaron casos en múltiples departamentos del país.',
+    });
+    expect(r.topic_key).not.toBe('DEPORTES');
+  });
+
+  it('FP fix: "plan nacional de desarrollo" does NOT classify as DEPORTES', () => {
+    const r = classifyTopic({
+      title: 'Congreso debate el plan nacional de desarrollo',
+      text: 'El gobierno presentó ante el congreso el nuevo plan nacional de desarrollo con ajustes presupuestales.',
+    });
+    expect(r.topic_key).not.toBe('DEPORTES');
+  });
+
+  it('TP: "Atlético Nacional" classifies as DEPORTES with confidence ≥ 0.6', () => {
+    const r = aggregateEventTopic(
+      'Atlético Nacional venció 2-0 a Millonarios en la liga betplay',
+      [
+        { title: 'Atlético Nacional logró una victoria contundente en el clásico colombiano por la liga betplay' },
+        { title: 'Millonarios cayó ante Atlético Nacional en el estadio Atanasio Girardot' },
+      ],
+    );
+    expect(r.topic_key).toBe('DEPORTES');
+    expect(r.topic_confidence).toBeGreaterThanOrEqual(0.6);
+  });
+
+  it('TP: "atletico nacional" (no tilde) also classifies as DEPORTES', () => {
+    const r = classifyTopic({
+      title: 'Atletico Nacional ficha nuevo delantero para la temporada',
+      text: 'El club atletico nacional presentó su nueva contratación de cara al torneo.',
+    });
+    expect(r.topic_key).toBe('DEPORTES');
+  });
+
+  it('TP: "seleccion colombia" (no tilde) classifies as DEPORTES', () => {
+    const r = classifyTopic({
+      title: 'La seleccion colombia enfrentará a Brasil en eliminatorias',
+      text: 'La seleccion colombia se prepara para el partido de eliminatorias mundialistas.',
+    });
+    expect(r.topic_key).toBe('DEPORTES');
+  });
+
   // ── Deterministic stability ──────────────────────────────────
 
   it('deterministic: 100 runs produce identical output', () => {

@@ -115,8 +115,10 @@ const COLOMBIA_BOOST_KEYWORDS: Record<string, string[]> = {
     'tasa de cambio', 'superfinanciera', 'dian', 'iva',
   ],
   DEPORTES: [
-    'liga betplay', 'dimayor', 'millonarios', 'nacional', 'américa de cali',
-    'junior', 'santa fe', 'cali', 'selección colombia',
+    'liga betplay', 'liga colombiana', 'primera a', 'dimayor',
+    'millonarios', 'atlético nacional', 'atletico nacional', 'club nacional',
+    'américa de cali', 'junior', 'santa fe', 'cali',
+    'selección colombia', 'seleccion colombia', 'fifa', 'conmebol',
   ],
   SALUD: [
     'eps', 'minsalud', 'supersalud', 'invima', 'sisben', 'ips',
