@@ -262,7 +262,7 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
 
 // ── DEMOTION MULTIPLIERS ─────────────────────────────────────────────
 
-const DEMOTION_SINGLE_SOURCE = parseFloat(process.env.DEMOTION_SINGLE_SOURCE ?? '0.75');
+const DEMOTION_SINGLE_SOURCE = parseFloat(process.env.DEMOTION_SINGLE_SOURCE ?? '0.65');
 const DEMOTION_LOW_TOPIC_CONF = parseFloat(process.env.DEMOTION_LOW_TOPIC_CONF ?? '0.85');
 const DEMOTION_OPINION = parseFloat(process.env.DEMOTION_OPINION ?? '0.70');
 const DEMOTION_SHORT_TEXT = parseFloat(process.env.DEMOTION_SHORT_TEXT ?? '0.60');

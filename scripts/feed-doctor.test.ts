@@ -868,3 +868,59 @@ describe('aggregate linker_accounting', () => {
     expect(deskBlock.count).toBe(2);
   });
 });
+
+// ── v2.3: Floor gate reasons in aggregate accounting ──────────────
+
+describe('aggregate floor gate reasons v2.3', () => {
+  it('accumulates TITLE_ALIGNMENT_FLOOR from linker logs', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    const titleFloor = agg.top_hard_negative_reasons.find((r: any) => r.reason === 'TITLE_ALIGNMENT_FLOOR');
+    expect(titleFloor).toBeDefined();
+    expect(titleFloor.count).toBe(2);
+  });
+
+  it('accumulates ENTITY_OVERLAP_FLOOR from linker logs', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    const entFloor = agg.top_hard_negative_reasons.find((r: any) => r.reason === 'ENTITY_OVERLAP_FLOOR');
+    expect(entFloor).toBeDefined();
+    expect(entFloor.count).toBe(1);
+  });
+
+  it('floor gate reasons coexist with existing reasons in accounting', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['DESK_MISMATCH', 'TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.linker_accounting.hard_negative_blocks_total).toBe(2);
+    const reasons = agg.linker_accounting.merge_block_reasons.map((r: any) => r.reason);
+    expect(reasons).toContain('DESK_MISMATCH');
+    expect(reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('floor gate reasons appear in per-event linker_summary', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const record = output[1];
+    expect(record.linker_summary.hard_negative_blocks).toBe(1);
+    expect(record.linker_summary.top_reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(record.linker_summary.top_reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+});

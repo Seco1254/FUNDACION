@@ -663,50 +663,50 @@ describe('gates', () => {
       expect(result.reasons).toHaveLength(0);
     });
 
-    it('applies SINGLE_SOURCE demotion (*0.75)', () => {
+    it('applies SINGLE_SOURCE demotion (*0.65)', () => {
       const result = computeDemotionMultiplier({
         unique_sources_count: 1,
         topic_confidence: 0.9,
         topic_key: 'POLITICA',
         total_usable_text_len: 2000,
       });
-      expect(result.multiplier).toBe(0.75);
+      expect(result.multiplier).toBe(0.65);
       expect(result.reasons).toContain('SINGLE_SOURCE');
       expect(result.reasons).not.toContain('LOW_TOPIC_CONFIDENCE');
     });
 
-    it('stacks SINGLE_SOURCE + LOW_TOPIC_CONFIDENCE (*0.75 * 0.85)', () => {
+    it('stacks SINGLE_SOURCE + LOW_TOPIC_CONFIDENCE (*0.65 * 0.85)', () => {
       const result = computeDemotionMultiplier({
         unique_sources_count: 1,
         topic_confidence: 0.45,
         topic_key: 'POLITICA',
         total_usable_text_len: 2000,
       });
-      expect(result.multiplier).toBeCloseTo(0.75 * 0.85, 2);
+      expect(result.multiplier).toBeCloseTo(0.65 * 0.85, 2);
       expect(result.reasons).toContain('SINGLE_SOURCE');
       expect(result.reasons).toContain('LOW_TOPIC_CONFIDENCE');
     });
 
-    it('stacks SINGLE_SOURCE + OPINION_CONTENT (*0.75 * 0.70)', () => {
+    it('stacks SINGLE_SOURCE + OPINION_CONTENT (*0.65 * 0.70)', () => {
       const result = computeDemotionMultiplier({
         unique_sources_count: 1,
         topic_confidence: 0.9,
         topic_key: 'OPINION',
         total_usable_text_len: 2000,
       });
-      expect(result.multiplier).toBeCloseTo(0.75 * 0.70, 2);
+      expect(result.multiplier).toBeCloseTo(0.65 * 0.70, 2);
       expect(result.reasons).toContain('SINGLE_SOURCE');
       expect(result.reasons).toContain('OPINION_CONTENT');
     });
 
-    it('stacks SINGLE_SOURCE + SHORT_TEXT (*0.75 * 0.60)', () => {
+    it('stacks SINGLE_SOURCE + SHORT_TEXT (*0.65 * 0.60)', () => {
       const result = computeDemotionMultiplier({
         unique_sources_count: 1,
         topic_confidence: 0.9,
         topic_key: 'POLITICA',
         total_usable_text_len: 800,
       });
-      expect(result.multiplier).toBeCloseTo(0.75 * 0.60, 2);
+      expect(result.multiplier).toBeCloseTo(0.65 * 0.60, 2);
       expect(result.reasons).toContain('SINGLE_SOURCE');
       expect(result.reasons).toContain('SHORT_TEXT');
     });
@@ -718,7 +718,7 @@ describe('gates', () => {
         topic_key: 'OPINION',
         total_usable_text_len: 500,
       });
-      expect(result.multiplier).toBeCloseTo(0.75 * 0.85 * 0.70 * 0.60, 2);
+      expect(result.multiplier).toBeCloseTo(0.65 * 0.85 * 0.70 * 0.60, 2);
       expect(result.reasons).toHaveLength(4);
     });
 
@@ -730,7 +730,7 @@ describe('gates', () => {
         total_usable_text_len: 2000,
       });
       expect(result.reasons).not.toContain('LOW_TOPIC_CONFIDENCE');
-      expect(result.multiplier).toBe(0.75);
+      expect(result.multiplier).toBe(0.65);
     });
 
     it('text at exactly 1200 does NOT trigger SHORT_TEXT', () => {

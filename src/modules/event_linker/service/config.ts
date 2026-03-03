@@ -26,6 +26,11 @@ export const DESK_GATE_ENABLED = process.env.EVENT_LINKER_DESK_GATE_ENABLED !== 
 // ── Topic confidence gate (enhanced) ──
 export const TOPIC_CONFIDENCE_MIN = parseFloat(process.env.EVENT_LINKER_TOPIC_CONFIDENCE_MIN ?? '0.6');
 
+// ── Floor gates v2.3 ──
+export const FLOOR_GATES_ENABLED = process.env.EVENT_LINKER_FLOOR_GATES_ENABLED !== '0';
+export const TITLE_ALIGN_FLOOR = parseFloat(process.env.EVENT_LINKER_TITLE_ALIGN_FLOOR ?? '0.05');
+export const ENTITY_OVERLAP_FLOOR = parseFloat(process.env.EVENT_LINKER_ENTITY_OVERLAP_FLOOR ?? '0.03');
+
 // ── Two-step signals ──
 export const AUTO_REQUIRES_SIGNALS = parseInt(process.env.EVENT_LINKER_AUTO_REQUIRES_SIGNALS ?? '2', 10);
 export const SIGNAL_MIN_EMBED = parseFloat(process.env.EVENT_LINKER_SIGNAL_MIN_EMBED ?? '0.45');

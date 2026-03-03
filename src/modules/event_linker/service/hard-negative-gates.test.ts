@@ -392,6 +392,158 @@ describe('shouldBlockAutoLink — desk gate', () => {
   });
 });
 
+// ── shouldBlockAutoLink — floor gates v2.3 ───────────────────────
+
+describe('shouldBlockAutoLink — floor gates v2.3', () => {
+  const baseCtx = {
+    articleTitle: 'Test title',
+    articleEmbeddingCosine: 0.50,
+    articleEntityJaccard: 0.10,
+    articleTopicTop1: 'POLITICA',
+    eventTopicTop1: 'POLITICA',
+    articleTopicConfidence: 0.8,
+    eventTopicConfidence: 0.8,
+  };
+
+  it('blocks when titleAlignment < TITLE_ALIGN_FLOOR (0.05)', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.02,
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('does NOT block when titleAlignment >= TITLE_ALIGN_FLOOR', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.08,
+    });
+    expect(result.reasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('blocks when entityOverlap < ENTITY_OVERLAP_FLOOR (0.03)', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      entityOverlap: 0.01,
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('does NOT block when entityOverlap >= ENTITY_OVERLAP_FLOOR', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      entityOverlap: 0.05,
+    });
+    expect(result.reasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('fail-open: titleAlignment=undefined skips the gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: undefined,
+      entityOverlap: 0.10,
+    });
+    expect(result.reasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('fail-open: entityOverlap=undefined skips the gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.10,
+      entityOverlap: undefined,
+    });
+    expect(result.reasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('fail-open: both undefined → neither floor gate fires', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: undefined,
+      entityOverlap: undefined,
+    });
+    expect(result.reasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(result.reasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('both below floor → both reasons present', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.01,
+      entityOverlap: 0.005,
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(result.reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('exact floor value (0.05 titleAlignment) does NOT trigger gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.05,
+    });
+    expect(result.reasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('exact floor value (0.03 entityOverlap) does NOT trigger gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      entityOverlap: 0.03,
+    });
+    expect(result.reasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('titleAlignment=0 triggers the gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0,
+    });
+    expect(result.reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('entityOverlap=0 triggers the gate', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      entityOverlap: 0,
+    });
+    expect(result.reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('floor gates do NOT trigger blockMaybe (only block auto-link)', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: 0.01,
+      entityOverlap: 0.005,
+    });
+    expect(result.blockMaybe).toBe(false);
+  });
+
+  it('floor gate reasons coexist with other gate reasons', () => {
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      articleTopicTop1: 'DEPORTES',
+      eventTopicTop1: 'POLITICA',
+      titleAlignment: 0.01,
+      entityOverlap: 0.01,
+    });
+    expect(result.reasons).toContain('TOPIC_MISMATCH_HIGH_CONF');
+    expect(result.reasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(result.reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('floor gates work with null (not undefined) — null is truthy for != null check', () => {
+    // null != null is false, so null should skip the gate (fail-open)
+    const result = shouldBlockAutoLink({
+      ...baseCtx,
+      titleAlignment: null as any,
+      entityOverlap: null as any,
+    });
+    expect(result.reasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(result.reasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+});
+
 describe('shouldBlockAutoLink — topic confidence gate', () => {
   it('blocks with TOPIC_MISMATCH_HIGH_CONF when both topics differ with high confidence', () => {
     const result = shouldBlockAutoLink({

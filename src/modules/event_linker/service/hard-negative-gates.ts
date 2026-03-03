@@ -1,5 +1,5 @@
 /**
- * Hard Negative Gates v2.2 — cheap heuristics that block auto-link.
+ * Hard Negative Gates v2.3 — cheap heuristics that block auto-link.
  *
  * Gates only block auto-link (degrade to maybe-link), never block maybe-link
  * (to avoid "mil eventos" explosion). Exception: entity gate can block maybe
@@ -9,6 +9,12 @@
  *   - Desk mismatch gate: URL-based desk/section extraction + compatibility matrix
  *   - Topic confidence gate: block if topics differ AND both have confidence >= threshold
  *   - Title gate thresholds tightened: title_jaccard < 0.03 AND entity_overlap < 0.02
+ *
+ * v2.3 additions:
+ *   - TITLE_ALIGNMENT_FLOOR: block if title keyword alignment < floor (default 0.05)
+ *   - ENTITY_OVERLAP_FLOOR: block if entity overlap < floor (default 0.03)
+ *   - Both are fail-open: if metric is null/undefined, gate is skipped
+ *   - Controlled by EVENT_LINKER_FLOOR_GATES_ENABLED (default 1)
  */
 
 import { logger } from '../../../core/logging/logger.js';
@@ -23,6 +29,9 @@ import {
   TITLE_ENTITY_JACCARD_MIN,
   DESK_GATE_ENABLED,
   TOPIC_CONFIDENCE_MIN,
+  FLOOR_GATES_ENABLED,
+  TITLE_ALIGN_FLOOR,
+  ENTITY_OVERLAP_FLOOR,
 } from './config.js';
 
 // ── Spanish stopwords (short list for title keyword extraction) ──
@@ -212,6 +221,10 @@ export interface GateContext {
   eventUrl?: string | null;
   articleTopicConfidence?: number | null;
   eventTopicConfidence?: number | null;
+  /** v2.3: title keyword alignment (Jaccard) between article and event titles. undefined = not computed. */
+  titleAlignment?: number | undefined;
+  /** v2.3: entity overlap (Jaccard) between article and event entities. undefined = not computed. */
+  entityOverlap?: number | undefined;
 }
 
 export interface GateResult {
@@ -272,6 +285,16 @@ export function shouldBlockAutoLink(ctx: GateContext): GateResult {
     const titleCheck = checkTitleContradiction(ctx);
     if (titleCheck.blocked) {
       reasons.push('TITLE_CONTRADICTION_LOW_OVERLAP');
+    }
+  }
+
+  // 5) Floor gates v2.3 — hard floors on title alignment and entity overlap
+  if (FLOOR_GATES_ENABLED) {
+    if (ctx.titleAlignment != null && ctx.titleAlignment < TITLE_ALIGN_FLOOR) {
+      reasons.push('TITLE_ALIGNMENT_FLOOR');
+    }
+    if (ctx.entityOverlap != null && ctx.entityOverlap < ENTITY_OVERLAP_FLOOR) {
+      reasons.push('ENTITY_OVERLAP_FLOOR');
     }
   }
 

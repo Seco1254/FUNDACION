@@ -27,6 +27,8 @@ import {
   checkTitleContradictionPair,
   extractDesk,
   desksCompatible,
+  extractTitleKeywords,
+  jaccardSets,
   GateContext,
 } from './hard-negative-gates.js';
 import {
@@ -41,6 +43,9 @@ import {
   TITLE_GATE_ENABLED,
   DESK_GATE_ENABLED,
   TOPIC_CONFIDENCE_MIN,
+  FLOOR_GATES_ENABLED,
+  TITLE_ALIGN_FLOOR,
+  ENTITY_OVERLAP_FLOOR,
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
@@ -333,6 +338,21 @@ export function scoreCandidates(
         );
         if (titleCheck.blocked) {
           gateReasons.push('TITLE_CONTRADICTION_LOW_OVERLAP');
+        }
+      }
+
+      // v2.3: Floor gates — hard floors on title alignment and entity overlap
+      if (FLOOR_GATES_ENABLED) {
+        const eventRepTitle = candidate.representativeTitle ?? candidate.articleTexts[0] ?? '';
+        const kwArticle = extractTitleKeywords(article.title);
+        const kwEvent = extractTitleKeywords(eventRepTitle);
+        const titleAlign = jaccardSets(kwArticle, kwEvent);
+
+        if (titleAlign < TITLE_ALIGN_FLOOR) {
+          gateReasons.push('TITLE_ALIGNMENT_FLOOR');
+        }
+        if (entOverlap < ENTITY_OVERLAP_FLOOR) {
+          gateReasons.push('ENTITY_OVERLAP_FLOOR');
         }
       }
     }
