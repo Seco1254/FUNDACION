@@ -31,7 +31,9 @@
     "debug:coherence:canary": "tsx scripts/coherence-canary.ts",
     "debug:feed:doctor": "tsx scripts/feed-doctor.ts",
     "debug:events:relink": "tsx scripts/events-relink.ts",
-    "debug:events:label": "tsx scripts/events-label.ts"
+    "debug:events:label": "tsx scripts/events-label.ts",
+    "debug:labels:export": "tsx scripts/labels-export.ts",
+    "debug:labels:session": "tsx scripts/labels-session.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
