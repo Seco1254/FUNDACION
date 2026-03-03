@@ -30,7 +30,8 @@
     "db:backfill:coherence": "tsx scripts/backfill-coherence-metrics.ts",
     "debug:coherence:canary": "tsx scripts/coherence-canary.ts",
     "debug:feed:doctor": "tsx scripts/feed-doctor.ts",
-    "debug:events:relink": "tsx scripts/events-relink.ts"
+    "debug:events:relink": "tsx scripts/events-relink.ts",
+    "debug:events:label": "tsx scripts/events-label.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
