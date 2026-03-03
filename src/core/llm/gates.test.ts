@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from './gates.js';
+import { validateOverviewEvidence, validateOverviewContent, buildInsufficientOverview, evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier, computePublicImportanceV3 } from './gates.js';
 
 describe('gates', () => {
   describe('validateOverviewEvidence', () => {
@@ -818,6 +818,156 @@ describe('gates', () => {
       expect(result.reasons).toContain('OPINION_CONTENT');
       expect(result.reasons).toContain('SHORT_TEXT');
       expect(result.multiplier).toBeCloseTo(0.50 * 0.65 * 0.85 * 0.70 * 0.60, 2);
+    });
+  });
+
+  // ── computePublicImportanceV3 (topic-first ranking) ──
+
+  describe('computePublicImportanceV3', () => {
+    const baseInput = {
+      topic_key: 'POLITICA',
+      topic_confidence: 0.85,
+      num_sources_unique: 4,
+      num_articles: 10,
+      momentum_6h: 5,
+      demotion_multiplier: 1.0,
+    };
+
+    it('POLITICA with high confidence gets highest topic weight (1.00)', () => {
+      const result = computePublicImportanceV3(baseInput);
+      expect(result.components.topic_weight).toBe(1.0);
+      // raw = 0.55*1.0 + 0.20*1.0 + 0.15*coverage + 0.10*0.5
+      expect(result.raw).toBeGreaterThan(0.80);
+      expect(result.final).toBe(result.raw); // demotion=1.0
+    });
+
+    it('ECONOMIA gets topic weight 0.92', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'ECONOMIA' });
+      expect(result.components.topic_weight).toBe(0.92);
+    });
+
+    it('CRIMEN_SEGURIDAD gets topic weight 0.88', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'CRIMEN_SEGURIDAD' });
+      expect(result.components.topic_weight).toBe(0.88);
+    });
+
+    it('DEPORTES gets topic weight 0.65', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'DEPORTES' });
+      expect(result.components.topic_weight).toBe(0.65);
+    });
+
+    it('OPINION guardrail forces topic weight to 0.15 regardless of confidence', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'OPINION', topic_confidence: 0.99 });
+      expect(result.components.topic_weight).toBe(0.15);
+    });
+
+    it('OPINION guardrail still 0.15 even with low confidence', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'OPINION', topic_confidence: 0.30 });
+      expect(result.components.topic_weight).toBe(0.15);
+    });
+
+    it('low confidence (<0.6) → topic weight 0.45 for any non-OPINION topic', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'POLITICA', topic_confidence: 0.50 });
+      expect(result.components.topic_weight).toBe(0.45);
+    });
+
+    it('confidence exactly 0.6 uses normal topic weight (not low-confidence)', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'POLITICA', topic_confidence: 0.60 });
+      expect(result.components.topic_weight).toBe(1.0);
+    });
+
+    it('confidence 0.59 uses low-confidence weight 0.45', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'POLITICA', topic_confidence: 0.59 });
+      expect(result.components.topic_weight).toBe(0.45);
+    });
+
+    it('unknown topic falls back to OTROS weight (0.30)', () => {
+      const result = computePublicImportanceV3({ ...baseInput, topic_key: 'UNKNOWN_TOPIC', topic_confidence: 0.80 });
+      expect(result.components.topic_weight).toBe(0.30);
+    });
+
+    it('diversity score = min(1, sources/4)', () => {
+      expect(computePublicImportanceV3({ ...baseInput, num_sources_unique: 2 }).components.diversity_score).toBe(0.5);
+      expect(computePublicImportanceV3({ ...baseInput, num_sources_unique: 4 }).components.diversity_score).toBe(1.0);
+      expect(computePublicImportanceV3({ ...baseInput, num_sources_unique: 8 }).components.diversity_score).toBe(1.0);
+      expect(computePublicImportanceV3({ ...baseInput, num_sources_unique: 1 }).components.diversity_score).toBe(0.25);
+    });
+
+    it('coverage score = log(1+n)/log(21), capped at 1', () => {
+      const result1 = computePublicImportanceV3({ ...baseInput, num_articles: 1 });
+      expect(result1.components.coverage_score).toBeCloseTo(Math.log(2) / Math.log(21), 2);
+      const result20 = computePublicImportanceV3({ ...baseInput, num_articles: 20 });
+      expect(result20.components.coverage_score).toBe(1.0);
+      const result50 = computePublicImportanceV3({ ...baseInput, num_articles: 50 });
+      expect(result50.components.coverage_score).toBe(1.0);
+    });
+
+    it('momentum score = min(1, momentum_6h/10)', () => {
+      expect(computePublicImportanceV3({ ...baseInput, momentum_6h: 0 }).components.momentum_score).toBe(0);
+      expect(computePublicImportanceV3({ ...baseInput, momentum_6h: 5 }).components.momentum_score).toBe(0.5);
+      expect(computePublicImportanceV3({ ...baseInput, momentum_6h: 10 }).components.momentum_score).toBe(1.0);
+      expect(computePublicImportanceV3({ ...baseInput, momentum_6h: 20 }).components.momentum_score).toBe(1.0);
+    });
+
+    it('final = raw * demotion_multiplier', () => {
+      const result = computePublicImportanceV3({ ...baseInput, demotion_multiplier: 0.50 });
+      expect(result.final).toBeCloseTo(result.raw * 0.50, 2);
+    });
+
+    it('toxic demotion (×0.50) halves the v3 final score', () => {
+      const normal = computePublicImportanceV3(baseInput);
+      const toxic = computePublicImportanceV3({ ...baseInput, demotion_multiplier: 0.50 });
+      expect(toxic.final).toBeCloseTo(normal.raw * 0.50, 2);
+      expect(toxic.raw).toBe(normal.raw); // raw unchanged
+    });
+
+    it('POLITICA ranks higher than DEPORTES with same features', () => {
+      const pol = computePublicImportanceV3({ ...baseInput, topic_key: 'POLITICA' });
+      const dep = computePublicImportanceV3({ ...baseInput, topic_key: 'DEPORTES' });
+      expect(pol.raw).toBeGreaterThan(dep.raw);
+    });
+
+    it('DEPORTES ranks higher than OPINION with same features', () => {
+      const dep = computePublicImportanceV3({ ...baseInput, topic_key: 'DEPORTES' });
+      const opi = computePublicImportanceV3({ ...baseInput, topic_key: 'OPINION' });
+      expect(dep.raw).toBeGreaterThan(opi.raw);
+    });
+
+    it('all components are bounded [0,1]', () => {
+      const result = computePublicImportanceV3(baseInput);
+      expect(result.components.topic_weight).toBeGreaterThanOrEqual(0);
+      expect(result.components.topic_weight).toBeLessThanOrEqual(1);
+      expect(result.components.diversity_score).toBeGreaterThanOrEqual(0);
+      expect(result.components.diversity_score).toBeLessThanOrEqual(1);
+      expect(result.components.coverage_score).toBeGreaterThanOrEqual(0);
+      expect(result.components.coverage_score).toBeLessThanOrEqual(1);
+      expect(result.components.momentum_score).toBeGreaterThanOrEqual(0);
+      expect(result.components.momentum_score).toBeLessThanOrEqual(1);
+    });
+
+    it('raw score is bounded [0,1] since all weights sum to 1', () => {
+      // Maximum: all components = 1.0 → raw = 0.55+0.20+0.15+0.10 = 1.0
+      const max = computePublicImportanceV3({
+        topic_key: 'POLITICA', topic_confidence: 0.99,
+        num_sources_unique: 10, num_articles: 50, momentum_6h: 20,
+        demotion_multiplier: 1.0,
+      });
+      expect(max.raw).toBeLessThanOrEqual(1.0);
+      expect(max.raw).toBeGreaterThan(0.95);
+
+      // Minimum: topic=OPINION(0.15), 0 sources, 0 articles, 0 momentum
+      const min = computePublicImportanceV3({
+        topic_key: 'OPINION', topic_confidence: 0.99,
+        num_sources_unique: 0, num_articles: 0, momentum_6h: 0,
+        demotion_multiplier: 1.0,
+      });
+      expect(min.raw).toBeGreaterThanOrEqual(0);
+      expect(min.raw).toBeLessThan(0.15);
+    });
+
+    it('formula weights sum to 1.0', () => {
+      // Verify: 0.55 + 0.20 + 0.15 + 0.10 = 1.0
+      expect(0.55 + 0.20 + 0.15 + 0.10).toBeCloseTo(1.0, 10);
     });
   });
 });

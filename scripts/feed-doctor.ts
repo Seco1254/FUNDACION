@@ -28,7 +28,7 @@ import '../src/env.js';
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
-import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from '../src/core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier, computePublicImportanceV3 } from '../src/core/llm/gates.js';
 import { isInstitutionalEvent } from '../src/modules/feed/service/feed-service.js';
 import { computeEventScore, type EventForScoring } from '../src/modules/ranking/service/event-scorer.js';
 import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
@@ -248,6 +248,9 @@ export function buildDoctorOutput(
   let maybeLinkDegradedTotal = 0;
   const maybeLinkDegradedByReason: Record<string, number> = {};
   let maybeLinkToxicCount = 0;
+  // v3 aggregate accumulators
+  const v3ScoresByTopic: Record<string, number[]> = {};
+  let topicFirstPromotionCount = 0;
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -472,6 +475,24 @@ export function buildDoctorOutput(
       demotionReasonCounts[dr] = (demotionReasonCounts[dr] ?? 0) + 1;
     }
 
+    // v3 topic-first ranking
+    const v3 = computePublicImportanceV3({
+      topic_key: eventTopicKey,
+      topic_confidence: eventTopicConfidence,
+      num_sources_unique: numSources,
+      num_articles: numArticles,
+      momentum_6h: momentum6h,
+      demotion_multiplier: demotion.multiplier,
+    });
+    // Accumulate v3 scores by topic for aggregate
+    const topicScoresArr = v3ScoresByTopic[eventTopicKey] ?? [];
+    topicScoresArr.push(v3.final);
+    v3ScoresByTopic[eventTopicKey] = topicScoresArr;
+    // Detect topic-first promotion: event with low v1 importance but high v3 score
+    if (v3.final > 0.40 && eventImportanceScore < 0.50) {
+      topicFirstPromotionCount++;
+    }
+
     // Gate trace: record which checks were applied
     const gateTrace: string[] = [];
     if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
@@ -604,6 +625,9 @@ export function buildDoctorOutput(
         momentum_score: scored.components.momentum,
         topic_boost_score: scored.components.topicBoost,
         final_rank_score: scored.score,
+        public_importance_v3_raw: v3.raw,
+        public_importance_v3_final: v3.final,
+        public_importance_v3_components: v3.components,
       },
     };
 
@@ -630,6 +654,15 @@ export function buildDoctorOutput(
     }
 
     output.push(record);
+  }
+
+  // Assign rank_position to event records sorted by v3 final score desc
+  const eventRecords = output.filter((r) => r.kind === 'event');
+  const sortedByV3 = [...eventRecords].sort(
+    (a, b) => (b.ranking_features?.public_importance_v3_final ?? 0) - (a.ranking_features?.public_importance_v3_final ?? 0),
+  );
+  for (let i = 0; i < sortedByV3.length; i++) {
+    sortedByV3[i].ranking_features.rank_position = i + 1;
   }
 
   // ── aggregate ──
@@ -698,6 +731,22 @@ export function buildDoctorOutput(
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
     maybe_link_toxic_count: maybeLinkToxicCount,
+    // v3 topic-first ranking aggregate
+    top_topics_by_rank: Object.entries(v3ScoresByTopic)
+      .map(([topic, scores]) => ({
+        topic,
+        count: scores.length,
+        avg_v3_final: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
+      }))
+      .sort((a, b) => b.avg_v3_final - a.avg_v3_final)
+      .slice(0, 10),
+    avg_public_importance_v3_by_topic: Object.entries(v3ScoresByTopic)
+      .map(([topic, scores]) => ({
+        topic,
+        avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
+      }))
+      .sort((a, b) => b.avg - a.avg),
+    count_topic_first_promotions: topicFirstPromotionCount,
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];

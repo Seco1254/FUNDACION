@@ -46,6 +46,15 @@ export interface FeedItem {
   importance_score?: number;
   demotion_multiplier?: number;
   demotion_reasons?: string[];
+  /** v3 topic-first ranking */
+  public_importance_v3_raw?: number;
+  public_importance_v3_final?: number;
+  public_importance_v3_components?: {
+    topic_weight: number;
+    diversity_score: number;
+    coverage_score: number;
+    momentum_score: number;
+  };
 }
 
 export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';

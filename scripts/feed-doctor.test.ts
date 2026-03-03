@@ -1113,3 +1113,135 @@ describe('maybe_link_toxic_count in aggregate', () => {
     expect(typeof agg.maybe_link_toxic_count).toBe('number');
   });
 });
+
+// ── v3: Public Importance V3 (topic-first) in feed-doctor ─────────
+
+describe('v3 per-event ranking features', () => {
+  it('event record includes public_importance_v3_raw', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.ranking_features).toHaveProperty('public_importance_v3_raw');
+    expect(typeof record.ranking_features.public_importance_v3_raw).toBe('number');
+  });
+
+  it('event record includes public_importance_v3_final', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.ranking_features).toHaveProperty('public_importance_v3_final');
+    expect(typeof record.ranking_features.public_importance_v3_final).toBe('number');
+  });
+
+  it('event record includes public_importance_v3_components', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    const comps = record.ranking_features.public_importance_v3_components;
+    expect(comps).toHaveProperty('topic_weight');
+    expect(comps).toHaveProperty('diversity_score');
+    expect(comps).toHaveProperty('coverage_score');
+    expect(comps).toHaveProperty('momentum_score');
+  });
+
+  it('event record includes rank_position', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.ranking_features).toHaveProperty('rank_position');
+    expect(record.ranking_features.rank_position).toBe(1);
+  });
+
+  it('rank_position orders events by v3 final score desc', () => {
+    // Two events: evt-pol (POLITICA) should rank higher than evt-opi (OPINION)
+    const now = new Date();
+    const evPol = makeEvent({
+      id: 'evt-pol',
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
+        { createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://example.com/art-2', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
+      ],
+      versions: [{ id: 'v1', headline: 'Politica headline', versionIndex: 1, packetJson: { topic_keys: ['POLITICA'], topic_scores: { POLITICA: 0.9 } } }],
+    });
+    const evOpi = makeEvent({
+      id: 'evt-opi',
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ media: { id: 'm3', mediaKey: 'opinion', name: 'Opinion' } }) },
+      ],
+      versions: [{ id: 'v2', headline: 'Opinion headline', versionIndex: 1, packetJson: { topic_keys: ['OPINION'], topic_scores: { OPINION: 0.9 } } }],
+    });
+    const output = buildDoctorOutput([evPol, evOpi], [], defaultConfig);
+    const events = output.filter((r: any) => r.kind === 'event');
+    const polRecord = events.find((e: any) => e.event_id === 'evt-pol');
+    const opiRecord = events.find((e: any) => e.event_id === 'evt-opi');
+    expect(polRecord.ranking_features.rank_position).toBeLessThan(opiRecord.ranking_features.rank_position);
+  });
+
+  it('v3_final is v3_raw * demotion_multiplier for single-source event', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    const raw = record.ranking_features.public_importance_v3_raw;
+    const final = record.ranking_features.public_importance_v3_final;
+    const dm = record.demotion.multiplier;
+    expect(final).toBeCloseTo(raw * dm, 2);
+  });
+});
+
+describe('v3 aggregate fields', () => {
+  it('aggregate includes top_topics_by_rank', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('top_topics_by_rank');
+    expect(Array.isArray(agg.top_topics_by_rank)).toBe(true);
+    expect(agg.top_topics_by_rank.length).toBeGreaterThan(0);
+    expect(agg.top_topics_by_rank[0]).toHaveProperty('topic');
+    expect(agg.top_topics_by_rank[0]).toHaveProperty('count');
+    expect(agg.top_topics_by_rank[0]).toHaveProperty('avg_v3_final');
+  });
+
+  it('aggregate includes avg_public_importance_v3_by_topic', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('avg_public_importance_v3_by_topic');
+    expect(Array.isArray(agg.avg_public_importance_v3_by_topic)).toBe(true);
+    expect(agg.avg_public_importance_v3_by_topic[0]).toHaveProperty('topic');
+    expect(agg.avg_public_importance_v3_by_topic[0]).toHaveProperty('avg');
+  });
+
+  it('aggregate includes count_topic_first_promotions', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('count_topic_first_promotions');
+    expect(typeof agg.count_topic_first_promotions).toBe('number');
+  });
+
+  it('top_topics_by_rank sorted by avg_v3_final desc', () => {
+    const now = new Date();
+    const evPol = makeEvent({
+      id: 'evt-pol',
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
+        { createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://example.com/art-2', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
+      ],
+      versions: [{ id: 'v1', headline: 'Politica headline', versionIndex: 1, packetJson: { topic_keys: ['POLITICA'], topic_scores: { POLITICA: 0.9 } } }],
+    });
+    const evOpi = makeEvent({
+      id: 'evt-opi',
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ media: { id: 'm3', mediaKey: 'opinion', name: 'Opinion' } }) },
+      ],
+      versions: [{ id: 'v2', headline: 'Opinion headline', versionIndex: 1, packetJson: { topic_keys: ['OPINION'], topic_scores: { OPINION: 0.9 } } }],
+    });
+    const output = buildDoctorOutput([evPol, evOpi], [], defaultConfig);
+    const agg = output[output.length - 1];
+    const topics = agg.top_topics_by_rank;
+    // First topic should have higher avg than last
+    if (topics.length >= 2) {
+      expect(topics[0].avg_v3_final).toBeGreaterThanOrEqual(topics[topics.length - 1].avg_v3_final);
+    }
+  });
+});

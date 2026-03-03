@@ -2,7 +2,7 @@ import { FeedRepository } from '../repo/feed-repo.js';
 import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
-import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier } from '../../../core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier, computePublicImportanceV3 } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
@@ -460,6 +460,24 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     });
     item.demotion_multiplier = demotion.multiplier;
     item.demotion_reasons = demotion.reasons;
+
+    // v3 topic-first ranking score
+    const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+    const now6h = Date.now() - 6 * 60 * 60 * 1000;
+    const momentum6h = (row.eventArticles ?? []).filter(
+      (ea: any) => ea.createdAt && new Date(ea.createdAt).getTime() >= now6h,
+    ).length;
+    const v3 = computePublicImportanceV3({
+      topic_key: topicKey,
+      topic_confidence: topicConfidence,
+      num_sources_unique: item.unique_sources_count ?? 1,
+      num_articles: articles.length,
+      momentum_6h: momentum6h,
+      demotion_multiplier: demotion.multiplier,
+    });
+    item.public_importance_v3_raw = v3.raw;
+    item.public_importance_v3_final = v3.final;
+    item.public_importance_v3_components = v3.components;
   }
 
   // Fallback overview for non-ready items that pass the gate
@@ -496,6 +514,21 @@ function logGatedItems(
       })),
     }, 'feed_publish_gate_filtered');
   }
+}
+
+/**
+ * Sort feed items by public_importance_v3_final descending, with recency tiebreaker.
+ */
+function sortByV3(items: Array<{ item: FeedItem }>): void {
+  items.sort((a, b) => {
+    const aScore = a.item.public_importance_v3_final ?? 0;
+    const bScore = b.item.public_importance_v3_final ?? 0;
+    if (Math.abs(bScore - aScore) > 1e-9) return bScore - aScore;
+    // Recency tiebreaker: more recent first
+    const aTs = a.item.published_at ? new Date(a.item.published_at).getTime() : 0;
+    const bTs = b.item.published_at ? new Date(b.item.published_at).getTime() : 0;
+    return bTs - aTs;
+  });
 }
 
 const PAGE_SIZE = 20;
@@ -553,6 +586,9 @@ export class FeedService {
     const gated = allRankedItems.filter((r) => !r.eligible);
     logGatedItems(allRankedItems.length, eligible, gated);
 
+    // v3: re-sort eligible items by public_importance_v3_final desc, recency tiebreaker
+    sortByV3(eligible);
+
     const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
 
     // Cursor for page 2+: fall back to chronological after ranked page 1
@@ -591,6 +627,9 @@ export class FeedService {
     const eligible = allItems.filter((r) => r.eligible);
     const gated = allItems.filter((r) => !r.eligible);
     logGatedItems(allItems.length, eligible, gated);
+
+    // v3: sort eligible items by public_importance_v3_final desc, recency tiebreaker
+    sortByV3(eligible);
 
     const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
 

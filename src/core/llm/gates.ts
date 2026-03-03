@@ -328,7 +328,98 @@ export function computeDemotionMultiplier(input: {
   return { multiplier: Math.round(multiplier * 1000) / 1000, reasons };
 }
 
-// ── IMPORTANCE SCORE ──────────────────────────────────────────────────
+// ── PUBLIC IMPORTANCE V3 (Topic-First) ───────────────────────────────
+
+const TOPIC_WEIGHT_V3: Record<string, number> = {
+  POLITICA: 1.00,
+  ECONOMIA: 0.92,
+  CRIMEN_SEGURIDAD: 0.88,
+  SALUD: 0.75,
+  MEDIO_AMBIENTE: 0.70,
+  DEPORTES: 0.65,
+  ENTRETENIMIENTO: 0.45,
+  OPINION: 0.15,
+  OTROS: 0.30,
+};
+
+const TOPIC_WEIGHT_V3_LOW_CONFIDENCE = 0.45;
+const TOPIC_CONFIDENCE_THRESHOLD_V3 = 0.60;
+const OPINION_GUARDRAIL_WEIGHT = 0.15;
+
+// Weights: 55% topic, 20% diversity, 15% coverage, 10% momentum
+const W_TOPIC_V3 = 0.55;
+const W_DIVERSITY_V3 = 0.20;
+const W_COVERAGE_V3 = 0.15;
+const W_MOMENTUM_V3 = 0.10;
+
+export interface PublicImportanceV3Input {
+  topic_key: string;
+  topic_confidence: number;
+  num_sources_unique: number;
+  num_articles: number;
+  momentum_6h: number;
+  demotion_multiplier: number;
+}
+
+export interface PublicImportanceV3Result {
+  raw: number;
+  final: number;
+  components: {
+    topic_weight: number;
+    diversity_score: number;
+    coverage_score: number;
+    momentum_score: number;
+  };
+}
+
+/**
+ * Compute public importance v3 with topic-first ranking.
+ *
+ * Formula:
+ *   raw = 0.55*TopicWeight + 0.20*DiversityScore + 0.15*CoverageScore + 0.10*MomentumScore
+ *   final = raw * demotion_multiplier
+ *
+ * TopicWeight: lookup by topic_key; OPINION forced to 0.15 regardless.
+ * Low confidence (<0.6) → TopicWeight = 0.45.
+ * Coverage: log(1 + num_articles) / log(1 + 20), clamped [0,1].
+ * Diversity: min(1, num_sources_unique / 4).
+ * Momentum: min(1, momentum_6h / 10).
+ */
+export function computePublicImportanceV3(input: PublicImportanceV3Input): PublicImportanceV3Result {
+  // Topic weight: OPINION guardrail always forces 0.15
+  let topicWeight: number;
+  if (input.topic_key === 'OPINION') {
+    topicWeight = OPINION_GUARDRAIL_WEIGHT;
+  } else if (input.topic_confidence < TOPIC_CONFIDENCE_THRESHOLD_V3) {
+    topicWeight = TOPIC_WEIGHT_V3_LOW_CONFIDENCE;
+  } else {
+    topicWeight = TOPIC_WEIGHT_V3[input.topic_key] ?? TOPIC_WEIGHT_V3['OTROS'];
+  }
+
+  const diversityScore = Math.min(1, input.num_sources_unique / 4);
+  const coverageScore = Math.min(1, Math.log(1 + input.num_articles) / Math.log(1 + 20));
+  const momentumScore = Math.min(1, input.momentum_6h / 10);
+
+  const raw = W_TOPIC_V3 * topicWeight
+    + W_DIVERSITY_V3 * diversityScore
+    + W_COVERAGE_V3 * coverageScore
+    + W_MOMENTUM_V3 * momentumScore;
+
+  const final = raw * input.demotion_multiplier;
+
+  return {
+    raw: Math.round(raw * 1000) / 1000,
+    final: Math.round(final * 1000) / 1000,
+    components: {
+      topic_weight: Math.round(topicWeight * 1000) / 1000,
+      diversity_score: Math.round(diversityScore * 1000) / 1000,
+      coverage_score: Math.round(coverageScore * 1000) / 1000,
+      momentum_score: Math.round(momentumScore * 1000) / 1000,
+    },
+  };
+}
+
+// ── IMPORTANCE SCORE (v1/v2 — legacy, still used by publish gate) ────
 
 // ── Topic weights per gate tier ──────────────────────────────────────
 
