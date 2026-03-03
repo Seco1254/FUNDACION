@@ -180,11 +180,24 @@ export function buildFeedFallbackOverview(
 
 /**
  * Derive overview_status for the feed item so the client can distinguish states.
+ * Uses overview_lifecycle if present (v3), falls back to content inspection.
  * - 'ready': ai_overview is populated and usable
  * - 'unavailable': pipeline ran but produced no usable overview (gate FAIL, insufficient evidence)
- * - 'pending': pipeline hasn't run yet
+ * - 'pending': pipeline hasn't run yet or is in progress
+ * - 'failed': overview generation failed (may retry)
  */
-function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
+function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' | 'failed' {
+  const lc = packet?.overview_lifecycle;
+  if (lc && typeof lc === 'object' && typeof lc.status === 'string') {
+    switch (lc.status) {
+      case 'READY': return 'ready';
+      case 'SKIPPED': return 'unavailable';
+      case 'FAILED': return 'failed';
+      case 'PENDING': return 'pending';
+      case 'NOT_REQUESTED': return 'pending';
+    }
+  }
+  // Backward compat: inspect ai_overview content
   const ai = packet?.ai_overview;
   if (!ai) return 'pending';
   const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];

@@ -29,6 +29,7 @@ import { PrismaClient } from '@prisma/client';
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier, computePublicImportanceV3 } from '../src/core/llm/gates.js';
+import { readLifecycle, type OverviewLifecycle } from '../src/modules/overview/service/overview-lifecycle.js';
 import { isInstitutionalEvent } from '../src/modules/feed/service/feed-service.js';
 import { computeEventScore, type EventForScoring } from '../src/modules/ranking/service/event-scorer.js';
 import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
@@ -251,6 +252,10 @@ export function buildDoctorOutput(
   // v3 aggregate accumulators
   const v3ScoresByTopic: Record<string, number[]> = {};
   let topicFirstPromotionCount = 0;
+  // Overview lifecycle accumulators
+  const binsOverviewStatus: Record<string, number> = {};
+  let eligibleButNotReadyCount = 0;
+  const overviewFailReasons: Record<string, number> = {};
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -493,6 +498,19 @@ export function buildDoctorOutput(
       topicFirstPromotionCount++;
     }
 
+    // Overview lifecycle status
+    const overviewLc = readLifecycle(packet);
+    binsOverviewStatus[overviewLc.status] = (binsOverviewStatus[overviewLc.status] ?? 0) + 1;
+    if (eligible && overviewLc.status !== 'READY') {
+      eligibleButNotReadyCount++;
+    }
+    if (overviewLc.status === 'FAILED' && overviewLc.fail_reason) {
+      overviewFailReasons[overviewLc.fail_reason] = (overviewFailReasons[overviewLc.fail_reason] ?? 0) + 1;
+    }
+    if (overviewLc.status === 'SKIPPED' && overviewLc.skip_reason) {
+      overviewFailReasons[overviewLc.skip_reason] = (overviewFailReasons[overviewLc.skip_reason] ?? 0) + 1;
+    }
+
     // Gate trace: record which checks were applied
     const gateTrace: string[] = [];
     if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
@@ -593,6 +611,15 @@ export function buildDoctorOutput(
           topic_drift: coherenceMetrics.stddev_drift ?? null,
           failed_checks_count: coherenceGate?.failed_checks?.length ?? 0,
         },
+      },
+      overview_lifecycle: {
+        status: overviewLc.status,
+        attempts: overviewLc.attempts,
+        requested_at: overviewLc.requested_at,
+        ready_at: overviewLc.ready_at,
+        failed_at: overviewLc.failed_at,
+        fail_reason: overviewLc.fail_reason,
+        skip_reason: overviewLc.skip_reason,
       },
       quality_flags: {
         mixed_event: null,
@@ -747,6 +774,15 @@ export function buildDoctorOutput(
       }))
       .sort((a, b) => b.avg - a.avg),
     count_topic_first_promotions: topicFirstPromotionCount,
+    // Overview lifecycle aggregate
+    bins_overview_status: Object.entries(binsOverviewStatus)
+      .sort((a, b) => b[1] - a[1])
+      .map(([status, count]) => ({ status, count })),
+    eligible_but_not_ready_count: eligibleButNotReadyCount,
+    overview_fail_reasons_top: Object.entries(overviewFailReasons)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([reason, count]) => ({ reason, count })),
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];

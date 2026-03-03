@@ -1245,3 +1245,162 @@ describe('v3 aggregate fields', () => {
     }
   });
 });
+
+// ── Overview lifecycle observability ──────────────────────────────
+
+describe('overview_lifecycle per event', () => {
+  it('event record includes overview_lifecycle section', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record).toHaveProperty('overview_lifecycle');
+    expect(record.overview_lifecycle).toHaveProperty('status');
+    expect(record.overview_lifecycle).toHaveProperty('attempts');
+  });
+
+  it('NOT_REQUESTED for event without overview_lifecycle in packet', () => {
+    const ev = makeEvent({ id: 'evt-1', versions: [{ id: 'v1', headline: 'Test', versionIndex: 1, packetJson: {} }] });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.overview_lifecycle.status).toBe('NOT_REQUESTED');
+    expect(record.overview_lifecycle.attempts).toBe(0);
+  });
+
+  it('READY for event with overview_lifecycle.status=READY', () => {
+    const ev = makeEvent({
+      id: 'evt-1',
+      versions: [{
+        id: 'v1', headline: 'Test', versionIndex: 1,
+        packetJson: {
+          overview_lifecycle: {
+            status: 'READY', requested_at: '2025-01-01', ready_at: '2025-01-01T01:00:00Z',
+            failed_at: null, skipped_at: null, attempts: 1, fail_reason: null, skip_reason: null,
+          },
+        },
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.overview_lifecycle.status).toBe('READY');
+  });
+
+  it('backward compat: infers READY from ai_overview content', () => {
+    const ev = makeEvent({
+      id: 'evt-1',
+      versions: [{
+        id: 'v1', headline: 'Test', versionIndex: 1,
+        packetJson: { ai_overview: { what_happened: ['Something'], context: [] } },
+      }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.overview_lifecycle.status).toBe('READY');
+  });
+});
+
+describe('overview lifecycle aggregate', () => {
+  it('aggregate includes bins_overview_status', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('bins_overview_status');
+    expect(Array.isArray(agg.bins_overview_status)).toBe(true);
+    expect(agg.bins_overview_status.length).toBeGreaterThan(0);
+    expect(agg.bins_overview_status[0]).toHaveProperty('status');
+    expect(agg.bins_overview_status[0]).toHaveProperty('count');
+  });
+
+  it('aggregate includes eligible_but_not_ready_count', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('eligible_but_not_ready_count');
+    expect(typeof agg.eligible_but_not_ready_count).toBe('number');
+  });
+
+  it('aggregate includes overview_fail_reasons_top', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('overview_fail_reasons_top');
+    expect(Array.isArray(agg.overview_fail_reasons_top)).toBe(true);
+  });
+
+  it('bins_overview_status counts correctly for mixed statuses', () => {
+    const now = new Date();
+    const evReady = makeEvent({
+      id: 'evt-ready',
+      versions: [{
+        id: 'v1', headline: 'Ready', versionIndex: 1,
+        packetJson: {
+          overview_lifecycle: {
+            status: 'READY', requested_at: null, ready_at: '2025-01-01',
+            failed_at: null, skipped_at: null, attempts: 1,
+            fail_reason: null, skip_reason: null,
+          },
+        },
+      }],
+      eventArticles: [{ createdAt: now, article: makeArticle() }],
+    });
+    const evFailed = makeEvent({
+      id: 'evt-failed',
+      versions: [{
+        id: 'v2', headline: 'Failed', versionIndex: 1,
+        packetJson: {
+          overview_lifecycle: {
+            status: 'FAILED', requested_at: null, ready_at: null,
+            failed_at: '2025-01-01', skipped_at: null, attempts: 2,
+            fail_reason: 'no_content_generated', skip_reason: null,
+          },
+        },
+      }],
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://example.com/2' }) }],
+    });
+    const output = buildDoctorOutput([evReady, evFailed], [], defaultConfig);
+    const agg = output[output.length - 1];
+    const bins = agg.bins_overview_status;
+    const readyBin = bins.find((b: any) => b.status === 'READY');
+    const failedBin = bins.find((b: any) => b.status === 'FAILED');
+    expect(readyBin?.count).toBe(1);
+    expect(failedBin?.count).toBe(1);
+  });
+
+  it('eligible_but_not_ready counts eligible events without READY status', () => {
+    const now = new Date();
+    // This event should be feed-eligible (multi-source) but NOT_REQUESTED overview
+    const ev = makeEvent({
+      id: 'evt-1',
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ media: { id: 'm1', mediaKey: 'source1', name: 'Source 1' } }) },
+        { createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://example.com/2', media: { id: 'm2', mediaKey: 'source2', name: 'Source 2' } }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    // Event is multi-source, should be eligible, but overview is NOT_REQUESTED
+    expect(agg.eligible_but_not_ready_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('overview_fail_reasons_top captures FAILED reasons', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-1',
+      versions: [{
+        id: 'v1', headline: 'Failed event', versionIndex: 1,
+        packetJson: {
+          overview_lifecycle: {
+            status: 'FAILED', requested_at: null, ready_at: null,
+            failed_at: '2025-01-01', skipped_at: null, attempts: 1,
+            fail_reason: 'no_content_generated', skip_reason: null,
+          },
+        },
+      }],
+      eventArticles: [{ createdAt: now, article: makeArticle() }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    const reasons = agg.overview_fail_reasons_top;
+    const noContent = reasons.find((r: any) => r.reason === 'no_content_generated');
+    expect(noContent?.count).toBe(1);
+  });
+});
