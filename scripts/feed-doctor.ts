@@ -112,6 +112,38 @@ export function configFromArgs(args: Record<string, string>): DoctorConfig {
   };
 }
 
+// ── v2.3: maybe_link_toxic rule ──────────────────────────────────
+
+export interface MaybeLinkToxicInput {
+  num_articles: number;
+  split_proxy: boolean;
+  coherence_status: string;
+  maybe_link_degraded_total: number;
+  maybe_link_degraded_by_reason: Record<string, number>;
+}
+
+/**
+ * Conservative rule: mark an event as maybe_link_toxic when it has
+ * too many MAYBE_LINK degradations caused by floor gates.
+ *
+ * Conditions (all must be true):
+ *   1. num_articles >= 8
+ *   2. split_proxy = true OR coherence_status = 'FAIL'
+ *   3. maybe_link_degraded_total >= 5
+ *   4. >= 60% of degradations are floor gates
+ */
+export function isMaybeLinkToxic(input: MaybeLinkToxicInput): boolean {
+  if (input.num_articles < 8) return false;
+  if (!input.split_proxy && input.coherence_status !== 'FAIL') return false;
+  if (input.maybe_link_degraded_total < 5) return false;
+
+  const floorCount =
+    (input.maybe_link_degraded_by_reason['TITLE_ALIGNMENT_FLOOR'] ?? 0) +
+    (input.maybe_link_degraded_by_reason['ENTITY_OVERLAP_FLOOR'] ?? 0);
+  const floorPct = floorCount / input.maybe_link_degraded_total;
+  return floorPct >= 0.6;
+}
+
 // ── Core processing (testable without Prisma) ───────────────────
 
 export interface LinkerLog {
@@ -213,6 +245,9 @@ export function buildDoctorOutput(
   const binsDeskSource: Record<string, number> = {};
   let lowTopicConfidenceCount = 0;
   let deskNullCount = 0;
+  let maybeLinkDegradedTotal = 0;
+  const maybeLinkDegradedByReason: Record<string, number> = {};
+  let maybeLinkToxicCount = 0;
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -352,42 +387,6 @@ export function buildDoctorOutput(
       }
     }
 
-    // Demotion multiplier (v2)
-    const demotion = computeDemotionMultiplier({
-      unique_sources_count: numSources,
-      topic_confidence: eventTopicConfidence,
-      topic_key: eventTopicKey,
-      total_usable_text_len: totalUsableTextLen,
-    });
-    for (const dr of demotion.reasons) {
-      demotionReasonCounts[dr] = (demotionReasonCounts[dr] ?? 0) + 1;
-    }
-
-    // Gate trace: record which checks were applied
-    const gateTrace: string[] = [];
-    if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
-    else if (coherenceStatus === 'PASS') gateTrace.push('COHERENCE_GATE:PASS');
-    if (instCheck.excluded) gateTrace.push(`INSTITUTIONAL:BLOCKED(${instCheck.reason})`);
-    else gateTrace.push('INSTITUTIONAL:PASS');
-    gateTrace.push(`PUBLISH_GATE:${publishGate.eligible ? `PASS(${publishGate.gate_name ?? 'none'})` : `BLOCKED(${publishGate.reasons.join(',')})`}`);
-    if (demotion.reasons.length > 0) gateTrace.push(`DEMOTION:${demotion.reasons.join(',')}`);
-
-    // Reason summary
-    let reasonSummary: string;
-    if (eligible && publishGate.gate_name === 'multi') {
-      reasonSummary = 'ENTRÓ POR: multi_source';
-    } else if (eligible && publishGate.gate_name === 'single') {
-      reasonSummary = `ENTRÓ POR: single_source score=${eventImportanceScore}`;
-    } else if (!eligible) {
-      reasonSummary = `BLOQUEADO POR: ${reasons.join(', ')}`;
-    } else {
-      reasonSummary = 'ENTRÓ POR: gate_disabled';
-    }
-
-    for (const r of reasons) {
-      ineligibleReasons[r] = (ineligibleReasons[r] ?? 0) + 1;
-    }
-
     // ── Ranking features ──
     const eventForScoring: EventForScoring = {
       id: ev.id,
@@ -424,6 +423,78 @@ export function buildDoctorOutput(
     // Accumulate hard negative reasons for aggregate
     for (const [reason, count] of Object.entries(topReasons)) {
       hardNegativeReasonCounts[reason] = (hardNegativeReasonCounts[reason] ?? 0) + (count as number);
+    }
+
+    // v2.3: Per-event maybe_link_degraded stats
+    const degradedLogs = logs.filter((l) => l.action === 'MAYBE_LINK_DEGRADED');
+    const eventDegradedTotal = degradedLogs.length;
+    const eventDegradedByReason: Record<string, number> = {};
+    for (const dl of degradedLogs) {
+      const reasons = Array.isArray(dl.data?.reasons) ? dl.data.reasons : [];
+      for (const r of reasons) {
+        eventDegradedByReason[r] = (eventDegradedByReason[r] ?? 0) + 1;
+      }
+    }
+    // Accumulate to global
+    maybeLinkDegradedTotal += eventDegradedTotal;
+    for (const [r, c] of Object.entries(eventDegradedByReason)) {
+      maybeLinkDegradedByReason[r] = (maybeLinkDegradedByReason[r] ?? 0) + c;
+    }
+
+    // v2.3: Compute split_proxy + maybe_link_toxic before demotion
+    const splitResult = detectIntraSplitProxy(
+      articles.map((a: any) => ({
+        title: a.title ?? null,
+        url: a.url ?? null,
+        contentType: a.contentType ?? null,
+      })),
+    );
+    if (splitResult.split_proxy) splitProxyCount++;
+
+    const eventToxic = isMaybeLinkToxic({
+      num_articles: numArticles,
+      split_proxy: splitResult.split_proxy,
+      coherence_status: coherenceStatus,
+      maybe_link_degraded_total: eventDegradedTotal,
+      maybe_link_degraded_by_reason: eventDegradedByReason,
+    });
+    if (eventToxic) maybeLinkToxicCount++;
+
+    // Demotion multiplier (v2, with v2.3 toxic demotion)
+    const demotion = computeDemotionMultiplier({
+      unique_sources_count: numSources,
+      topic_confidence: eventTopicConfidence,
+      topic_key: eventTopicKey,
+      total_usable_text_len: totalUsableTextLen,
+      maybe_link_toxic: eventToxic,
+    });
+    for (const dr of demotion.reasons) {
+      demotionReasonCounts[dr] = (demotionReasonCounts[dr] ?? 0) + 1;
+    }
+
+    // Gate trace: record which checks were applied
+    const gateTrace: string[] = [];
+    if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
+    else if (coherenceStatus === 'PASS') gateTrace.push('COHERENCE_GATE:PASS');
+    if (instCheck.excluded) gateTrace.push(`INSTITUTIONAL:BLOCKED(${instCheck.reason})`);
+    else gateTrace.push('INSTITUTIONAL:PASS');
+    gateTrace.push(`PUBLISH_GATE:${publishGate.eligible ? `PASS(${publishGate.gate_name ?? 'none'})` : `BLOCKED(${publishGate.reasons.join(',')})`}`);
+    if (demotion.reasons.length > 0) gateTrace.push(`DEMOTION:${demotion.reasons.join(',')}`);
+
+    // Reason summary
+    let reasonSummary: string;
+    if (eligible && publishGate.gate_name === 'multi') {
+      reasonSummary = 'ENTRÓ POR: multi_source';
+    } else if (eligible && publishGate.gate_name === 'single') {
+      reasonSummary = `ENTRÓ POR: single_source score=${eventImportanceScore}`;
+    } else if (!eligible) {
+      reasonSummary = `BLOQUEADO POR: ${reasons.join(', ')}`;
+    } else {
+      reasonSummary = 'ENTRÓ POR: gate_disabled';
+    }
+
+    for (const r of reasons) {
+      ineligibleReasons[r] = (ineligibleReasons[r] ?? 0) + 1;
     }
 
     // ── Coherence accumulators ──
@@ -502,34 +573,29 @@ export function buildDoctorOutput(
           failed_checks_count: coherenceGate?.failed_checks?.length ?? 0,
         },
       },
-      quality_flags: (() => {
-        const splitResult = detectIntraSplitProxy(
-          articles.map((a: any) => ({
-            title: a.title ?? null,
-            url: a.url ?? null,
-            contentType: a.contentType ?? null,
-          })),
-        );
-        if (splitResult.split_proxy) splitProxyCount++;
-        return {
-          mixed_event: null,
-          boilerplate: null,
-          split_proxy: splitResult.split_proxy,
-          split_proxy_detail: splitResult.split_proxy ? {
-            top_topic: splitResult.top_topic,
-            top_topic_share: splitResult.top_topic_share,
-            top_desk: splitResult.top_desk,
-            top_desk_share: splitResult.top_desk_share,
-            reasons: splitResult.reasons,
-          } : null,
-        };
-      })(),
+      quality_flags: {
+        mixed_event: null,
+        boilerplate: null,
+        split_proxy: splitResult.split_proxy,
+        split_proxy_detail: splitResult.split_proxy ? {
+          top_topic: splitResult.top_topic,
+          top_topic_share: splitResult.top_topic_share,
+          top_desk: splitResult.top_desk,
+          top_desk_share: splitResult.top_desk_share,
+          reasons: splitResult.reasons,
+        } : null,
+        maybe_link_toxic: eventToxic,
+      },
       linker_summary: {
         auto_links: autoLinks,
         maybe_links: maybeLinks,
         hard_negative_blocks: hardNegBlocks,
         split_actions: splitActions,
         top_reasons: topReasonsArr,
+      },
+      linker_stats: {
+        maybe_link_degraded_total: eventDegradedTotal,
+        maybe_link_degraded_by_reason: eventDegradedByReason,
       },
       ranking_features: {
         recency_score: scored.components.recency,
@@ -626,6 +692,12 @@ export function buildDoctorOutput(
       .map(([source, count]) => ({ source, count })),
     low_topic_confidence_count: lowTopicConfidenceCount,
     desk_null_count: deskNullCount,
+    maybe_link_degraded_total: maybeLinkDegradedTotal,
+    maybe_link_degraded_by_reason: Object.entries(maybeLinkDegradedByReason)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([reason, count]) => ({ reason, count })),
+    maybe_link_toxic_count: maybeLinkToxicCount,
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];
@@ -803,7 +875,7 @@ async function main() {
         where: {
           entityType: 'EVENT',
           entityId: { in: eventIds },
-          action: { in: ['AUTO_LINK', 'MAYBE_LINK', 'CREATE', 'HARD_NEGATIVE_BLOCK', 'SPLIT'] },
+          action: { in: ['AUTO_LINK', 'MAYBE_LINK', 'CREATE', 'HARD_NEGATIVE_BLOCK', 'SPLIT', 'MAYBE_LINK_DEGRADED'] },
         },
         select: { entityId: true, action: true, data: true },
       })

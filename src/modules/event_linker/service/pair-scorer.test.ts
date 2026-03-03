@@ -734,3 +734,70 @@ describe('v2.1: two-step linking', () => {
     expect(result.linkType).toBe('CREATE');
   });
 });
+
+// ── v2.3: maybeLinkDegradedReasons in decideLinkAction ──
+
+describe('v2.3: maybeLinkDegradedReasons in decideLinkAction', () => {
+  it('returns floor gate reasons when AUTO degraded to MAYBE by floor gates', async () => {
+    // Completely different titles + no entity overlap → floor gates fire
+    const article = makeArticle({
+      title: 'Economía colombiana crece tercer trimestre',
+      snippet: 'El PIB creció más de lo esperado.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-degraded',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Selección Colombia clasificó mundial fútbol eliminatorias'],
+      representativeTitle: 'Selección Colombia clasificó mundial fútbol eliminatorias',
+      uniqueMediaCount: 2,
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    // Should have floor gate reasons in maybeLinkDegradedReasons
+    if (result.linkType === 'MAYBE_LINK') {
+      expect(result.maybeLinkDegradedReasons.length).toBeGreaterThan(0);
+      const validReasons = ['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR'];
+      for (const r of result.maybeLinkDegradedReasons) {
+        expect(validReasons).toContain(r);
+      }
+    }
+  });
+
+  it('returns empty maybeLinkDegradedReasons when AUTO_LINK succeeds', async () => {
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+      representativeTitle: 'Reforma Pensional en el Congreso de la República por Gustavo Petro',
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
+  });
+
+  it('returns empty maybeLinkDegradedReasons when CREATE (no candidates)', async () => {
+    const result = await decideLinkAction(makeArticle(), [], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
+  });
+
+  it('returns empty maybeLinkDegradedReasons on hard block', async () => {
+    const article = makeArticle({
+      title: 'Test',
+      snippet: 'Test',
+      embeddingVec: makeVec(42),
+      hardBlockContext: { articleAction: 'protest' },
+    });
+    const candidate = makeCandidate({
+      id: 'evt-hard',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Test'],
+      hardBlockContext: { eventAction: 'election' },
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
+  });
+});

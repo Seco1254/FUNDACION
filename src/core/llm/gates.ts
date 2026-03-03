@@ -267,6 +267,8 @@ const DEMOTION_LOW_TOPIC_CONF = parseFloat(process.env.DEMOTION_LOW_TOPIC_CONF ?
 const DEMOTION_OPINION = parseFloat(process.env.DEMOTION_OPINION ?? '0.70');
 const DEMOTION_SHORT_TEXT = parseFloat(process.env.DEMOTION_SHORT_TEXT ?? '0.60');
 const DEMOTION_SHORT_TEXT_THRESHOLD = parseInt(process.env.DEMOTION_SHORT_TEXT_THRESHOLD ?? '1200', 10);
+const DEMOTION_MAYBE_LINK_TOXIC = parseFloat(process.env.DEMOTION_MAYBE_LINK_TOXIC ?? '0.50');
+export const FEED_MAYBE_LINK_TOXIC_DEMOTION_ENABLED = process.env.FEED_MAYBE_LINK_TOXIC_DEMOTION_ENABLED !== '0';
 
 export interface DemotionResult {
   multiplier: number;
@@ -283,13 +285,22 @@ export function computeDemotionMultiplier(input: {
   topic_confidence?: number | null;
   topic_key?: string | null;
   total_usable_text_len: number;
+  /** v2.3: when true and FEED_MAYBE_LINK_TOXIC_DEMOTION_ENABLED, apply ×0.50 extra demotion */
+  maybe_link_toxic?: boolean;
 }): DemotionResult {
   const reasons: string[] = [];
   let multiplier = 1.0;
 
-  // Only apply demotions to single-source events
+  // v2.3: Maybe-link toxic demotion (applies to ANY event, not just single-source)
+  if (input.maybe_link_toxic && FEED_MAYBE_LINK_TOXIC_DEMOTION_ENABLED) {
+    multiplier *= DEMOTION_MAYBE_LINK_TOXIC;
+    reasons.push('MAYBE_LINK_TOXIC');
+  }
+
+  // Only apply single-source demotions to single-source events
   if (input.unique_sources_count >= 2) {
-    return { multiplier: 1.0, reasons: [] };
+    if (reasons.length === 0) return { multiplier: 1.0, reasons: [] };
+    return { multiplier: Math.round(multiplier * 1000) / 1000, reasons };
   }
 
   // Single-source demotion

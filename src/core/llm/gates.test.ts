@@ -752,5 +752,72 @@ describe('gates', () => {
       });
       expect(result.reasons).toContain('SHORT_TEXT');
     });
+
+    // ── v2.3: maybe_link_toxic demotion ──
+
+    it('maybe_link_toxic=true applies ×0.50 demotion on single-source', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+        maybe_link_toxic: true,
+      });
+      expect(result.reasons).toContain('MAYBE_LINK_TOXIC');
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.multiplier).toBeCloseTo(0.50 * 0.65, 2);
+    });
+
+    it('maybe_link_toxic=true applies ×0.50 demotion on multi-source', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 3,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+        maybe_link_toxic: true,
+      });
+      expect(result.reasons).toContain('MAYBE_LINK_TOXIC');
+      expect(result.reasons).not.toContain('SINGLE_SOURCE');
+      expect(result.multiplier).toBe(0.5);
+    });
+
+    it('maybe_link_toxic=false does NOT apply toxic demotion', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 3,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+        maybe_link_toxic: false,
+      });
+      expect(result.reasons).not.toContain('MAYBE_LINK_TOXIC');
+      expect(result.multiplier).toBe(1.0);
+    });
+
+    it('maybe_link_toxic=undefined does NOT apply toxic demotion', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 3,
+        topic_confidence: 0.9,
+        topic_key: 'POLITICA',
+        total_usable_text_len: 2000,
+      });
+      expect(result.reasons).not.toContain('MAYBE_LINK_TOXIC');
+      expect(result.multiplier).toBe(1.0);
+    });
+
+    it('maybe_link_toxic stacks with all single-source demotions', () => {
+      const result = computeDemotionMultiplier({
+        unique_sources_count: 1,
+        topic_confidence: 0.3,
+        topic_key: 'OPINION',
+        total_usable_text_len: 500,
+        maybe_link_toxic: true,
+      });
+      expect(result.reasons).toContain('MAYBE_LINK_TOXIC');
+      expect(result.reasons).toContain('SINGLE_SOURCE');
+      expect(result.reasons).toContain('LOW_TOPIC_CONFIDENCE');
+      expect(result.reasons).toContain('OPINION_CONTENT');
+      expect(result.reasons).toContain('SHORT_TEXT');
+      expect(result.multiplier).toBeCloseTo(0.50 * 0.65 * 0.85 * 0.70 * 0.60, 2);
+    });
   });
 });

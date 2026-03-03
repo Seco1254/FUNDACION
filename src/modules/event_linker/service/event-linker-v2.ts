@@ -195,6 +195,20 @@ export class EventLinkerV2 {
         }, 'linker_decision_debug');
       }
 
+      // v2.3: Write MAYBE_LINK_DEGRADED audit log when floor gates caused degradation
+      if (decision.maybeLinkDegradedReasons.length > 0 && decision.bestMatch) {
+        await this.auditWriter.write({
+          entity_type: 'EVENT',
+          entity_id: decision.bestMatch.eventId,
+          action: 'MAYBE_LINK_DEGRADED',
+          trace_id: traceId,
+          data: {
+            article_id,
+            reasons: decision.maybeLinkDegradedReasons,
+          },
+        });
+      }
+
       if (decision.action === 'LINK' && decision.bestMatch) {
         await this.linkToEvent(article_id, decision.bestMatch.eventId, decision.bestMatch.score, decision, traceId, now);
       } else {

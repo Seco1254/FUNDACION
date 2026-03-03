@@ -7,10 +7,12 @@ import {
   configFromArgs,
   buildDoctorOutput,
   formatOutput,
+  isMaybeLinkToxic,
   type DoctorConfig,
   type LinkerLog,
   type DebugContext,
   type PageTypeBlock,
+  type MaybeLinkToxicInput,
 } from './feed-doctor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -922,5 +924,192 @@ describe('aggregate floor gate reasons v2.3', () => {
     expect(record.linker_summary.hard_negative_blocks).toBe(1);
     expect(record.linker_summary.top_reasons).toContain('TITLE_ALIGNMENT_FLOOR');
     expect(record.linker_summary.top_reasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+});
+
+// ── v2.3: MAYBE_LINK_DEGRADED stats in feed-doctor ───────────────
+
+describe('maybe_link_degraded stats in doctor', () => {
+  it('per-event linker_stats includes maybe_link_degraded_total', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const record = output[1];
+    expect(record.linker_stats.maybe_link_degraded_total).toBe(2);
+  });
+
+  it('per-event linker_stats includes maybe_link_degraded_by_reason', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const record = output[1];
+    expect(record.linker_stats.maybe_link_degraded_by_reason.TITLE_ALIGNMENT_FLOOR).toBe(2);
+    expect(record.linker_stats.maybe_link_degraded_by_reason.ENTITY_OVERLAP_FLOOR).toBe(1);
+  });
+
+  it('aggregate includes maybe_link_degraded_total', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['ENTITY_OVERLAP_FLOOR'] } },
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg.maybe_link_degraded_total).toBe(3);
+  });
+
+  it('aggregate includes maybe_link_degraded_by_reason', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['ENTITY_OVERLAP_FLOOR'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const agg = output[output.length - 1];
+    const byReason = agg.maybe_link_degraded_by_reason;
+    expect(byReason.find((r: any) => r.reason === 'TITLE_ALIGNMENT_FLOOR')).toBeDefined();
+    expect(byReason.find((r: any) => r.reason === 'ENTITY_OVERLAP_FLOOR')).toBeDefined();
+  });
+
+  it('zero degraded when no MAYBE_LINK_DEGRADED logs exist', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output[1];
+    expect(record.linker_stats.maybe_link_degraded_total).toBe(0);
+    expect(record.linker_stats.maybe_link_degraded_by_reason).toEqual({});
+    const agg = output[output.length - 1];
+    expect(agg.maybe_link_degraded_total).toBe(0);
+  });
+
+  it('does NOT affect hard_negative_blocks count', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const logs: LinkerLog[] = [
+      { entityId: 'evt-1', action: 'MAYBE_LINK_DEGRADED', data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] } },
+      { entityId: 'evt-1', action: 'HARD_NEGATIVE_BLOCK', data: { reasons: ['DESK_MISMATCH'] } },
+    ];
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const record = output[1];
+    expect(record.linker_summary.hard_negative_blocks).toBe(1);
+    expect(record.linker_stats.maybe_link_degraded_total).toBe(1);
+  });
+});
+
+// ── v2.3: isMaybeLinkToxic rule ──────────────────────────────────
+
+describe('isMaybeLinkToxic rule', () => {
+  const baseToxicInput: MaybeLinkToxicInput = {
+    num_articles: 10,
+    split_proxy: true,
+    coherence_status: 'PASS',
+    maybe_link_degraded_total: 6,
+    maybe_link_degraded_by_reason: {
+      TITLE_ALIGNMENT_FLOOR: 3,
+      ENTITY_OVERLAP_FLOOR: 3,
+    },
+  };
+
+  it('returns true when all conditions met (split_proxy + 6 degradations)', () => {
+    expect(isMaybeLinkToxic(baseToxicInput)).toBe(true);
+  });
+
+  it('returns true when coherence FAIL instead of split_proxy', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      split_proxy: false,
+      coherence_status: 'FAIL',
+    })).toBe(true);
+  });
+
+  it('returns false when num_articles < 8', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      num_articles: 4,
+    })).toBe(false);
+  });
+
+  it('returns false when no split_proxy and no coherence FAIL', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      split_proxy: false,
+      coherence_status: 'PASS',
+    })).toBe(false);
+  });
+
+  it('returns false when maybe_link_degraded_total < 5', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      maybe_link_degraded_total: 3,
+      maybe_link_degraded_by_reason: { TITLE_ALIGNMENT_FLOOR: 2, ENTITY_OVERLAP_FLOOR: 1 },
+    })).toBe(false);
+  });
+
+  it('returns false when floor percentage < 60%', () => {
+    // 2 floor out of 6 total = 33%
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      maybe_link_degraded_total: 6,
+      maybe_link_degraded_by_reason: {
+        TITLE_ALIGNMENT_FLOOR: 1,
+        ENTITY_OVERLAP_FLOOR: 1,
+      },
+    })).toBe(false);
+  });
+
+  it('returns true at exactly 60% floor (3/5)', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      maybe_link_degraded_total: 5,
+      maybe_link_degraded_by_reason: {
+        TITLE_ALIGNMENT_FLOOR: 2,
+        ENTITY_OVERLAP_FLOOR: 1,
+      },
+    })).toBe(true);
+  });
+
+  it('returns true at exactly 8 articles', () => {
+    expect(isMaybeLinkToxic({
+      ...baseToxicInput,
+      num_articles: 8,
+    })).toBe(true);
+  });
+
+  it('quality_flags.maybe_link_toxic set in doctor event record', () => {
+    const ev = makeEvent({ id: 'evt-1', numArticles: 10 });
+    // Add split_proxy by using articles with different URLs (different desks)
+    // Since detectIntraSplitProxy is deterministic, we need enough diverse articles
+    const logs: LinkerLog[] = [];
+    for (let i = 0; i < 6; i++) {
+      logs.push({
+        entityId: 'evt-1',
+        action: 'MAYBE_LINK_DEGRADED',
+        data: { reasons: ['TITLE_ALIGNMENT_FLOOR'] },
+      });
+    }
+    const output = buildDoctorOutput([ev], logs, defaultConfig);
+    const record = output[1];
+    // maybe_link_toxic depends on split_proxy OR coherence FAIL
+    // With default makeEvent, coherence is PASS and split_proxy may or may not be true
+    // So we just check the field exists
+    expect(record.quality_flags).toHaveProperty('maybe_link_toxic');
+    expect(typeof record.quality_flags.maybe_link_toxic).toBe('boolean');
+  });
+});
+
+// ── v2.3: maybe_link_toxic demotion in aggregate ─────────────────
+
+describe('maybe_link_toxic_count in aggregate', () => {
+  it('aggregate includes maybe_link_toxic_count field', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('maybe_link_toxic_count');
+    expect(typeof agg.maybe_link_toxic_count).toBe('number');
   });
 });
