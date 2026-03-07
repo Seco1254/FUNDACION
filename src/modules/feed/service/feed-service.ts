@@ -309,6 +309,10 @@ function applyPublishGate(
   const coherenceGate = packet?.coherence_gate;
   const titleAlignment: number | null = coherenceGate?.metrics?.title_jaccard ?? null;
 
+  // Evidence fields for title_align bypass
+  const supportedCount: number = packet?.claims_supported_count ?? packet?.facts_packet?.supported_count ?? 0;
+  const evidenceRate: number = packet?.evidence_rate ?? 0;
+
   const gateResult = evaluatePublishGate({
     unique_sources_count: item.unique_sources_count ?? 0,
     total_usable_text_len: item.total_usable_text_len ?? 0,
@@ -321,6 +325,9 @@ function applyPublishGate(
     topic_key: topicKey ?? null,
     topic_confidence: topicConfidence ?? null,
     allowed_topics: FEED_ALLOWED_TOPICS.length > 0 ? FEED_ALLOWED_TOPICS : undefined,
+    headline: item.headline,
+    supported_count: supportedCount,
+    evidence_rate: evidenceRate,
   });
 
   if (!gateResult.eligible) {

@@ -129,6 +129,11 @@ const GATE_SINGLE_MIN_TEXT_LEN = parseInt(process.env.GATE_SINGLE_MIN_TEXT_LEN ?
 const GATE_SINGLE_MIN_IMPORTANCE = parseFloat(process.env.GATE_SINGLE_MIN_IMPORTANCE_SCORE ?? '0.45');
 const GATE_SINGLE_TOPIC_CONFIDENCE_MIN = parseFloat(process.env.GATE_SINGLE_TOPIC_CONFIDENCE_MIN ?? '0.6');
 
+// Title alignment bypass — escape hatch for strong-evidence single-source events
+const GATE_SINGLE_TITLE_ALIGN_BYPASS_ENABLED = process.env.GATE_SINGLE_TITLE_ALIGN_BYPASS_ENABLED !== '0';
+const GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_SUPPORTED = parseInt(process.env.GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_SUPPORTED ?? '5', 10);
+const GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_EVIDENCE_RATE = parseFloat(process.env.GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_EVIDENCE_RATE ?? '0.18');
+
 export interface PublishGateInput {
   unique_sources_count: number;
   total_usable_text_len: number;
@@ -147,12 +152,21 @@ export interface PublishGateInput {
   topic_confidence?: number | null;
   /** Optional: allowed topic keys (if empty, topic gate is disabled). */
   allowed_topics?: string[];
+  /** Optional: event headline for title_align bypass (pipe check). */
+  headline?: string | null;
+  /** Optional: number of supported claims for title_align bypass. */
+  supported_count?: number | null;
+  /** Optional: evidence rate (0..1) for title_align bypass. */
+  evidence_rate?: number | null;
 }
 
 export interface PublishGateResult {
   eligible: boolean;
   gate_name: 'multi' | 'single' | null;
   reasons: string[];
+  /** Observability: set when title_align bypass was applied */
+  title_align_bypass?: boolean;
+  title_align_bypass_reason?: string;
 }
 
 /**
@@ -214,11 +228,30 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
     }
 
     // Title alignment: block single-source events with poor title alignment
+    let titleAlignBypassed = false;
+    let titleAlignBypassReason: string | undefined;
     if (
       input.title_alignment != null &&
       input.title_alignment < GATE_SINGLE_TITLE_ALIGN_MIN
     ) {
-      reasons.push('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+      // Escape hatch: bypass for strong-evidence events without pipe in headline
+      const headline = input.headline ?? '';
+      const hasPipe = headline.includes(' | ');
+      const supportedCount = input.supported_count ?? 0;
+      const evidenceRate = input.evidence_rate ?? 0;
+
+      if (
+        GATE_SINGLE_TITLE_ALIGN_BYPASS_ENABLED &&
+        !hasPipe &&
+        supportedCount >= GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_SUPPORTED &&
+        evidenceRate >= GATE_SINGLE_TITLE_ALIGN_BYPASS_MIN_EVIDENCE_RATE
+      ) {
+        titleAlignBypassed = true;
+        titleAlignBypassReason = `supported_count>=${supportedCount} & evidence_rate>=${evidenceRate} & no_pipe`;
+        // Do NOT push SINGLE_SOURCE_LOW_TITLE_ALIGN
+      } else {
+        reasons.push('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+      }
     }
 
     // Importance gate: only applied when importance_score is provided (backward compat)
@@ -242,7 +275,10 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
     }
 
     if (reasons.length === 0) {
-      return { eligible: true, gate_name: 'single', reasons: [] };
+      return {
+        eligible: true, gate_name: 'single', reasons: [],
+        ...(titleAlignBypassed ? { title_align_bypass: true, title_align_bypass_reason: titleAlignBypassReason } : {}),
+      };
     }
     return { eligible: false, gate_name: null, reasons };
   }

@@ -420,6 +420,147 @@ describe('gates', () => {
     });
   });
 
+  // ── title_align bypass (escape hatch) ──
+
+  describe('SINGLE_SOURCE_TITLE_ALIGN bypass', () => {
+    const bypassBase = {
+      unique_sources_count: 1,
+      total_usable_text_len: 1600,
+      key_facts_count: 0,
+      overview_status: 'pending' as const,
+      has_disclaimer: false,
+      page_types: ['ARTICLE'] as string[],
+      title_alignment: 0.10, // below 0.20 threshold
+      importance_score: 0.50,
+      headline: 'Buena noticia real sin pipe',
+      supported_count: 5,
+      evidence_rate: 0.18,
+    };
+
+    it('bypass activates: no pipe, supported_count=5, evidence_rate=0.18', () => {
+      const result = evaluatePublishGate(bypassBase);
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('single');
+      expect(result.reasons).not.toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+      expect(result.title_align_bypass).toBe(true);
+      expect(result.title_align_bypass_reason).toContain('no_pipe');
+    });
+
+    it('bypass NOT active when headline contains " | "', () => {
+      const result = evaluatePublishGate({ ...bypassBase, headline: 'Junk title | Site Name' });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+      expect(result.title_align_bypass).toBeUndefined();
+    });
+
+    it('bypass NOT active when supported_count=4 (below threshold)', () => {
+      const result = evaluatePublishGate({ ...bypassBase, supported_count: 4 });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('bypass NOT active when evidence_rate=0.17 (below threshold)', () => {
+      const result = evaluatePublishGate({ ...bypassBase, evidence_rate: 0.17 });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('borderline evidence_rate=0.171 does NOT pass', () => {
+      const result = evaluatePublishGate({ ...bypassBase, evidence_rate: 0.171 });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('evidence_rate exactly 0.18 passes', () => {
+      const result = evaluatePublishGate({ ...bypassBase, evidence_rate: 0.18 });
+      expect(result.eligible).toBe(true);
+      expect(result.title_align_bypass).toBe(true);
+    });
+
+    it('supported_count exactly 5 passes', () => {
+      const result = evaluatePublishGate({ ...bypassBase, supported_count: 5 });
+      expect(result.eligible).toBe(true);
+      expect(result.title_align_bypass).toBe(true);
+    });
+
+    it('supported_count=10 and evidence_rate=0.30 passes (strong evidence)', () => {
+      const result = evaluatePublishGate({ ...bypassBase, supported_count: 10, evidence_rate: 0.30 });
+      expect(result.eligible).toBe(true);
+      expect(result.title_align_bypass).toBe(true);
+    });
+
+    it('junk with pipe still blocked even with strong evidence', () => {
+      const result = evaluatePublishGate({
+        ...bypassBase,
+        headline: 'Spam | Click Here',
+        supported_count: 10,
+        evidence_rate: 0.50,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('false positive good news passes with bypass', () => {
+      const result = evaluatePublishGate({
+        ...bypassBase,
+        headline: 'Gobierno anuncia inversión en infraestructura vial',
+        supported_count: 7,
+        evidence_rate: 0.22,
+        title_alignment: 0.15,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.title_align_bypass).toBe(true);
+    });
+
+    it('bypass does not fire when title_alignment is above threshold', () => {
+      const result = evaluatePublishGate({ ...bypassBase, title_alignment: 0.25 });
+      expect(result.eligible).toBe(true);
+      // No bypass needed — title_alignment passes normally
+      expect(result.title_align_bypass).toBeUndefined();
+    });
+
+    it('bypass does not fire when title_alignment is null', () => {
+      const result = evaluatePublishGate({ ...bypassBase, title_alignment: null });
+      expect(result.eligible).toBe(true);
+      // No title alignment check at all
+      expect(result.title_align_bypass).toBeUndefined();
+    });
+
+    it('bypass reason includes supported_count and evidence_rate values', () => {
+      const result = evaluatePublishGate({ ...bypassBase, supported_count: 8, evidence_rate: 0.25 });
+      expect(result.title_align_bypass_reason).toContain('supported_count>=8');
+      expect(result.title_align_bypass_reason).toContain('evidence_rate>=0.25');
+      expect(result.title_align_bypass_reason).toContain('no_pipe');
+    });
+
+    it('bypass with missing headline (null) — treated as no pipe → bypass possible', () => {
+      const result = evaluatePublishGate({ ...bypassBase, headline: null });
+      expect(result.eligible).toBe(true);
+      expect(result.title_align_bypass).toBe(true);
+    });
+
+    it('bypass with missing supported_count/evidence_rate defaults to 0 — no bypass', () => {
+      const result = evaluatePublishGate({
+        ...bypassBase,
+        supported_count: undefined as any,
+        evidence_rate: undefined as any,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('SINGLE_SOURCE_LOW_TITLE_ALIGN');
+    });
+
+    it('multi-source events are not affected by bypass logic', () => {
+      const result = evaluatePublishGate({
+        ...bypassBase,
+        unique_sources_count: 3,
+        total_usable_text_len: 2000,
+      });
+      expect(result.eligible).toBe(true);
+      expect(result.gate_name).toBe('multi');
+      expect(result.title_align_bypass).toBeUndefined();
+    });
+  });
+
   // ── computeImportanceScore v2 ──
 
   describe('computeImportanceScore — single-source', () => {

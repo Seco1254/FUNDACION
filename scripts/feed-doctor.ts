@@ -252,6 +252,8 @@ export function buildDoctorOutput(
   // v3 aggregate accumulators
   const v3ScoresByTopic: Record<string, number[]> = {};
   let topicFirstPromotionCount = 0;
+  // Title align bypass accumulator
+  let titleAlignBypassCount = 0;
   // Overview lifecycle accumulators
   const binsOverviewStatus: Record<string, number> = {};
   let eligibleButNotReadyCount = 0;
@@ -370,6 +372,12 @@ export function buildDoctorOutput(
     const feedAllowedTopics: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
       .split(',').map((s) => s.trim()).filter(Boolean);
 
+    // Evidence fields for title_align bypass
+    const eventHeadline = version?.headline ?? '';
+    const claimsSupportedCount: number = packet.claims_supported_count ?? packet.facts_packet?.supported_count ?? 0;
+    const eventEvidenceRate: number = packet.evidence_rate ?? 0;
+    const titleAlignmentForGate: number | null = coherenceMetrics.title_jaccard ?? null;
+
     const publishGate = evaluatePublishGate({
       unique_sources_count: numSources,
       total_usable_text_len: totalUsableTextLen,
@@ -380,10 +388,15 @@ export function buildDoctorOutput(
       topic_confidence: eventTopicConfidence,
       allowed_topics: feedAllowedTopics.length > 0 ? feedAllowedTopics : undefined,
       importance_score: eventImportanceScore,
+      title_alignment: titleAlignmentForGate,
+      headline: eventHeadline,
+      supported_count: claimsSupportedCount,
+      evidence_rate: eventEvidenceRate,
     });
     if (!publishGate.eligible) {
       for (const r of publishGate.reasons) reasons.push(`GATE:${r}`);
     }
+    if (publishGate.title_align_bypass) titleAlignBypassCount++;
 
     const eligible = reasons.length === 0;
     if (eligible) feedEligible++; else feedIneligible++;
@@ -519,6 +532,7 @@ export function buildDoctorOutput(
     else gateTrace.push('INSTITUTIONAL:PASS');
     gateTrace.push(`PUBLISH_GATE:${publishGate.eligible ? `PASS(${publishGate.gate_name ?? 'none'})` : `BLOCKED(${publishGate.reasons.join(',')})`}`);
     if (demotion.reasons.length > 0) gateTrace.push(`DEMOTION:${demotion.reasons.join(',')}`);
+    if (publishGate.title_align_bypass) gateTrace.push('SINGLE_SOURCE_TITLE_ALIGN_BYPASS');
 
     // Reason summary
     let reasonSummary: string;
@@ -597,6 +611,10 @@ export function buildDoctorOutput(
         reasons,
         gate_trace: gateTrace,
         reason_summary: reasonSummary,
+        ...(publishGate.title_align_bypass ? {
+          title_align_bypass: true,
+          title_align_bypass_reason: publishGate.title_align_bypass_reason,
+        } : {}),
       },
       demotion: {
         multiplier: demotion.multiplier,
@@ -758,6 +776,7 @@ export function buildDoctorOutput(
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
     maybe_link_toxic_count: maybeLinkToxicCount,
+    single_source_title_align_bypass_count: titleAlignBypassCount,
     // v3 topic-first ranking aggregate
     top_topics_by_rank: Object.entries(v3ScoresByTopic)
       .map(([topic, scores]) => ({

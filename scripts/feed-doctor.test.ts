@@ -1404,3 +1404,58 @@ describe('overview lifecycle aggregate', () => {
     expect(noContent?.count).toBe(1);
   });
 });
+
+// ── Title align bypass observability ─────────────────────────────
+
+describe('title_align_bypass in feed-doctor', () => {
+  it('aggregate includes single_source_title_align_bypass_count', () => {
+    const ev = makeEvent({ id: 'evt-1' });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output[output.length - 1];
+    expect(agg).toHaveProperty('single_source_title_align_bypass_count');
+    expect(typeof agg.single_source_title_align_bypass_count).toBe('number');
+  });
+
+  it('bypass event has title_align_bypass in eligibility', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-bypass',
+      versions: [{
+        id: 'v1', headline: 'Good headline no pipe', versionIndex: 1,
+        packetJson: {
+          coherence_gate: { status: 'PASS', metrics: { title_jaccard: 0.10, avg_cosine: 0.8, entity_jaccard: 0.1, stddev_drift: 0.01 }, failed_checks: [] },
+          claims_supported_count: 6,
+          evidence_rate: 0.20,
+        },
+      }],
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ textContentLen: 2000 }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-bypass');
+    expect(record.eligibility.title_align_bypass).toBe(true);
+    expect(record.eligibility.title_align_bypass_reason).toContain('no_pipe');
+  });
+
+  it('gate_trace includes SINGLE_SOURCE_TITLE_ALIGN_BYPASS when bypass applies', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-bypass',
+      versions: [{
+        id: 'v1', headline: 'Noticia real', versionIndex: 1,
+        packetJson: {
+          coherence_gate: { status: 'PASS', metrics: { title_jaccard: 0.05, avg_cosine: 0.9, entity_jaccard: 0.2, stddev_drift: 0.01 }, failed_checks: [] },
+          claims_supported_count: 8,
+          evidence_rate: 0.25,
+        },
+      }],
+      eventArticles: [
+        { createdAt: now, article: makeArticle({ textContentLen: 2000 }) },
+      ],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-bypass');
+    expect(record.eligibility.gate_trace).toContain('SINGLE_SOURCE_TITLE_ALIGN_BYPASS');
+  });
+});
