@@ -35,6 +35,7 @@ import { computeEventScore, type EventForScoring } from '../src/modules/ranking/
 import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-split-proxy.js';
 import { aggregateEventTopic } from '../src/modules/topics/service/topic-heuristic.js';
 import { extractDeskDetailed } from '../src/modules/event_linker/service/hard-negative-gates.js';
+import { getSourceQualityPolicy } from '../src/modules/media/service/source-quality-registry.js';
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -258,6 +259,13 @@ export function buildDoctorOutput(
   const binsOverviewStatus: Record<string, number> = {};
   let eligibleButNotReadyCount = 0;
   const overviewFailReasons: Record<string, number> = {};
+  // Source quality policy accumulators
+  const binsSourceTier: Record<string, number> = {};
+  const binsSourceMode: Record<string, number> = {};
+  let sourcePolicyBlockedCount = 0;
+  let singleSourceBlockedByPolicyCount = 0;
+  const v3ScoresBySourceTier: Record<string, number[]> = {};
+  const v3ScoresBySourceMode: Record<string, number[]> = {};
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -312,8 +320,27 @@ export function buildDoctorOutput(
     });
     const repArt = sortedArts[0];
 
+    // ── Source quality policy ──
+    const repMediaKey: string = repArt?.media?.mediaKey ?? 'unknown';
+    const sourcePolicy = getSourceQualityPolicy(repMediaKey);
+
+    // Accumulate source tier/mode bins
+    binsSourceTier[sourcePolicy.source_tier] = (binsSourceTier[sourcePolicy.source_tier] ?? 0) + 1;
+    binsSourceMode[sourcePolicy.source_mode] = (binsSourceMode[sourcePolicy.source_mode] ?? 0) + 1;
+
     // ── Eligibility ──
     const reasons: string[] = [];
+
+    // Source policy gate: allow_in_feed
+    if (!sourcePolicy.allow_in_feed) {
+      reasons.push('SOURCE_POLICY_BLOCKED');
+      sourcePolicyBlockedCount++;
+    }
+    // Source policy gate: single_source_allowed
+    if (numSources === 1 && !sourcePolicy.single_source_allowed) {
+      reasons.push('SOURCE_SINGLE_SOURCE_BLOCKED');
+      singleSourceBlockedByPolicyCount++;
+    }
 
     // Coherence gate
     const coherenceGate = packet.coherence_gate ?? null;
@@ -517,6 +544,13 @@ export function buildDoctorOutput(
     if (v3.final > 0.40 && eventImportanceScore < 0.50) {
       topicFirstPromotionCount++;
     }
+    // Accumulate v3 scores by source tier/mode for aggregate
+    const tierScoresArr = v3ScoresBySourceTier[sourcePolicy.source_tier] ?? [];
+    tierScoresArr.push(v3.final);
+    v3ScoresBySourceTier[sourcePolicy.source_tier] = tierScoresArr;
+    const modeScoresArr = v3ScoresBySourceMode[sourcePolicy.source_mode] ?? [];
+    modeScoresArr.push(v3.final);
+    v3ScoresBySourceMode[sourcePolicy.source_mode] = modeScoresArr;
 
     // Overview lifecycle status
     const overviewLc = readLifecycle(packet);
@@ -540,6 +574,9 @@ export function buildDoctorOutput(
     gateTrace.push(`PUBLISH_GATE:${publishGate.eligible ? `PASS(${publishGate.gate_name ?? 'none'})` : `BLOCKED(${publishGate.reasons.join(',')})`}`);
     if (demotion.reasons.length > 0) gateTrace.push(`DEMOTION:${demotion.reasons.join(',')}`);
     if (publishGate.title_align_bypass) gateTrace.push('SINGLE_SOURCE_TITLE_ALIGN_BYPASS');
+    if (!sourcePolicy.allow_in_feed) gateTrace.push(`SOURCE_POLICY:BLOCKED(${repMediaKey})`);
+    else if (numSources === 1 && !sourcePolicy.single_source_allowed) gateTrace.push(`SOURCE_POLICY:SINGLE_BLOCKED(${repMediaKey})`);
+    else gateTrace.push(`SOURCE_POLICY:PASS(${sourcePolicy.source_tier}/${sourcePolicy.source_mode},x${sourcePolicy.ranking_multiplier})`);
 
     // Reason summary
     let reasonSummary: string;
@@ -605,6 +642,9 @@ export function buildDoctorOutput(
           desk: repDesk,
           desk_source: repDeskSource,
           text_len: repArt.textContentLen ?? 0,
+          source_tier: sourcePolicy.source_tier,
+          source_mode: sourcePolicy.source_mode,
+          source_policy_multiplier: sourcePolicy.ranking_multiplier,
           title: repArt.title,
         } : null,
         topic_key: eventTopicKey,
@@ -809,6 +849,29 @@ export function buildDoctorOutput(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([reason, count]) => ({ reason, count })),
+    // Source quality policy aggregate
+    bins_source_tier: Object.entries(binsSourceTier)
+      .sort((a, b) => b[1] - a[1])
+      .map(([tier, count]) => ({ tier, count })),
+    bins_source_mode: Object.entries(binsSourceMode)
+      .sort((a, b) => b[1] - a[1])
+      .map(([mode, count]) => ({ mode, count })),
+    source_policy_blocked_count: sourcePolicyBlockedCount,
+    single_source_blocked_by_source_policy_count: singleSourceBlockedByPolicyCount,
+    avg_rank_score_by_source_tier: Object.entries(v3ScoresBySourceTier)
+      .map(([tier, scores]) => ({
+        tier,
+        count: scores.length,
+        avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
+      }))
+      .sort((a, b) => b.avg - a.avg),
+    avg_public_importance_v3_by_source_mode: Object.entries(v3ScoresBySourceMode)
+      .map(([mode, scores]) => ({
+        mode,
+        count: scores.length,
+        avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
+      }))
+      .sort((a, b) => b.avg - a.avg),
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];

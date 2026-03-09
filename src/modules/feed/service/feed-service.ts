@@ -6,6 +6,7 @@ import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier,
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
+import { getSourceQualityPolicy } from '../../media/service/source-quality-registry.js';
 import { logger } from '../../../core/logging/logger.js';
 
 // ── Topic filter config ──────────────────────────────────────────────
@@ -448,6 +449,50 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     }
   }
 
+  // ── Source quality policy (representative article = longest text, prefer news) ──
+  const allArticlesForPolicy = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const sortedForRep = [...allArticlesForPolicy].sort((a: any, b: any) => {
+    const aCt = a.contentType === 'news' ? 0 : 1;
+    const bCt = b.contentType === 'news' ? 0 : 1;
+    if (aCt !== bCt) return aCt - bCt;
+    return (b.textContentLen ?? 0) - (a.textContentLen ?? 0);
+  });
+  const repMediaKey: string = sortedForRep[0]?.media?.mediaKey ?? 'unknown';
+  const sourcePolicy = getSourceQualityPolicy(repMediaKey);
+
+  // Source policy gate: allow_in_feed
+  if (!sourcePolicy.allow_in_feed) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      source_tier: sourcePolicy.source_tier,
+      source_mode: sourcePolicy.source_mode,
+      source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_POLICY_BLOCKED'] };
+  }
+
+  // Source policy gate: single_source_allowed
+  const uniqueMediaKeys = new Set(allArticlesForPolicy.map((a: any) => a.media?.mediaKey ?? 'unknown'));
+  if (uniqueMediaKeys.size === 1 && !sourcePolicy.single_source_allowed) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      source_tier: sourcePolicy.source_tier,
+      source_mode: sourcePolicy.source_mode,
+      source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_SINGLE_SOURCE_BLOCKED'] };
+  }
+
   const teaser: string | null = packet.ai_teaser || null;
   const item: FeedItem = {
     event_id: row.id,
@@ -460,6 +505,9 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     overview_status: deriveOverviewStatus(packet),
     topic_key: topicKey,
     topic_confidence: topicConfidence,
+    source_tier: sourcePolicy.source_tier,
+    source_mode: sourcePolicy.source_mode,
+    source_policy_multiplier: sourcePolicy.ranking_multiplier,
     ...enrichFeedItem(row, packet),
   };
 
@@ -503,7 +551,9 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
       demotion_multiplier: demotion.multiplier,
     });
     item.public_importance_v3_raw = v3.raw;
-    item.public_importance_v3_final = v3.final;
+    // Apply source policy ranking_multiplier after demotion
+    const v3Final = Math.round(v3.final * sourcePolicy.ranking_multiplier * 1000) / 1000;
+    item.public_importance_v3_final = v3Final;
     item.public_importance_v3_components = v3.components;
   }
 

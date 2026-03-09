@@ -55,6 +55,10 @@ export interface FeedItem {
     coverage_score: number;
     momentum_score: number;
   };
+  /** Source quality policy fields */
+  source_tier?: string;
+  source_mode?: string;
+  source_policy_multiplier?: number;
 }
 
 export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';

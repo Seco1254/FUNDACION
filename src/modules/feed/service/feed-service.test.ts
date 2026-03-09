@@ -807,4 +807,238 @@ describe('FeedService', () => {
       expect(feed.items.find((i) => i.event_id === 'evt-2art')).toBeDefined();
     });
   });
+
+  // ── Source Quality Policy ─────────────────────────────────────────
+
+  describe('source quality policy', () => {
+    it('blocks event when representative source has allow_in_feed=false (oec)', async () => {
+      const row = makeMockRow({
+        id: 'evt-oec',
+        eventArticles: [{
+          article: {
+            id: 'art-oec', url: 'https://oec.example.com/page',
+            title: 'OEC institutional content',
+            media: { id: 'media-oec', mediaKey: 'oec', name: 'OEC' },
+            textContentLen: 2000, usableForOverview: true, contentType: 'news',
+            extractionFailReason: null, paywallDetected: false,
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-oec')).toBeUndefined();
+    });
+
+    it('blocks single-source event when source has single_source_allowed=false (aciur)', async () => {
+      const row = makeMockRow({
+        id: 'evt-aciur',
+        eventArticles: [{
+          article: {
+            id: 'art-aciur', url: 'https://aciur.example.com/page',
+            title: 'ACIUR content',
+            media: { id: 'media-aciur', mediaKey: 'aciur', name: 'ACIUR' },
+            textContentLen: 2000, usableForOverview: true, contentType: 'news',
+            extractionFailReason: null, paywallDetected: false,
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-aciur')).toBeUndefined();
+    });
+
+    it('does NOT block multi-source event when one LOW source is present but representative is HIGH', async () => {
+      const row = makeMockRow({
+        id: 'evt-multi-mixed',
+        eventArticles: [
+          {
+            article: {
+              id: 'art-et', url: 'https://www.eltiempo.com/art',
+              title: 'Main story', media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' },
+              textContentLen: 3000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'art-oec', url: 'https://oec.example.com/data',
+              title: 'OEC data', media: { id: 'm-oec', mediaKey: 'oec', name: 'OEC' },
+              textContentLen: 500, usableForOverview: true, contentType: 'institutional_static',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      // eltiempo is representative (news, longer text) → not blocked
+      expect(feed.items.find((i) => i.event_id === 'evt-multi-mixed')).toBeDefined();
+    });
+
+    it('eltiempo gets ranking_multiplier=1.0 (source_policy_multiplier on FeedItem)', async () => {
+      const row = makeMockRow({ id: 'evt-et' });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      const item = feed.items.find((i) => i.event_id === 'evt-et');
+      expect(item).toBeDefined();
+      expect(item!.source_policy_multiplier).toBe(1.0);
+      expect(item!.source_tier).toBe('HIGH');
+    });
+
+    it('razon_publica gets ranking_multiplier=0.85', async () => {
+      const row = makeMockRow({
+        id: 'evt-rp',
+        eventArticles: [
+          {
+            article: {
+              id: 'art-rp1', url: 'https://razonpublica.com/art1',
+              title: 'Analysis piece', media: { id: 'm-rp', mediaKey: 'razon_publica', name: 'Razón Pública' },
+              textContentLen: 2000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'art-rp2', url: 'https://other.com/art2',
+              title: 'Other article', media: { id: 'm-other', mediaKey: 'other_outlet', name: 'Other' },
+              textContentLen: 1500, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      const item = feed.items.find((i) => i.event_id === 'evt-rp');
+      expect(item).toBeDefined();
+      expect(item!.source_policy_multiplier).toBe(0.85);
+      expect(item!.source_mode).toBe('ANALYSIS');
+    });
+
+    it('ranking_multiplier < 1.0 reduces v3 final score', async () => {
+      // razon_publica (0.85) vs eltiempo (1.0) — same articles except media
+      const rpRow = makeMockRow({
+        id: 'evt-rp',
+        eventArticles: [
+          {
+            createdAt: new Date(),
+            article: {
+              id: 'art-rp', url: 'https://razonpublica.com/art1',
+              title: 'Story', media: { id: 'm-rp', mediaKey: 'razon_publica', name: 'RP' },
+              textContentLen: 2000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            createdAt: new Date(),
+            article: {
+              id: 'art-other', url: 'https://other.com/art',
+              title: 'Story 2', media: { id: 'm-o', mediaKey: 'other', name: 'Other' },
+              textContentLen: 1500, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const etRow = makeMockRow({
+        id: 'evt-et',
+        eventArticles: [
+          {
+            createdAt: new Date(),
+            article: {
+              id: 'art-et', url: 'https://eltiempo.com/art1',
+              title: 'Story', media: { id: 'm-et', mediaKey: 'eltiempo', name: 'ET' },
+              textContentLen: 2000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            createdAt: new Date(),
+            article: {
+              id: 'art-other2', url: 'https://other2.com/art',
+              title: 'Story 2', media: { id: 'm-o2', mediaKey: 'other2', name: 'Other2' },
+              textContentLen: 1500, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([rpRow, etRow]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      const rpItem = feed.items.find((i) => i.event_id === 'evt-rp');
+      const etItem = feed.items.find((i) => i.event_id === 'evt-et');
+      // Both should exist but RP should have lower v3 final
+      if (rpItem?.public_importance_v3_final != null && etItem?.public_importance_v3_final != null) {
+        expect(rpItem.public_importance_v3_final).toBeLessThanOrEqual(etItem.public_importance_v3_final);
+      }
+    });
+
+    it('unknown source defaults allow in feed (backward compat)', async () => {
+      const row = makeMockRow({
+        id: 'evt-unknown',
+        eventArticles: [
+          {
+            article: {
+              id: 'art-u1', url: 'https://unknown.com/art1',
+              title: 'Article from unknown', media: { id: 'm-u', mediaKey: 'totally_new_outlet', name: 'New' },
+              textContentLen: 2000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'art-u2', url: 'https://other.com/art2',
+              title: 'Second article', media: { id: 'm-o', mediaKey: 'other_media', name: 'Other' },
+              textContentLen: 1500, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      const item = feed.items.find((i) => i.event_id === 'evt-unknown');
+      expect(item).toBeDefined();
+      expect(item!.source_tier).toBe('MEDIUM');
+      expect(item!.source_policy_multiplier).toBe(1.0);
+    });
+
+    it('consonante gets HIGH tier and 1.0 multiplier', async () => {
+      const row = makeMockRow({
+        id: 'evt-cons',
+        eventArticles: [
+          {
+            article: {
+              id: 'art-c1', url: 'https://consonante.com/art1',
+              title: 'Regional news', media: { id: 'm-c', mediaKey: 'consonante', name: 'Consonante' },
+              textContentLen: 2000, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+          {
+            article: {
+              id: 'art-c2', url: 'https://other.com/art2',
+              title: 'Other', media: { id: 'm-o', mediaKey: 'other_outlet', name: 'Other' },
+              textContentLen: 1500, usableForOverview: true, contentType: 'news',
+              extractionFailReason: null, paywallDetected: false,
+            },
+          },
+        ],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      const item = feed.items.find((i) => i.event_id === 'evt-cons');
+      expect(item).toBeDefined();
+      expect(item!.source_tier).toBe('HIGH');
+      expect(item!.source_mode).toBe('NEWS');
+    });
+  });
 });

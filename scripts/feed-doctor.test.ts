@@ -1459,3 +1459,159 @@ describe('title_align_bypass in feed-doctor', () => {
     expect(record.eligibility.gate_trace).toContain('SINGLE_SOURCE_TITLE_ALIGN_BYPASS');
   });
 });
+
+// ── Source Quality Policy — per-event ─────────────────────────────
+
+describe('feed-doctor source quality policy (per-event)', () => {
+  it('per-event representative_article includes source_tier/mode/multiplier for known source', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    expect(record.routing.representative_article.source_tier).toBe('HIGH');
+    expect(record.routing.representative_article.source_mode).toBe('MIXED');
+    expect(record.routing.representative_article.source_policy_multiplier).toBe(1.0);
+  });
+
+  it('per-event representative_article shows MEDIUM/MIXED/1.0 for unknown source', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm2', mediaKey: 'unknown_outlet', name: 'Unknown' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    expect(record.routing.representative_article.source_tier).toBe('MEDIUM');
+    expect(record.routing.representative_article.source_mode).toBe('MIXED');
+    expect(record.routing.representative_article.source_policy_multiplier).toBe(1.0);
+  });
+
+  it('per-event shows razon_publica ANALYSIS tier with 0.85 multiplier', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm3', mediaKey: 'razon_publica', name: 'Razón Pública' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    expect(record.routing.representative_article.source_tier).toBe('MEDIUM');
+    expect(record.routing.representative_article.source_mode).toBe('ANALYSIS');
+    expect(record.routing.representative_article.source_policy_multiplier).toBe(0.85);
+  });
+
+  it('oec source gets SOURCE_POLICY_BLOCKED reason', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm4', mediaKey: 'oec', name: 'OEC' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    expect(record.eligibility.reasons).toContain('SOURCE_POLICY_BLOCKED');
+    expect(record.eligibility.feed_eligible).toBe(false);
+  });
+
+  it('aciur single-source gets SOURCE_SINGLE_SOURCE_BLOCKED reason', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm5', mediaKey: 'aciur', name: 'ACIUR' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    expect(record.eligibility.reasons).toContain('SOURCE_SINGLE_SOURCE_BLOCKED');
+  });
+
+  it('gate_trace includes SOURCE_POLICY:BLOCKED for blocked source', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm4', mediaKey: 'oec', name: 'OEC' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    const trace = record.eligibility.gate_trace.join(',');
+    expect(trace).toContain('SOURCE_POLICY:BLOCKED(oec)');
+  });
+
+  it('gate_trace includes SOURCE_POLICY:PASS for allowed source', () => {
+    const ev = makeEvent({
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.kind === 'event');
+    const trace = record.eligibility.gate_trace.join(',');
+    expect(trace).toContain('SOURCE_POLICY:PASS(HIGH/MIXED,x1)');
+  });
+});
+
+// ── Source Quality Policy — aggregate ─────────────────────────────
+
+describe('feed-doctor source quality policy (aggregate)', () => {
+  it('aggregate includes bins_source_tier', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.bins_source_tier).toBeDefined();
+    expect(Array.isArray(agg.bins_source_tier)).toBe(true);
+  });
+
+  it('aggregate bins_source_tier counts correctly', () => {
+    const now = new Date();
+    const ev1 = makeEvent({
+      id: 'evt-1',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a1', media: { id: 'm1', mediaKey: 'eltiempo', name: 'ET' } }) }],
+    });
+    const ev2 = makeEvent({
+      id: 'evt-2',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a2', media: { id: 'm2', mediaKey: 'oec', name: 'OEC' } }) }],
+    });
+    const output = buildDoctorOutput([ev1, ev2], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    const highBin = agg.bins_source_tier.find((b: any) => b.tier === 'HIGH');
+    const lowBin = agg.bins_source_tier.find((b: any) => b.tier === 'LOW');
+    expect(highBin?.count).toBe(1);
+    expect(lowBin?.count).toBe(1);
+  });
+
+  it('aggregate includes bins_source_mode', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.bins_source_mode).toBeDefined();
+    expect(Array.isArray(agg.bins_source_mode)).toBe(true);
+  });
+
+  it('aggregate source_policy_blocked_count reflects blocked events', () => {
+    const now = new Date();
+    const ev1 = makeEvent({
+      id: 'evt-1',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a1', media: { id: 'm4', mediaKey: 'oec', name: 'OEC' } }) }],
+    });
+    const ev2 = makeEvent({
+      id: 'evt-2',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a2', media: { id: 'm1', mediaKey: 'eltiempo', name: 'ET' } }) }],
+    });
+    const output = buildDoctorOutput([ev1, ev2], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.source_policy_blocked_count).toBe(1);
+  });
+
+  it('aggregate single_source_blocked_by_source_policy_count reflects single-source blocked', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-1',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a1', media: { id: 'm5', mediaKey: 'aciur', name: 'ACIUR' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.single_source_blocked_by_source_policy_count).toBe(1);
+  });
+
+  it('aggregate avg_rank_score_by_source_tier has entries', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.avg_rank_score_by_source_tier).toBeDefined();
+    expect(Array.isArray(agg.avg_rank_score_by_source_tier)).toBe(true);
+  });
+
+  it('aggregate avg_public_importance_v3_by_source_mode has entries', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.avg_public_importance_v3_by_source_mode).toBeDefined();
+    expect(Array.isArray(agg.avg_public_importance_v3_by_source_mode)).toBe(true);
+  });
+});
