@@ -59,6 +59,7 @@ export interface FeedItem {
   source_tier?: string;
   source_mode?: string;
   source_policy_multiplier?: number;
+  representative_media_key?: string;
 }
 
 export type EmptyReason = 'NO_EVENTS' | 'NO_PUBLISHED' | 'GATE_FILTERED_ALL' | 'DB_EMPTY';

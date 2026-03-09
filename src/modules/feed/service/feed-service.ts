@@ -7,6 +7,7 @@ import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
 import { getSourceQualityPolicy } from '../../media/service/source-quality-registry.js';
+import { composeFeedTopN } from './feed-composition.js';
 import { logger } from '../../../core/logging/logger.js';
 
 // ── Topic filter config ──────────────────────────────────────────────
@@ -508,6 +509,7 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     source_tier: sourcePolicy.source_tier,
     source_mode: sourcePolicy.source_mode,
     source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    representative_media_key: repMediaKey,
     ...enrichFeedItem(row, packet),
   };
 
@@ -666,15 +668,19 @@ export class FeedService {
     // v3: re-sort eligible items by public_importance_v3_final desc, recency tiebreaker
     sortByV3(eligible);
 
-    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
+    // Composition: apply editorial rules to top 10, then append rest
+    const allEligibleItems = eligible.map((r) => r.item);
+    const composition = composeFeedTopN(allEligibleItems);
+    const composedItems = [...composition.topItems, ...composition.restItems];
+    const feedItems = composedItems.slice(0, PAGE_SIZE);
 
     // Cursor for page 2+: fall back to chronological after ranked page 1
     let next_cursor: string | null = null;
-    if (eligible.length > PAGE_SIZE) {
-      const lastIdx = PAGE_SIZE - 1;
-      const lastRow = rankedRows[scored.findIndex((s) => s.eventId === eligible[lastIdx].item.event_id)] ?? rankedRows[lastIdx];
+    if (composedItems.length > PAGE_SIZE) {
+      const lastItem = feedItems[feedItems.length - 1];
+      const lastRow = rankedRows.find((r: any) => r.id === lastItem.event_id) ?? rankedRows[rankedRows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[lastIdx].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {
@@ -708,13 +714,18 @@ export class FeedService {
     // v3: sort eligible items by public_importance_v3_final desc, recency tiebreaker
     sortByV3(eligible);
 
-    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
+    // Composition: apply editorial rules to top 10, then append rest
+    const allEligibleItems = eligible.map((r) => r.item);
+    const composition = composeFeedTopN(allEligibleItems);
+    const composedItems = [...composition.topItems, ...composition.restItems];
+    const feedItems = composedItems.slice(0, PAGE_SIZE);
 
     let next_cursor: string | null = null;
-    if (eligible.length > PAGE_SIZE) {
-      const lastRow = rows.find((r: any) => r.id === eligible[PAGE_SIZE - 1].item.event_id) ?? rows[rows.length - 1];
+    if (composedItems.length > PAGE_SIZE) {
+      const lastItem = feedItems[feedItems.length - 1];
+      const lastRow = rows.find((r: any) => r.id === lastItem.event_id) ?? rows[rows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[PAGE_SIZE - 1].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {

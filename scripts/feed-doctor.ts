@@ -36,6 +36,8 @@ import { detectIntraSplitProxy } from '../src/modules/quality/detectors/intra-sp
 import { aggregateEventTopic } from '../src/modules/topics/service/topic-heuristic.js';
 import { extractDeskDetailed } from '../src/modules/event_linker/service/hard-negative-gates.js';
 import { getSourceQualityPolicy } from '../src/modules/media/service/source-quality-registry.js';
+import { composeFeedTopN, DEFAULT_COMPOSITION_RULES, type CompositionRejectionReason } from '../src/modules/feed/service/feed-composition.js';
+import type { FeedItem } from '../src/modules/feed/domain/types.js';
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -757,6 +759,48 @@ export function buildDoctorOutput(
     sortedByV3[i].ranking_features.rank_position = i + 1;
   }
 
+  // ── Composition simulation ──
+  // Build lightweight FeedItems from eligible event records for composition
+  const eligibleRecords = sortedByV3.filter((r) => r.eligibility?.feed_eligible);
+  const mockFeedItems: FeedItem[] = eligibleRecords.map((r) => ({
+    event_id: r.event_id,
+    state: r.status,
+    headline: r.title,
+    t_last: r.updatedAt,
+    published_at: r.publishAt,
+    cover_image_url: null,
+    topic_key: r.routing?.topic_key,
+    source_tier: r.routing?.representative_article?.source_tier,
+    source_mode: r.routing?.representative_article?.source_mode,
+    source_policy_multiplier: r.routing?.representative_article?.source_policy_multiplier,
+    representative_media_key: r.routing?.representative_article?.mediaKey ?? 'unknown',
+    unique_sources_count: r.coverage?.num_sources_unique ?? 1,
+    public_importance_v3_final: r.ranking_features?.public_importance_v3_final ?? 0,
+  }));
+  const compositionResult = composeFeedTopN(mockFeedItems);
+  const compositionRejectsByReason: Record<string, number> = {};
+  for (const [eventId, reason] of compositionResult.rejections) {
+    compositionRejectsByReason[reason] = (compositionRejectsByReason[reason] ?? 0) + 1;
+    // Tag per-event record
+    const evRecord = output.find((r: any) => r.kind === 'event' && r.event_id === eventId);
+    if (evRecord) {
+      evRecord.eligibility.composition_rejection_reason = reason;
+    }
+  }
+  // Build top10 summary
+  const top10TopicMix: Record<string, number> = {};
+  const top10SourceMix: Record<string, number> = {};
+  let top10SingleSourceCount = 0;
+  let top10AnalysisCount = 0;
+  for (const item of compositionResult.topItems) {
+    const tk = item.topic_key ?? 'OTROS';
+    top10TopicMix[tk] = (top10TopicMix[tk] ?? 0) + 1;
+    const mk = item.representative_media_key ?? 'unknown';
+    top10SourceMix[mk] = (top10SourceMix[mk] ?? 0) + 1;
+    if ((item.unique_sources_count ?? 1) <= 1) top10SingleSourceCount++;
+    if (item.source_mode === 'ANALYSIS') top10AnalysisCount++;
+  }
+
   // ── aggregate ──
   cohesionValues.sort((a, b) => a - b);
   entityOverlapValues.sort((a, b) => a - b);
@@ -872,6 +916,18 @@ export function buildDoctorOutput(
         avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
       }))
       .sort((a, b) => b.avg - a.avg),
+    // Feed composition policy aggregate
+    top10_topic_mix: Object.entries(top10TopicMix)
+      .sort((a, b) => b[1] - a[1])
+      .map(([topic, count]) => ({ topic, count })),
+    top10_source_mix: Object.entries(top10SourceMix)
+      .sort((a, b) => b[1] - a[1])
+      .map(([mediaKey, count]) => ({ mediaKey, count })),
+    top10_single_source_count: top10SingleSourceCount,
+    top10_analysis_count: top10AnalysisCount,
+    composition_rejections_by_reason: Object.entries(compositionRejectsByReason)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => ({ reason, count })),
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];
