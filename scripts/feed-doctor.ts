@@ -372,10 +372,17 @@ export function buildDoctorOutput(
     const feedAllowedTopics: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
       .split(',').map((s) => s.trim()).filter(Boolean);
 
-    // Evidence fields for title_align bypass
+    // Evidence fields for title_align bypass — read from quality_flags (populated by claim extraction)
     const eventHeadline = version?.headline ?? '';
-    const claimsSupportedCount: number = packet.claims_supported_count ?? packet.facts_packet?.supported_count ?? 0;
-    const eventEvidenceRate: number = packet.evidence_rate ?? 0;
+    const claimsSupportedCount: number =
+      packet.quality_flags?.supported_count ??
+      packet.claims_supported_count ??
+      packet.facts_packet?.supported_count ??
+      0;
+    const eventEvidenceRate: number =
+      packet.quality_flags?.evidence_rate ??
+      packet.evidence_rate ??
+      0;
     const titleAlignmentForGate: number | null = coherenceMetrics.title_jaccard ?? null;
 
     const publishGate = evaluatePublishGate({

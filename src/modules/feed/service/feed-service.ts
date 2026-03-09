@@ -309,9 +309,16 @@ function applyPublishGate(
   const coherenceGate = packet?.coherence_gate;
   const titleAlignment: number | null = coherenceGate?.metrics?.title_jaccard ?? null;
 
-  // Evidence fields for title_align bypass
-  const supportedCount: number = packet?.claims_supported_count ?? packet?.facts_packet?.supported_count ?? 0;
-  const evidenceRate: number = packet?.evidence_rate ?? 0;
+  // Evidence fields for title_align bypass — read from quality_flags (populated by claim extraction)
+  const supportedCount: number =
+    packet?.quality_flags?.supported_count ??
+    packet?.claims_supported_count ??
+    packet?.facts_packet?.supported_count ??
+    0;
+  const evidenceRate: number =
+    packet?.quality_flags?.evidence_rate ??
+    packet?.evidence_rate ??
+    0;
 
   const gateResult = evaluatePublishGate({
     unique_sources_count: item.unique_sources_count ?? 0,
