@@ -26,7 +26,14 @@ import {
   type CoherenceCheckResult,
 } from '../../events/coherence-gate.js';
 
+/**
+ * Minimum article text length for the LLM pipeline.
+ * The text *fallback* pipeline uses a lower threshold (200 chars) so that
+ * single-source or short articles still produce a non-empty overview when
+ * no API key is configured.
+ */
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
+const TEXT_FALLBACK_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_FALLBACK_MIN_LEN ?? '200', 10);
 
 // ── Mixed-topic tripwire ─────────────────────────────────────────────
 
@@ -636,8 +643,8 @@ export class OverviewGenerator {
    * Extracts factual sentences from the article body and organizes them into sections.
    */
   buildTextFallbackOverview(articles: Array<{ title: string; textNorm: string | null; snippet: string; url: string; mediaKey: string }>): Record<string, unknown> | null {
-    // Collect text from articles with sufficient content
-    const usable = articles.filter((a) => (a.textNorm ?? '').length >= TEXT_MIN_LEN);
+    // Collect text from articles with sufficient content (lower threshold for fallback)
+    const usable = articles.filter((a) => (a.textNorm ?? '').length >= TEXT_FALLBACK_MIN_LEN);
     if (usable.length === 0) return null;
 
     const uniqueMedia = new Set(usable.map((a) => a.mediaKey));
@@ -689,7 +696,17 @@ export class OverviewGenerator {
       }
     }
 
-    if (whatHappened.length === 0) return null;
+    // If sentence extraction found nothing, try using title + snippet directly
+    if (whatHappened.length === 0) {
+      for (const article of usable) {
+        if (article.title && article.title.length >= 20) {
+          whatHappened.push(article.title);
+          break;
+        }
+      }
+      // Still nothing usable
+      if (whatHappened.length === 0) return null;
+    }
 
     // Build "En disputa" — for single source, add a standard note
     const inDispute = ['No se identifican versiones contradictorias por ahora (evidencia limitada).'];

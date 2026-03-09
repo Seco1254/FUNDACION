@@ -15,6 +15,7 @@ export type PageType =
   | 'AUTHOR_PAGE'
   | 'COMMERCIAL_CONTENT'
   | 'LISTING_INDEX'
+  | 'PODCAST'
   | 'OTHER';
 
 export interface PageTypeInput {
@@ -28,6 +29,8 @@ export interface PageTypeInput {
     linkTextRatio?: number;
   };
   mediaKey?: string | null;
+  /** Optional raw headline (e.g. from scraper) for podcast detection. */
+  headline?: string | null;
 }
 
 export interface PageTypeResult {
@@ -57,6 +60,24 @@ const COMMERCIAL_URL_PATTERNS: RegExp[] = [
   /\/sponsored\//i,
 ];
 
+/** PODCAST: URL segments for podcast / audio / video episode pages. */
+const PODCAST_URL_PATTERNS: RegExp[] = [
+  /\/podcast\//i,
+  /\/podcasts\//i,
+  /\/episodio\//i,
+  /\/episodios\//i,
+  /\/audio\//i,
+  /\/video\//i,
+];
+
+/** PODCAST: title patterns for podcast/audio content. */
+const PODCAST_TITLE_PATTERNS: RegExp[] = [
+  /^P[OÓ]DCAST[\s:|-]/i,
+  /^PODCAST[\s:|-]/i,
+  /^\[P[OÓ]DCAST\]/i,
+  /^Escuche[\s:]/i,
+];
+
 /** LISTING_INDEX: URL segments for tag, category, and search listings. */
 const LISTING_URL_PATTERNS: RegExp[] = [
   /\/tag\//i,
@@ -69,7 +90,6 @@ const LISTING_URL_PATTERNS: RegExp[] = [
   /\/buscar\b/i,
   /\/archivo\//i,
   /\/seccion\//i,
-  // TODO: /galeria/, /video/ could also be non-article — add if seen in real data
 ];
 
 // ── Title patterns ───────────────────────────────────────────────
@@ -101,10 +121,11 @@ const LISTING_TITLE_PATTERNS: RegExp[] = [
  * Classify a page into a PageType based on URL and title heuristics.
  *
  * Priority order (first match wins):
- *  1. AUTHOR_PAGE     — URL or title match
+ *  1. AUTHOR_PAGE        — URL or title match
  *  2. COMMERCIAL_CONTENT — URL or title match
- *  3. LISTING_INDEX   — URL or title match
- *  4. ARTICLE         — default
+ *  3. PODCAST            — URL or title/headline match
+ *  4. LISTING_INDEX      — URL or title match
+ *  5. ARTICLE            — default
  */
 export function classifyPageType(input: PageTypeInput): PageTypeResult {
   const { url, title } = input;
@@ -112,6 +133,7 @@ export function classifyPageType(input: PageTypeInput): PageTypeResult {
   const flags: Record<string, boolean> = {
     is_author: false,
     is_commercial: false,
+    is_podcast: false,
     is_listing: false,
   };
 
@@ -171,7 +193,34 @@ export function classifyPageType(input: PageTypeInput): PageTypeResult {
     };
   }
 
-  // ── 3. LISTING_INDEX ──
+  // ── 3. PODCAST ──
+  for (const pat of PODCAST_URL_PATTERNS) {
+    if (pat.test(urlPath)) {
+      reasons.push(`URL_MATCH:${pat.source}`);
+      flags.is_podcast = true;
+    }
+  }
+  // Check title and optional headline for podcast patterns
+  const titlesToCheck = [title, input.headline].filter(Boolean) as string[];
+  for (const pat of PODCAST_TITLE_PATTERNS) {
+    for (const t of titlesToCheck) {
+      if (pat.test(t)) {
+        reasons.push(`TITLE_MATCH:${pat.source}`);
+        flags.is_podcast = true;
+      }
+    }
+  }
+
+  if (flags.is_podcast) {
+    return {
+      pageType: 'PODCAST',
+      confidence: reasons.length >= 2 ? 0.95 : 0.85,
+      reasons,
+      flags,
+    };
+  }
+
+  // ── 4. LISTING_INDEX (renumbered) ──
   for (const pat of LISTING_URL_PATTERNS) {
     if (pat.test(urlPath)) {
       reasons.push(`URL_MATCH:${pat.source}`);
@@ -194,7 +243,7 @@ export function classifyPageType(input: PageTypeInput): PageTypeResult {
     };
   }
 
-  // ── 4. Default: ARTICLE ──
+  // ── 5. Default: ARTICLE ──
   return {
     pageType: 'ARTICLE',
     confidence: 1.0,

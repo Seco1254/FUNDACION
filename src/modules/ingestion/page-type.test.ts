@@ -130,6 +130,112 @@ describe('classifyPageType — LISTING_INDEX', () => {
   });
 });
 
+// ── PODCAST ──────────────────────────────────────────────────────
+
+describe('classifyPageType — PODCAST', () => {
+  // URL-based
+  it('blocks /podcast/ URL', () => {
+    const r = classify('https://example.com/podcast/episodio-42');
+    expect(r.pageType).toBe('PODCAST');
+    expect(r.flags.is_podcast).toBe(true);
+  });
+
+  it('blocks /podcasts/ URL', () => {
+    const r = classify('https://example.com/podcasts/latest');
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks /episodio/ URL', () => {
+    const r = classify('https://example.com/episodio/123');
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks /audio/ URL', () => {
+    const r = classify('https://example.com/audio/interview');
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks /video/ URL', () => {
+    const r = classify('https://example.com/video/live-stream');
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  // Title-based
+  it('blocks title starting with "PÓDCAST |"', () => {
+    const r = classify(
+      'https://example.com/noticias/something',
+      'PÓDCAST | Entrevista con el ministro de defensa',
+    );
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks title starting with "PODCAST:"', () => {
+    const r = classify(
+      'https://example.com/noticias/something',
+      'PODCAST: La crisis en Venezuela',
+    );
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks title starting with "Podcast -"', () => {
+    const r = classify(
+      'https://example.com/noticias/abc',
+      'Podcast - El conflicto armado',
+    );
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks title starting with "[PÓDCAST]"', () => {
+    const r = classify(
+      'https://example.com/noticias/def',
+      '[PÓDCAST] Análisis político semanal',
+    );
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  it('blocks title starting with "Escuche:"', () => {
+    const r = classify(
+      'https://example.com/noticias/ghi',
+      'Escuche: Las noticias del día en audio',
+    );
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  // Headline field
+  it('blocks via headline field starting with PÓDCAST', () => {
+    const r = classifyPageType({
+      url: 'https://example.com/noticias/jkl',
+      headline: 'PÓDCAST | Noticias internacionales',
+    });
+    expect(r.pageType).toBe('PODCAST');
+  });
+
+  // Negative cases
+  it('does NOT block article mentioning podcast mid-title', () => {
+    const r = classify(
+      'https://example.com/noticias/analisis',
+      'Análisis del podcast presidencial sobre la economía',
+    );
+    expect(r.pageType).toBe('ARTICLE');
+  });
+
+  it('does NOT block URL with podcast in query string only', () => {
+    const r = classify('https://example.com/noticias/abc?ref=podcast');
+    expect(r.pageType).toBe('ARTICLE');
+  });
+
+  // Higher confidence with multiple signals
+  it('has 0.95 confidence with URL + title match', () => {
+    const r = classify(
+      'https://example.com/podcast/ep-1',
+      'PÓDCAST: Episodio 1',
+    );
+    expect(r.pageType).toBe('PODCAST');
+    expect(r.confidence).toBe(0.95);
+    expect(r.reasons.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 // ── ARTICLE (allowed) ──────────────────────────────────────────
 
 describe('classifyPageType — ARTICLE (default)', () => {
@@ -177,6 +283,7 @@ describe('shouldBlockPageType', () => {
     ['ARTICLE', false],
     ['AUTHOR_PAGE', true],
     ['COMMERCIAL_CONTENT', true],
+    ['PODCAST', true],
     ['LISTING_INDEX', true],
     ['OTHER', true],
   ];

@@ -271,6 +271,17 @@ export function buildDoctorOutput(
   const PREMIUM_WAVE1_KEYS = new Set(['larepublica', 'cambio', 'americas_quarterly', 'pbs_newshour', 'carnegie', 'crisis_group']);
   let newSourcesIngestedCount = 0;
   const sourceArticleCounts: Record<string, number> = {};
+  // Overview mode accumulators (TAREA 1)
+  const binsOverviewMode: Record<string, number> = {};
+  let overviewNonemptyCount = 0;
+  let llmOverviewCount = 0;
+  let fallbackOverviewCount = 0;
+  let heuristicOverviewCount = 0;
+  // Podcast blocking accumulator (TAREA 2)
+  let podcastBlockedCount = 0;
+  // Multi-source scarcity accumulators (TAREA 3)
+  let singleSourceEventCount = 0;
+  let multiSourceEventCount = 0;
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -573,6 +584,27 @@ export function buildDoctorOutput(
       overviewFailReasons[overviewLc.skip_reason] = (overviewFailReasons[overviewLc.skip_reason] ?? 0) + 1;
     }
 
+    // Overview mode tracking (TAREA 1)
+    const overviewMode: string = packet.overview_mode ?? 'none';
+    binsOverviewMode[overviewMode] = (binsOverviewMode[overviewMode] ?? 0) + 1;
+    const aiOverview = packet.ai_overview;
+    const whArr = Array.isArray(aiOverview?.what_happened) ? aiOverview.what_happened : [];
+    const ctxArr = Array.isArray(aiOverview?.context) ? aiOverview.context : [];
+    if (whArr.length > 0 || ctxArr.length > 0) overviewNonemptyCount++;
+    if (overviewMode === 'llm') llmOverviewCount++;
+    if (overviewMode === 'fallback') fallbackOverviewCount++;
+    if (overviewMode === 'heuristic') heuristicOverviewCount++;
+
+    // Podcast detection (TAREA 2)
+    const evHeadline = version?.headline ?? '';
+    const isPodcastHeadline = /^P[OÓ]DCAST[\s:|-]/i.test(evHeadline);
+    const hasPodcastUrl = articles.some((a: any) => /\/(podcast|podcasts|episodio|audio|video)\//i.test(a.url ?? ''));
+    if (isPodcastHeadline || hasPodcastUrl) podcastBlockedCount++;
+
+    // Multi-source scarcity tracking (TAREA 3)
+    if (numSources >= 2) multiSourceEventCount++;
+    else singleSourceEventCount++;
+
     // Gate trace: record which checks were applied
     const gateTrace: string[] = [];
     if (coherenceStatus === 'FAIL') gateTrace.push('COHERENCE_GATE:BLOCKED');
@@ -585,6 +617,7 @@ export function buildDoctorOutput(
     if (!sourcePolicy.allow_in_feed) gateTrace.push(`SOURCE_POLICY:BLOCKED(${repMediaKey})`);
     else if (numSources === 1 && !sourcePolicy.single_source_allowed) gateTrace.push(`SOURCE_POLICY:SINGLE_BLOCKED(${repMediaKey})`);
     else gateTrace.push(`SOURCE_POLICY:PASS(${sourcePolicy.source_tier}/${sourcePolicy.source_mode},x${sourcePolicy.ranking_multiplier})`);
+    if (isPodcastHeadline || hasPodcastUrl) gateTrace.push('SOURCE_FORMAT_BLOCKED:PODCAST');
 
     // Reason summary
     let reasonSummary: string;
@@ -693,6 +726,8 @@ export function buildDoctorOutput(
         failed_at: overviewLc.failed_at,
         fail_reason: overviewLc.fail_reason,
         skip_reason: overviewLc.skip_reason,
+        overview_mode: overviewMode,
+        overview_nonempty: whArr.length > 0 || ctxArr.length > 0,
       },
       quality_flags: {
         mixed_event: null,
@@ -939,6 +974,25 @@ export function buildDoctorOutput(
     composition_rejections_by_reason: Object.entries(compositionRejectsByReason)
       .sort((a, b) => b[1] - a[1])
       .map(([reason, count]) => ({ reason, count })),
+    // Overview mode observability (TAREA 1)
+    bins_overview_mode: Object.entries(binsOverviewMode)
+      .sort((a, b) => b[1] - a[1])
+      .map(([mode, count]) => ({ mode, count })),
+    overview_nonempty_count: overviewNonemptyCount,
+    llm_overview_count: llmOverviewCount,
+    fallback_overview_count: fallbackOverviewCount,
+    heuristic_overview_count: heuristicOverviewCount,
+    // Podcast blocking (TAREA 2)
+    podcast_blocked_count: podcastBlockedCount,
+    // Multi-source scarcity (TAREA 3)
+    single_source_event_count: singleSourceEventCount,
+    multi_source_event_count: multiSourceEventCount,
+    single_source_event_rate: events.length > 0
+      ? Math.round((singleSourceEventCount / events.length) * 1000) / 1000
+      : 0,
+    multi_source_event_rate: events.length > 0
+      ? Math.round((multiSourceEventCount / events.length) * 1000) / 1000
+      : 0,
     what_to_fix_next: (() => {
       // Heuristic: suggest the highest-impact fix
       const suggestions: string[] = [];
@@ -963,6 +1017,9 @@ export function buildDoctorOutput(
       let mergesAttempted = 0;
       let mergesApplied = 0;
       let hardNegativeBlocksTotal = 0;
+      let linkerAutoLinks = 0;
+      let linkerMaybeLinks = 0;
+      let linkerPairAttempts = 0;
       const mergeBlockReasons: Record<string, number> = {};
       for (const log of linkerLogs) {
         if (log.action === 'MERGED_EVENT_V2' || log.action === 'MERGED_EVENT') {
@@ -970,6 +1027,12 @@ export function buildDoctorOutput(
         }
         if (log.action === 'LINKED_EXISTING_V2' || log.action === 'CREATED_EVENT_V2') {
           mergesAttempted++;
+        }
+        if (log.action === 'AUTO_LINK') linkerAutoLinks++;
+        if (log.action === 'MAYBE_LINK' || log.action === 'MAYBE_LINK_DEGRADED') linkerMaybeLinks++;
+        // Count pair-level link attempts (any action involving similarity)
+        if (['AUTO_LINK', 'MAYBE_LINK', 'MAYBE_LINK_DEGRADED', 'HARD_NEGATIVE_BLOCK'].includes(log.action)) {
+          linkerPairAttempts++;
         }
         if (log.action === 'HARD_NEGATIVE_BLOCK') {
           hardNegativeBlocksTotal++;
@@ -985,6 +1048,10 @@ export function buildDoctorOutput(
         merges_attempted: mergesAttempted,
         merges_applied: mergesApplied,
         hard_negative_blocks_total: hardNegativeBlocksTotal,
+        linker_pair_attempts: linkerPairAttempts,
+        linker_auto_links: linkerAutoLinks,
+        linker_maybe_links: linkerMaybeLinks,
+        linker_hard_negative_blocks: hardNegativeBlocksTotal,
         merge_block_reasons: Object.entries(mergeBlockReasons)
           .sort((a, b) => b[1] - a[1])
           .slice(0, 10)

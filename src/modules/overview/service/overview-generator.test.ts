@@ -369,7 +369,7 @@ describe('OverviewGenerator', () => {
       expect(result!.status).toBe('FALLBACK');
     });
 
-    it('returns null when article text < 800 chars', () => {
+    it('returns null when article text < 200 chars (fallback threshold)', () => {
       const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
       const result = gen.buildTextFallbackOverview([
         {
@@ -382,6 +382,44 @@ describe('OverviewGenerator', () => {
       ]);
 
       expect(result).toBeNull();
+    });
+
+    it('produces overview for text between 200-800 chars (lowered fallback threshold)', () => {
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      // ~250 chars — above 200 fallback threshold but below 800 LLM threshold
+      const text = 'El presidente de Colombia anunció hoy nuevas medidas económicas para enfrentar la inflación que ha golpeado a los sectores más vulnerables del país durante los últimos meses, incluyendo subsidios directos y control de precios en productos básicos de la canasta familiar colombiana.';
+      const result = gen.buildTextFallbackOverview([
+        {
+          title: 'Colombia anuncia nuevas medidas económicas',
+          textNorm: text,
+          snippet: '',
+          url: 'https://example.com/a',
+          mediaKey: 'eltiempo',
+        },
+      ]);
+
+      expect(result).not.toBeNull();
+      expect((result!.what_happened as string[]).length).toBeGreaterThan(0);
+      expect(result!.status).toBe('FALLBACK');
+    });
+
+    it('uses title as fallback when sentences too short to extract', () => {
+      const gen = new OverviewGenerator(claimRepo, versionRepo, eventBus, auditWriter);
+      // 300+ chars of real words but each sentence < 40 chars so no sentences qualify
+      const text = 'Dato primero corto. Dato segundo corto. Dato tercero rápido. Dato cuarto breve. Dato quinto simple. Dato sexto rápido. Dato séptimo corto. Dato octavo breve. Dato noveno corto. Dato décimo simple. Dato once corto. Dato doce breve. Dato trece simple. Dato catorce rápido. Dato quince corto. Dato dieciséis.';
+      const result = gen.buildTextFallbackOverview([
+        {
+          title: 'El gobierno colombiano anuncia plan de emergencia económica',
+          textNorm: text,
+          snippet: '',
+          url: 'https://example.com/c',
+          mediaKey: 'eltiempo',
+        },
+      ]);
+
+      expect(result).not.toBeNull();
+      // Should have used title as fallback
+      expect((result!.what_happened as string[])).toContain('El gobierno colombiano anuncia plan de emergencia económica');
     });
 
     it('uses Media confidence when 2+ sources', () => {

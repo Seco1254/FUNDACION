@@ -8,7 +8,11 @@ import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
 import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
 import { getSourceQualityPolicy } from '../../media/service/source-quality-registry.js';
 import { composeFeedTopN } from './feed-composition.js';
+import { classifyPageType } from '../../ingestion/page-type.js';
 import { logger } from '../../../core/logging/logger.js';
+
+// ── Podcast headline detection ────────────────────────────────────────
+const PODCAST_HEADLINE_RE = /^P[OÓ]DCAST[\s:|-]/i;
 
 // ── Topic filter config ──────────────────────────────────────────────
 const FEED_TOPIC_FILTER_ENABLED = process.env.FEED_TOPIC_FILTER_ENABLED === '1';
@@ -414,6 +418,36 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
         why_no_overview: `Split proxy quarantine: ${splitResult.reasons.join(', ')}`,
       };
       return { item: minimalItem, eligible: false, gateReasons: ['SPLIT_PROXY_QUARANTINE', ...splitResult.reasons] };
+    }
+  }
+
+  // ── Podcast gate (block podcast/audio content) ────────────────────
+  const allArticlesRaw = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const eventHeadlineRaw = row.versions?.[0]?.headline ?? '';
+  if (PODCAST_HEADLINE_RE.test(eventHeadlineRaw)) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: eventHeadlineRaw || null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_FORMAT_BLOCKED:PODCAST'] };
+  }
+  // Check if any article URL matches podcast patterns
+  for (const art of allArticlesRaw) {
+    const ptResult = classifyPageType({ url: art.url ?? '', title: art.title ?? null });
+    if (ptResult.pageType === 'PODCAST') {
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: eventHeadlineRaw || null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_FORMAT_BLOCKED:PODCAST'] };
     }
   }
 

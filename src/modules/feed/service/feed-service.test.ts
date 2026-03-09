@@ -1010,6 +1010,76 @@ describe('FeedService', () => {
       expect(item!.source_policy_multiplier).toBe(1.0);
     });
 
+    it('blocks event with podcast headline (PÓDCAST |)', async () => {
+      const row = makeMockRow({
+        id: 'evt-podcast',
+        versions: [{
+          id: 'ver-1',
+          headline: 'PÓDCAST | Entrevista con el ministro de defensa',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-podcast')).toBeUndefined();
+    });
+
+    it('blocks event with PODCAST: headline', async () => {
+      const row = makeMockRow({
+        id: 'evt-podcast2',
+        versions: [{
+          id: 'ver-1',
+          headline: 'PODCAST: Análisis de la semana política colombiana',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-podcast2')).toBeUndefined();
+    });
+
+    it('blocks event with podcast URL in articles', async () => {
+      const row = makeMockRow({
+        id: 'evt-podcast-url',
+        eventArticles: [{
+          article: {
+            id: 'art-pod', url: 'https://www.eltiempo.com/podcast/episodio-42',
+            title: 'Normal title', media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' },
+            textContentLen: 1500, usableForOverview: true, contentType: 'news',
+            extractionFailReason: null, paywallDetected: false,
+          },
+        }, {
+          article: {
+            id: 'art-norm', url: 'https://www.elespectador.com/art',
+            title: 'Normal article', media: { id: 'm2', mediaKey: 'elespectador', name: 'El Espectador' },
+            textContentLen: 1200, usableForOverview: true, contentType: 'news',
+            extractionFailReason: null, paywallDetected: false,
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-podcast-url')).toBeUndefined();
+    });
+
+    it('does NOT block normal article that mentions podcast in text', async () => {
+      const row = makeMockRow({
+        id: 'evt-normal',
+        versions: [{
+          id: 'ver-1',
+          headline: 'Presidente habla sobre su podcast semanal',
+          packetJson: {},
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+      const feed = await service.getFeed();
+      expect(feed.items.find((i) => i.event_id === 'evt-normal')).toBeDefined();
+    });
+
     it('consonante gets HIGH tier and 1.0 multiplier', async () => {
       const row = makeMockRow({
         id: 'evt-cons',
