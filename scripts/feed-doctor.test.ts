@@ -1672,3 +1672,68 @@ describe('feed-doctor composition observability', () => {
     expect(record).toBeDefined();
   });
 });
+
+// ── New sources observability ───────────────────────────────────────
+
+describe('feed-doctor new sources observability', () => {
+  it('aggregate includes new_sources_ingested_count', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(typeof agg.new_sources_ingested_count).toBe('number');
+  });
+
+  it('new_sources_ingested_count is 0 for existing sources', () => {
+    const ev = makeEvent(); // default is eltiempo
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.new_sources_ingested_count).toBe(0);
+  });
+
+  it('new_sources_ingested_count counts larepublica events', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-lr',
+      eventArticles: [{ createdAt: now, article: makeArticle({ media: { id: 'lr', mediaKey: 'larepublica', name: 'La República' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.new_sources_ingested_count).toBe(1);
+  });
+
+  it('aggregate includes top_sources_by_article_count', () => {
+    const ev = makeEvent();
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.top_sources_by_article_count).toBeDefined();
+    expect(Array.isArray(agg.top_sources_by_article_count)).toBe(true);
+    expect(agg.top_sources_by_article_count[0]).toHaveProperty('mediaKey');
+    expect(agg.top_sources_by_article_count[0]).toHaveProperty('count');
+  });
+
+  it('bins_source_tier shows HIGH for larepublica event', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-lr2',
+      eventArticles: [{ createdAt: now, article: makeArticle({ media: { id: 'lr', mediaKey: 'larepublica', name: 'La República' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    const highBin = agg.bins_source_tier.find((b: any) => b.tier === 'HIGH');
+    expect(highBin).toBeDefined();
+    expect(highBin.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('bins_source_mode shows ANALYSIS for carnegie event', () => {
+    const now = new Date();
+    const ev = makeEvent({
+      id: 'evt-carn',
+      eventArticles: [{ createdAt: now, article: makeArticle({ media: { id: 'carn', mediaKey: 'carnegie', name: 'Carnegie' } }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    const analysisBin = agg.bins_source_mode.find((b: any) => b.mode === 'ANALYSIS');
+    expect(analysisBin).toBeDefined();
+    expect(analysisBin.count).toBeGreaterThanOrEqual(1);
+  });
+});

@@ -268,6 +268,9 @@ export function buildDoctorOutput(
   let singleSourceBlockedByPolicyCount = 0;
   const v3ScoresBySourceTier: Record<string, number[]> = {};
   const v3ScoresBySourceMode: Record<string, number[]> = {};
+  const PREMIUM_WAVE1_KEYS = new Set(['larepublica', 'cambio', 'americas_quarterly', 'pbs_newshour', 'carnegie', 'crisis_group']);
+  let newSourcesIngestedCount = 0;
+  const sourceArticleCounts: Record<string, number> = {};
 
   for (const ev of events) {
     const articles = ev.eventArticles.map((ea: any) => ea.article);
@@ -329,6 +332,9 @@ export function buildDoctorOutput(
     // Accumulate source tier/mode bins
     binsSourceTier[sourcePolicy.source_tier] = (binsSourceTier[sourcePolicy.source_tier] ?? 0) + 1;
     binsSourceMode[sourcePolicy.source_mode] = (binsSourceMode[sourcePolicy.source_mode] ?? 0) + 1;
+    // Track premium wave 1 sources and per-source article counts
+    if (PREMIUM_WAVE1_KEYS.has(repMediaKey)) newSourcesIngestedCount++;
+    sourceArticleCounts[repMediaKey] = (sourceArticleCounts[repMediaKey] ?? 0) + 1;
 
     // ── Eligibility ──
     const reasons: string[] = [];
@@ -916,6 +922,11 @@ export function buildDoctorOutput(
         avg: Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000,
       }))
       .sort((a, b) => b.avg - a.avg),
+    new_sources_ingested_count: newSourcesIngestedCount,
+    top_sources_by_article_count: Object.entries(sourceArticleCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([mediaKey, count]) => ({ mediaKey, count })),
     // Feed composition policy aggregate
     top10_topic_mix: Object.entries(top10TopicMix)
       .sort((a, b) => b[1] - a[1])

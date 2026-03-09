@@ -9,6 +9,12 @@ import { ConsonanteScraper } from './consonante.js';
 import { OecScraper } from './oec.js';
 import { AscolbiScraper } from './ascolbi.js';
 import { AciurScraper } from './aciur.js';
+import { LaRepublicaScraper } from './larepublica.js';
+import { CambioScraper } from './cambio.js';
+import { AmericasQuarterlyScraper } from './americas-quarterly.js';
+import { PbsNewshourScraper } from './pbs-newshour.js';
+import { CarnegieScraper } from './carnegie.js';
+import { CrisisGroupScraper } from './crisis-group.js';
 import { StubScraper } from './stub-scraper.js';
 import { getScraperForMedia } from './registry.js';
 import { extractArticleBody, extractAmpUrl, extractMetaDescription, detectPaywall } from './html-utils.js';
@@ -477,5 +483,232 @@ describe('detectPaywall', () => {
       </article>
     </body></html>`;
     expect(detectPaywall(html)).toBe(true);
+  });
+});
+
+// ── Premium Sources (Wave 1) ──────────────────────────────────────
+
+describe('LaRepublicaScraper', () => {
+  const scraper = new LaRepublicaScraper();
+
+  it('has multiple list page URLs', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(3);
+    expect(scraper.listPageUrls[0]).toContain('larepublica.co');
+  });
+
+  it('extracts article URLs from list page fixture', () => {
+    const html = loadFixture('larepublica-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('banco-republica-mantiene-tasas');
+  });
+
+  it('blocks opinion URLs', () => {
+    const html = loadFixture('larepublica-list.html');
+    const urls = scraper.extractUrls(html);
+    const opinionUrls = urls.filter((u) => u.includes('/opinion/'));
+    expect(opinionUrls).toHaveLength(0);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('larepublica-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.larepublica.co/economia/test-123');
+    expect(parsed.title).toContain('Banco de la República');
+    expect(parsed.snippet.length).toBeGreaterThan(50);
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-05T14:30:00Z'));
+  });
+
+  it('extracts article body text', () => {
+    const html = loadFixture('larepublica-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.larepublica.co/economia/test-123');
+    expect(parsed.textContent.length).toBeGreaterThan(200);
+    expect(parsed.textContent).toContain('tasa de intervención');
+  });
+});
+
+describe('CambioScraper', () => {
+  const scraper = new CambioScraper();
+
+  it('has list page URLs for pais, economia, politica', () => {
+    expect(scraper.listPageUrls.length).toBe(3);
+    expect(scraper.listPageUrls.some((u) => u.includes('/pais'))).toBe(true);
+  });
+
+  it('extracts article URLs from list page fixture', () => {
+    const html = loadFixture('cambio-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('congreso-aprueba-reforma-pensional');
+  });
+
+  it('blocks opinion/columnistas URLs', () => {
+    const html = loadFixture('cambio-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/opinion/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('cambio-article.html');
+    const parsed = scraper.parseArticle(html, 'https://cambiocolombia.com/pais/test');
+    expect(parsed.title).toContain('reforma pensional');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-04T08:00:00Z'));
+  });
+
+  it('extracts body text with political content', () => {
+    const html = loadFixture('cambio-article.html');
+    const parsed = scraper.parseArticle(html, 'https://cambiocolombia.com/pais/test');
+    expect(parsed.textContent).toContain('Comisión Séptima');
+  });
+});
+
+describe('AmericasQuarterlyScraper', () => {
+  const scraper = new AmericasQuarterlyScraper();
+
+  it('has list page URL', () => {
+    expect(scraper.listPageUrls).toHaveLength(1);
+    expect(scraper.listPageUrls[0]).toContain('americasquarterly.org');
+  });
+
+  it('extracts only /article/ URLs from list page', () => {
+    const html = loadFixture('americas-quarterly-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls.every((u) => u.includes('/article/'))).toBe(true);
+  });
+
+  it('blocks /podcasts/ URLs', () => {
+    const html = loadFixture('americas-quarterly-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/podcasts/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('americas-quarterly-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.americasquarterly.org/article/test');
+    expect(parsed.title).toContain('Peace Process');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-01T16:00:00Z'));
+  });
+});
+
+describe('PbsNewshourScraper', () => {
+  const scraper = new PbsNewshourScraper();
+
+  it('has list page URLs for politics, economy, world', () => {
+    expect(scraper.listPageUrls.length).toBe(3);
+    expect(scraper.listPageUrls.some((u) => u.includes('/politics'))).toBe(true);
+    expect(scraper.listPageUrls.some((u) => u.includes('/world'))).toBe(true);
+  });
+
+  it('extracts article URLs from list page', () => {
+    const html = loadFixture('pbs-newshour-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('latin-america-policy-shift');
+  });
+
+  it('blocks /video/ URLs', () => {
+    const html = loadFixture('pbs-newshour-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/video/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('pbs-newshour-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.pbs.org/newshour/politics/test');
+    expect(parsed.title).toContain('Latin America policy shift');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-03T20:00:00Z'));
+  });
+});
+
+describe('CarnegieScraper', () => {
+  const scraper = new CarnegieScraper();
+
+  it('has list page URL', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(1);
+    expect(scraper.listPageUrls[0]).toContain('carnegieendowment.org');
+  });
+
+  it('extracts /commentary/ and /analysis/ URLs', () => {
+    const html = loadFixture('carnegie-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
+    expect(urls.some((u) => u.includes('/commentary/'))).toBe(true);
+    expect(urls.some((u) => u.includes('/analysis/'))).toBe(true);
+  });
+
+  it('blocks /events/ URLs', () => {
+    const html = loadFixture('carnegie-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/events/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('carnegie-article.html');
+    const parsed = scraper.parseArticle(html, 'https://carnegieendowment.org/commentary/test');
+    expect(parsed.title).toContain('Security Challenges');
+    expect(parsed.publishedAt).toEqual(new Date('2026-02-28T12:00:00Z'));
+  });
+});
+
+describe('CrisisGroupScraper', () => {
+  const scraper = new CrisisGroupScraper();
+
+  it('has list page URL for Latin America', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(1);
+    expect(scraper.listPageUrls[0]).toContain('latin-america');
+  });
+
+  it('extracts /latin-america-caribbean/ URLs', () => {
+    const html = loadFixture('crisis-group-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
+    expect(urls.every((u) => u.includes('latin-america'))).toBe(true);
+  });
+
+  it('blocks /press/ URLs', () => {
+    const html = loadFixture('crisis-group-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/press/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('crisis-group-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.crisisgroup.org/latin-america-caribbean/test');
+    expect(parsed.title).toContain('Total Peace');
+    expect(parsed.publishedAt).toEqual(new Date('2026-02-25T09:00:00Z'));
+  });
+});
+
+// ── Registry integration ────────────────────────────────────────────
+
+describe('scraper registry — new sources', () => {
+  it('returns LaRepublicaScraper for larepublica', () => {
+    const scraper = getScraperForMedia('larepublica');
+    expect(scraper).toBeInstanceOf(LaRepublicaScraper);
+  });
+
+  it('returns CambioScraper for cambio', () => {
+    const scraper = getScraperForMedia('cambio');
+    expect(scraper).toBeInstanceOf(CambioScraper);
+  });
+
+  it('returns AmericasQuarterlyScraper for americas_quarterly', () => {
+    const scraper = getScraperForMedia('americas_quarterly');
+    expect(scraper).toBeInstanceOf(AmericasQuarterlyScraper);
+  });
+
+  it('returns PbsNewshourScraper for pbs_newshour', () => {
+    const scraper = getScraperForMedia('pbs_newshour');
+    expect(scraper).toBeInstanceOf(PbsNewshourScraper);
+  });
+
+  it('returns CarnegieScraper for carnegie', () => {
+    const scraper = getScraperForMedia('carnegie');
+    expect(scraper).toBeInstanceOf(CarnegieScraper);
+  });
+
+  it('returns CrisisGroupScraper for crisis_group', () => {
+    const scraper = getScraperForMedia('crisis_group');
+    expect(scraper).toBeInstanceOf(CrisisGroupScraper);
   });
 });

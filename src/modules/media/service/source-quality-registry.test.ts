@@ -145,3 +145,55 @@ describe('getAllSourceQualityPolicies', () => {
     }
   });
 });
+
+// ── Premium Wave 1 sources ─────────────────────────────────────────
+
+describe('getSourceQualityPolicy — premium wave 1', () => {
+  it('larepublica is HIGH/NEWS with 1.0 multiplier', () => {
+    const p = getSourceQualityPolicy('larepublica');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('NEWS');
+    expect(p.ranking_multiplier).toBe(1.0);
+    expect(p.allow_in_feed).toBe(true);
+  });
+
+  it('cambio is HIGH/NEWS with 1.0 multiplier', () => {
+    const p = getSourceQualityPolicy('cambio');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('NEWS');
+    expect(p.ranking_multiplier).toBe(1.0);
+  });
+
+  it('americas_quarterly is HIGH/ANALYSIS with 0.90 multiplier', () => {
+    const p = getSourceQualityPolicy('americas_quarterly');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('ANALYSIS');
+    expect(p.ranking_multiplier).toBe(0.9);
+  });
+
+  it('pbs_newshour is HIGH/NEWS with 1.0 multiplier', () => {
+    const p = getSourceQualityPolicy('pbs_newshour');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('NEWS');
+    expect(p.ranking_multiplier).toBe(1.0);
+  });
+
+  it('carnegie is HIGH/ANALYSIS with 0.85 multiplier', () => {
+    const p = getSourceQualityPolicy('carnegie');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('ANALYSIS');
+    expect(p.ranking_multiplier).toBe(0.85);
+  });
+
+  it('crisis_group is HIGH/ANALYSIS with 0.85 multiplier', () => {
+    const p = getSourceQualityPolicy('crisis_group');
+    expect(p.source_tier).toBe('HIGH');
+    expect(p.source_mode).toBe('ANALYSIS');
+    expect(p.ranking_multiplier).toBe(0.85);
+  });
+
+  it('all 12 sources are in registry', () => {
+    const all = getAllSourceQualityPolicies();
+    expect(all.length).toBe(12);
+  });
+});
