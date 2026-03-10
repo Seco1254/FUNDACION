@@ -170,7 +170,7 @@ export function buildApp() {
   const llmClient = new LlmClient();
   const llm = llmClient.isAvailable() ? llmClient : null;
   if (llm) {
-    logger.info('llm_client_available');
+    logger.info({ provider: llmClient.activeProvider, model: process.env.OPENAI_MODEL ?? process.env.LLM_MODEL ?? 'default' }, 'llm_client_available');
   } else {
     logger.info('llm_client_unavailable_heuristic_mode');
   }

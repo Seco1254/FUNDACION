@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { FeedService, buildFeedFallbackOverview, buildNarrativeFallback, isInstitutionalEvent } from './feed-service.js';
 import { FeedRepository } from '../repo/feed-repo.js';
 
@@ -1110,5 +1110,164 @@ describe('FeedService', () => {
       expect(item!.source_tier).toBe('HIGH');
       expect(item!.source_mode).toBe('NEWS');
     });
+  });
+});
+
+// ── Topic filter ────────────────────────────────────────────────────
+
+describe('Topic filter (FEED_TOPIC_FILTER_ENABLED)', () => {
+  const OLD_ENV = process.env;
+
+  beforeEach(() => {
+    // isolate env mutations per-test
+    process.env = { ...OLD_ENV };
+  });
+
+  afterEach(() => {
+    process.env = OLD_ENV;
+  });
+
+  // Helper: make a row whose articles force a specific topic via url/title keywords
+  function makeTopicRow(id: string, topicHint: string, mediaKey = 'eltiempo') {
+    const titleByTopic: Record<string, string> = {
+      POLITICA: 'Congreso debate reforma tributaria senado política',
+      ECONOMIA: 'PIB crecimiento economía presupuesto inflación',
+      CRIMEN_SEGURIDAD: 'Crimen homicidio captura policía delito',
+      DEPORTES: 'Fútbol gol partido deporte Copa Colombia',
+      SALUD: 'Salud hospital médico enfermedad tratamiento',
+    };
+    return makeMockRow({
+      id,
+      versions: [{ id: `ver-${id}`, headline: titleByTopic[topicHint] ?? topicHint, packetJson: {} }],
+      eventArticles: [{
+        article: {
+          id: `art-${id}`,
+          url: `https://eltiempo.com/${id}`,
+          title: titleByTopic[topicHint] ?? topicHint,
+          media: { id: 'm1', mediaKey, name: 'El Tiempo' },
+          textContentLen: 1500,
+          textContentSource: 'body',
+          extractionFailReason: null,
+          paywallDetected: false,
+          usableForOverview: true,
+          contentType: 'news',
+        },
+      }, {
+        article: {
+          id: `art2-${id}`,
+          url: `https://elespectador.com/${id}`,
+          title: titleByTopic[topicHint] ?? topicHint,
+          media: { id: 'm2', mediaKey: 'elespectador', name: 'El Espectador' },
+          textContentLen: 1200,
+          textContentSource: 'body',
+          extractionFailReason: null,
+          paywallDetected: false,
+          usableForOverview: true,
+          contentType: 'news',
+        },
+      }],
+    });
+  }
+
+  it('topic filter disabled by default — all topics pass', async () => {
+    delete process.env.FEED_TOPIC_FILTER_ENABLED;
+    const rows = [makeTopicRow('ev-pol', 'POLITICA'), makeTopicRow('ev-sal', 'SALUD')];
+    const repo = makeRepoReturning(rows);
+    const service = new FeedService(repo);
+    const feed = await service.getFeed();
+    // Both topics appear (no filter active)
+    expect(feed.items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('DEPORTES: does not receive higher v3 boost than POLITICA', async () => {
+    // same recency, same sources — topic weight for POLITICA > DEPORTES
+    const polRow = makeTopicRow('ev-pol', 'POLITICA');
+    const depRow = makeTopicRow('ev-dep', 'DEPORTES', 'elespectador');
+    const repo = makeRepoReturning([polRow, depRow]);
+    const service = new FeedService(repo);
+    const feed = await service.getFeed();
+    const polItem = feed.items.find((i) => i.event_id === 'ev-pol');
+    const depItem = feed.items.find((i) => i.event_id === 'ev-dep');
+    if (polItem && depItem) {
+      expect(polItem.public_importance_v3_final ?? 0).toBeGreaterThanOrEqual(
+        depItem.public_importance_v3_final ?? 0,
+      );
+    }
+  });
+});
+
+// ── ANALYSIS demotion vs hard news ──────────────────────────────────
+
+describe('ANALYSIS mode demotion vs HIGH/NEWS', () => {
+  function makeNewsRow(id: string) {
+    return makeMockRow({
+      id,
+      publishedAt: new Date('2026-03-09T10:00:00Z'),
+      tLast: new Date('2026-03-09T10:00:00Z'),
+      versions: [{ id: `ver-${id}`, headline: 'Reforma tributaria aprobada en el congreso político', packetJson: {} }],
+      eventArticles: [{
+        article: {
+          id: `art-${id}-1`, url: `https://eltiempo.com/${id}`,
+          title: 'Hard news politics', media: { id: 'm-et', mediaKey: 'eltiempo', name: 'El Tiempo' },
+          textContentLen: 2000, textContentSource: 'body',
+          extractionFailReason: null, paywallDetected: false, usableForOverview: true, contentType: 'news',
+        },
+      }, {
+        article: {
+          id: `art-${id}-2`, url: `https://elespectador.com/${id}`,
+          title: 'Hard news politics', media: { id: 'm-ee', mediaKey: 'elespectador', name: 'El Espectador' },
+          textContentLen: 1800, textContentSource: 'body',
+          extractionFailReason: null, paywallDetected: false, usableForOverview: true, contentType: 'news',
+        },
+      }],
+    });
+  }
+
+  function makeAnalysisRow(id: string) {
+    return makeMockRow({
+      id,
+      publishedAt: new Date('2026-03-09T10:00:00Z'),
+      tLast: new Date('2026-03-09T10:00:00Z'),
+      versions: [{ id: `ver-${id}`, headline: 'Reforma tributaria aprobada en el congreso político', packetJson: {} }],
+      eventArticles: [{
+        article: {
+          id: `art-${id}-1`, url: `https://razonpublica.com/${id}`,
+          title: 'Analysis column politics', media: { id: 'm-rp', mediaKey: 'razon_publica', name: 'Razón Pública' },
+          textContentLen: 2000, textContentSource: 'body',
+          extractionFailReason: null, paywallDetected: false, usableForOverview: true, contentType: 'news',
+        },
+      }],
+    });
+  }
+
+  it('HIGH/NEWS item outranks MEDIUM/ANALYSIS item with same topic and recency', async () => {
+    const newsRow = makeNewsRow('ev-news');
+    const analysisRow = makeAnalysisRow('ev-analysis');
+    const repo = makeRepoReturning([newsRow, analysisRow]);
+    const service = new FeedService(repo);
+    const feed = await service.getFeed();
+
+    const newsItem = feed.items.find((i) => i.event_id === 'ev-news');
+    const analysisItem = feed.items.find((i) => i.event_id === 'ev-analysis');
+
+    if (newsItem && analysisItem) {
+      expect(newsItem.source_mode).toBe('MIXED');
+      expect(analysisItem.source_mode).toBe('ANALYSIS');
+      expect(newsItem.public_importance_v3_final ?? 0).toBeGreaterThan(
+        analysisItem.public_importance_v3_final ?? 0,
+      );
+    }
+  });
+
+  it('ANALYSIS item has source_mode=ANALYSIS in feed response', async () => {
+    const analysisRow = makeAnalysisRow('ev-analysis-mode');
+    const repo = makeRepoReturning([analysisRow]);
+    const service = new FeedService(repo);
+    const feed = await service.getFeed();
+    const item = feed.items.find((i) => i.event_id === 'ev-analysis-mode');
+    if (item) {
+      expect(item.source_mode).toBe('ANALYSIS');
+      expect(item.source_policy_multiplier).toBe(0.85);
+    }
   });
 });

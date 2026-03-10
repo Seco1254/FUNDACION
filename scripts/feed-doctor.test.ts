@@ -708,9 +708,10 @@ describe('event record v2 fields', () => {
 
   it('includes reason_summary in eligibility', () => {
     const ev = makeEvent({
+      versions: [{ id: 'ver-1', headline: 'Congreso debate reforma tributaria en el senado', versionIndex: 1, packetJson: {} }],
       eventArticles: [
-        { createdAt: new Date(), article: makeArticle({ media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
-        { createdAt: new Date(), article: makeArticle({ id: 'art-2', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
+        { createdAt: new Date(), article: makeArticle({ title: 'Reforma tributaria política congreso', media: { id: 'm1', mediaKey: 'eltiempo', name: 'El Tiempo' } }) },
+        { createdAt: new Date(), article: makeArticle({ id: 'art-2', title: 'Debate político en el congreso', media: { id: 'm2', mediaKey: 'semana', name: 'Semana' } }) },
       ],
     });
     const output = buildDoctorOutput([ev], [], defaultConfig);
@@ -1370,9 +1371,10 @@ describe('overview lifecycle aggregate', () => {
     // This event should be feed-eligible (multi-source) but NOT_REQUESTED overview
     const ev = makeEvent({
       id: 'evt-1',
+      versions: [{ id: 'ver-1', headline: 'Policía captura delincuentes crimen seguridad bogotá', versionIndex: 1, packetJson: {} }],
       eventArticles: [
-        { createdAt: now, article: makeArticle({ media: { id: 'm1', mediaKey: 'source1', name: 'Source 1' } }) },
-        { createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://example.com/2', media: { id: 'm2', mediaKey: 'source2', name: 'Source 2' } }) },
+        { createdAt: now, article: makeArticle({ title: 'Captura crimen seguridad policía', media: { id: 'm1', mediaKey: 'source1', name: 'Source 1' } }) },
+        { createdAt: now, article: makeArticle({ id: 'art-2', url: 'https://eltiempo.com/2', title: 'Operativo policial delincuencia', media: { id: 'm2', mediaKey: 'source2', name: 'Source 2' } }) },
       ],
     });
     const output = buildDoctorOutput([ev], [], defaultConfig);

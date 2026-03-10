@@ -202,15 +202,15 @@ describe('composeFeedTopN — source diversity top 5', () => {
     expect(result.rejections.get('et-2')).toBe('COMPOSITION_TOO_MANY_FROM_SOURCE');
   });
 
-  it('same mediaKey allowed in positions 6-10', () => {
-    // First 5 unique mediaKeys, then 6th+ can repeat
+  it('same mediaKey allowed once in positions 6-10 (maxPerSourceTopN=2)', () => {
+    // Each source appears exactly twice (pos 1-5 + pos 6-10) — within maxPerSourceTopN=2
     const items = [
       makeItem({ representative_media_key: 'src-1', topic_key: 'POLITICA' }),
       makeItem({ representative_media_key: 'src-2', topic_key: 'ECONOMIA' }),
       makeItem({ representative_media_key: 'src-3', topic_key: 'CRIMEN_SEGURIDAD' }),
       makeItem({ representative_media_key: 'src-4', topic_key: 'POLITICA' }),
       makeItem({ representative_media_key: 'src-5', topic_key: 'ECONOMIA' }),
-      // Positions 6+ — same sources allowed
+      // Positions 6+ — 2nd occurrence of each source, still within cap of 2
       makeItem({ representative_media_key: 'src-1', topic_key: 'CRIMEN_SEGURIDAD' }),
       makeItem({ representative_media_key: 'src-2', topic_key: 'POLITICA' }),
       makeItem({ representative_media_key: 'src-3', topic_key: 'ECONOMIA' }),
@@ -219,8 +219,57 @@ describe('composeFeedTopN — source diversity top 5', () => {
     ];
     const result = composeFeedTopN(items);
     expect(result.topItems.length).toBe(10);
-    // All should be accepted
     expect(result.rejections.size).toBe(0);
+  });
+});
+
+// ── Rule 3b: Per-source cap across full topN ─────────────────────────
+
+describe('composeFeedTopN — per-source topN cap (maxPerSourceTopN=2)', () => {
+  beforeEach(() => resetCounter());
+
+  it('3rd item from same source is rejected from top 10', () => {
+    const items = [
+      makeItem({ event_id: 'et-1', representative_media_key: 'eltiempo', topic_key: 'POLITICA' }),
+      makeItem({ event_id: 'et-2', representative_media_key: 'eltiempo', topic_key: 'ECONOMIA' }),
+      makeItem({ event_id: 'et-3', representative_media_key: 'eltiempo', topic_key: 'CRIMEN_SEGURIDAD' }),
+      ...makeCoreTopicPool(10),
+    ];
+    const result = composeFeedTopN(items);
+    const eltiempoInTop = result.topItems.filter((i) => i.representative_media_key === 'eltiempo');
+    expect(eltiempoInTop.length).toBeLessThanOrEqual(2);
+    expect(result.rejections.get('et-3')).toBe('COMPOSITION_TOO_MANY_FROM_SOURCE');
+  });
+
+  it('2 items from same source are accepted (one in top-5, one in 6-10)', () => {
+    // et-1 lands at position 0 (top-5). 4 different sources fill positions 1-4.
+    // et-2 lands at position 5+ (past top-5 strict rule) → accepted under maxPerSourceTopN=2.
+    const items = [
+      makeItem({ event_id: 'et-1', representative_media_key: 'eltiempo', topic_key: 'POLITICA' }),
+      makeItem({ event_id: 'filler-1', representative_media_key: 'semana', topic_key: 'ECONOMIA' }),
+      makeItem({ event_id: 'filler-2', representative_media_key: 'elespectador', topic_key: 'CRIMEN_SEGURIDAD' }),
+      makeItem({ event_id: 'filler-3', representative_media_key: 'caracol', topic_key: 'POLITICA' }),
+      makeItem({ event_id: 'filler-4', representative_media_key: 'rcn', topic_key: 'ECONOMIA' }),
+      makeItem({ event_id: 'et-2', representative_media_key: 'eltiempo', topic_key: 'CRIMEN_SEGURIDAD' }),
+      ...makeCoreTopicPool(6),
+    ];
+    const result = composeFeedTopN(items);
+    const eltiempoInTop = result.topItems.filter((i) => i.representative_media_key === 'eltiempo');
+    expect(eltiempoInTop.length).toBe(2);
+    expect(result.rejections.has('et-1')).toBe(false);
+    expect(result.rejections.has('et-2')).toBe(false);
+  });
+
+  it('composition_reordered_count tracks per-source demotions', () => {
+    const items = [
+      makeItem({ event_id: 'et-1', representative_media_key: 'eltiempo', topic_key: 'POLITICA' }),
+      makeItem({ event_id: 'et-2', representative_media_key: 'eltiempo', topic_key: 'ECONOMIA' }),
+      makeItem({ event_id: 'et-3', representative_media_key: 'eltiempo', topic_key: 'CRIMEN_SEGURIDAD' }),
+      ...makeCoreTopicPool(10),
+    ];
+    const result = composeFeedTopN(items);
+    // et-3 was bumped out due to per-source cap → reordered_count >= 1
+    expect(result.composition_reordered_count).toBeGreaterThanOrEqual(1);
   });
 });
 

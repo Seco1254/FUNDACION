@@ -451,6 +451,20 @@ export function buildDoctorOutput(
     }
     if (publishGate.title_align_bypass) titleAlignBypassCount++;
 
+    // Podcast gate — must run BEFORE eligible computation (mirrors feed-service logic)
+    const isPodcastHeadline = /^P[OÓ]DCAST[\s:|-]/i.test(headline);
+    const hasPodcastUrl = articles.some((a: any) => /\/(podcast|podcasts|episodio|audio|video)\//i.test(a.url ?? ''));
+    if (isPodcastHeadline || hasPodcastUrl) {
+      reasons.push('SOURCE_FORMAT_BLOCKED:PODCAST');
+      podcastBlockedCount++;
+    }
+
+    // Topic filter gate — mirrors feed-service FEED_TOPIC_FILTER_ENABLED logic
+    const feedTopicFilterEnabled = process.env.FEED_TOPIC_FILTER_ENABLED === '1';
+    if (feedTopicFilterEnabled && feedAllowedTopics.length > 0 && !feedAllowedTopics.includes(eventTopicKey)) {
+      reasons.push('TOPIC_FILTERED');
+    }
+
     const eligible = reasons.length === 0;
     if (eligible) feedEligible++; else feedIneligible++;
 
@@ -594,12 +608,6 @@ export function buildDoctorOutput(
     if (overviewMode === 'llm') llmOverviewCount++;
     if (overviewMode === 'fallback') fallbackOverviewCount++;
     if (overviewMode === 'heuristic') heuristicOverviewCount++;
-
-    // Podcast detection (TAREA 2)
-    const evHeadline = version?.headline ?? '';
-    const isPodcastHeadline = /^P[OÓ]DCAST[\s:|-]/i.test(evHeadline);
-    const hasPodcastUrl = articles.some((a: any) => /\/(podcast|podcasts|episodio|audio|video)\//i.test(a.url ?? ''));
-    if (isPodcastHeadline || hasPodcastUrl) podcastBlockedCount++;
 
     // Multi-source scarcity tracking (TAREA 3)
     if (numSources >= 2) multiSourceEventCount++;

@@ -41,6 +41,8 @@ export interface CompositionRules {
   maxAnalysis: number;
   /** Max events from same mediaKey in top5 */
   maxPerSourceTop5: number;
+  /** Max events from same mediaKey across full topN */
+  maxPerSourceTopN: number;
   /** Maximum single-source events in topN */
   maxSingleSource: number;
 }
@@ -52,6 +54,10 @@ export interface CompositionResult {
   restItems: FeedItem[];
   /** Per-item rejection reasons (event_id → reason) */
   rejections: Map<string, CompositionRejectionReason>;
+  /** Events reordered away from their ranked position due to composition rules */
+  composition_reordered_count: number;
+  /** Events dropped from top N entirely (pool too small to fill after relaxation) */
+  composition_dropped_count: number;
 }
 
 // ── Default rules ────────────────────────────────────────────────────
@@ -63,6 +69,7 @@ export const DEFAULT_COMPOSITION_RULES: CompositionRules = {
   maxSports: 2,
   maxAnalysis: 2,
   maxPerSourceTop5: 1,
+  maxPerSourceTopN: 2,
   maxSingleSource: 3,
 };
 
@@ -82,6 +89,8 @@ export function composeFeedTopN(
   let singleSourceCount = 0;
   let coreTopicCount = 0;
   const sourceCountTop5 = new Map<string, number>();
+  const sourceCountAll = new Map<string, number>(); // tracks per-source across full topN
+  let compositionReorderedCount = 0;
 
   // First pass: try to fill topN with strict rules
   for (let i = 0; i < rankedItems.length && topItems.length < rules.topN; i++) {
@@ -109,15 +118,26 @@ export function composeFeedTopN(
       continue;
     }
 
-    // Rule 3: Source diversity in top 5
     const mediaKey = item.representative_media_key ?? 'unknown';
+
+    // Rule 3a: Source diversity in top 5 (strict: max 1 per source)
     if (pos < 5) {
       const curSourceCount = sourceCountTop5.get(mediaKey) ?? 0;
       if (curSourceCount >= rules.maxPerSourceTop5) {
         rejections.set(item.event_id, 'COMPOSITION_TOO_MANY_FROM_SOURCE');
         skippedIndices.add(i);
+        compositionReorderedCount++;
         continue;
       }
+    }
+
+    // Rule 3b: Per-source cap across full topN (max 2 per source in top 10)
+    const curSourceAllCount = sourceCountAll.get(mediaKey) ?? 0;
+    if (curSourceAllCount >= rules.maxPerSourceTopN) {
+      rejections.set(item.event_id, 'COMPOSITION_TOO_MANY_FROM_SOURCE');
+      skippedIndices.add(i);
+      compositionReorderedCount++;
+      continue;
     }
 
     // Rule 4: Single-source cap
@@ -137,6 +157,7 @@ export function composeFeedTopN(
     if (pos < 5) {
       sourceCountTop5.set(mediaKey, (sourceCountTop5.get(mediaKey) ?? 0) + 1);
     }
+    sourceCountAll.set(mediaKey, (sourceCountAll.get(mediaKey) ?? 0) + 1);
   }
 
   // Fallback: if we didn't fill topN, relax rules progressively
@@ -182,5 +203,8 @@ export function composeFeedTopN(
   const topSet = new Set(topItems.map((i) => i.event_id));
   const restItems = rankedItems.filter((i) => !topSet.has(i.event_id));
 
-  return { topItems, restItems, rejections };
+  // Items that were rejected and NOT recovered via relaxation
+  const composition_dropped_count = rejections.size;
+
+  return { topItems, restItems, rejections, composition_reordered_count: compositionReorderedCount, composition_dropped_count };
 }

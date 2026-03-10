@@ -21,6 +21,10 @@ const FEED_ALLOWED_TOPICS: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// ── ANALYSIS mode demotion (applied to v3_final for source_mode=ANALYSIS) ──
+// Default 0.75: ANALYSIS items score at 75% of their raw v3. Env-overridable.
+const ANALYSIS_MODE_DEMOTION = parseFloat(process.env.ANALYSIS_MODE_DEMOTION ?? '0.75');
+
 // ── Split proxy quarantine config ────────────────────────────────────
 const FEED_SPLIT_PROXY_QUARANTINE_ENABLED = process.env.FEED_SPLIT_PROXY_QUARANTINE_ENABLED !== '0';
 
@@ -587,8 +591,9 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
       demotion_multiplier: demotion.multiplier,
     });
     item.public_importance_v3_raw = v3.raw;
-    // Apply source policy ranking_multiplier after demotion
-    const v3Final = Math.round(v3.final * sourcePolicy.ranking_multiplier * 1000) / 1000;
+    // Apply source policy multiplier + extra demotion for ANALYSIS mode
+    const analysisFactor = sourcePolicy.source_mode === 'ANALYSIS' ? ANALYSIS_MODE_DEMOTION : 1.0;
+    const v3Final = Math.round(v3.final * sourcePolicy.ranking_multiplier * analysisFactor * 1000) / 1000;
     item.public_importance_v3_final = v3Final;
     item.public_importance_v3_components = v3.components;
   }
