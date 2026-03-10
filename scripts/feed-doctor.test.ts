@@ -1675,6 +1675,68 @@ describe('feed-doctor composition observability', () => {
   });
 });
 
+// ── Podcast blocking in feed-doctor ──────────────────────────────────
+
+describe('feed-doctor podcast blocking', () => {
+  it('podcast headline makes event feed_ineligible', () => {
+    const ev = makeEvent({
+      id: 'evt-podcast',
+      versions: [{ id: 'v1', headline: 'PÓDCAST | Entrevista sobre economía', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-podcast');
+    expect(record.eligibility.feed_eligible).toBe(false);
+    expect(record.eligibility.reasons).toContain('SOURCE_FORMAT_BLOCKED:PODCAST');
+  });
+
+  it('podcast URL makes event feed_ineligible', () => {
+    const ev = makeEvent({
+      id: 'evt-podcast-url',
+      eventArticles: [{ createdAt: new Date(), article: makeArticle({ url: 'https://example.com/podcast/ep-1' }) }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-podcast-url');
+    expect(record.eligibility.feed_eligible).toBe(false);
+    expect(record.eligibility.reasons).toContain('SOURCE_FORMAT_BLOCKED:PODCAST');
+  });
+
+  it('gate_trace includes SOURCE_FORMAT_BLOCKED:PODCAST', () => {
+    const ev = makeEvent({
+      id: 'evt-podcast-trace',
+      versions: [{ id: 'v1', headline: 'PODCAST: Análisis semanal', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-podcast-trace');
+    expect(record.eligibility.gate_trace).toContain('SOURCE_FORMAT_BLOCKED:PODCAST');
+  });
+
+  it('aggregate podcast_blocked_count reflects blocked events', () => {
+    const now = new Date();
+    const ev1 = makeEvent({
+      id: 'evt-pod1',
+      versions: [{ id: 'v1', headline: 'PÓDCAST | Noticias', versionIndex: 1, packetJson: {} }],
+      eventArticles: [{ createdAt: now, article: makeArticle() }],
+    });
+    const ev2 = makeEvent({
+      id: 'evt-normal',
+      eventArticles: [{ createdAt: now, article: makeArticle({ id: 'a2' }) }],
+    });
+    const output = buildDoctorOutput([ev1, ev2], [], defaultConfig);
+    const agg = output.find((r: any) => r.kind === 'aggregate');
+    expect(agg.podcast_blocked_count).toBe(1);
+  });
+
+  it('normal headline does NOT trigger podcast blocking', () => {
+    const ev = makeEvent({
+      id: 'evt-normal',
+      versions: [{ id: 'v1', headline: 'Gobierno anuncia reforma tributaria', versionIndex: 1, packetJson: {} }],
+    });
+    const output = buildDoctorOutput([ev], [], defaultConfig);
+    const record = output.find((r: any) => r.event_id === 'evt-normal');
+    expect(record.eligibility.reasons).not.toContain('SOURCE_FORMAT_BLOCKED:PODCAST');
+  });
+});
+
 // ── New sources observability ───────────────────────────────────────
 
 describe('feed-doctor new sources observability', () => {

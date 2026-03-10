@@ -465,6 +465,7 @@ export function buildDoctorOutput(
       reasons.push('TOPIC_FILTERED');
     }
 
+
     const eligible = reasons.length === 0;
     if (eligible) feedEligible++; else feedIneligible++;
 

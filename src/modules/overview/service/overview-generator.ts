@@ -765,12 +765,8 @@ export class OverviewGenerator {
         // RULE: INSUFFICIENT → only in "Qué falta por confirmar"
         queFalta.push(bullet);
       } else if (claim.status === 'DISPUTED') {
-        // RULE: DISPUTED → only in "En disputa", must include >=2 citations
-        if (citations.length >= 2) {
-          enDisputa.push(bullet);
-        } else {
-          enDisputa.push(bullet);
-        }
+        // RULE: DISPUTED → "En disputa"
+        enDisputa.push(bullet);
       } else {
         // SUPPORTED claims
         if (claim.claimType === 'FACT' || claim.claimType === 'QUANT') {
