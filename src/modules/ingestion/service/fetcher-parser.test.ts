@@ -88,6 +88,7 @@ describe('FetcherParser', () => {
           title: titleMatch?.[1] ?? '',
           snippet: snippetMatch?.[1] ?? '',
           publishedAt: dateMatch ? new Date(dateMatch[1]) : null,
+          textContent: '',
         };
       },
     };
@@ -189,6 +190,436 @@ describe('FetcherParser', () => {
     expect(published[0].payload).toHaveProperty('reason_code', 'PARSE_FAIL');
   });
 
+  it('populates article diagnostic fields (textContentLen, source, paywall, usable)', async () => {
+    const articleHtml = loadFixture('eltiempo-article.html');
+    const mediaRepo = makeMockMediaRepo();
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn().mockResolvedValue(articleHtml);
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: [],
+      extractUrls() { return []; },
+      parseArticle(html: string) {
+        const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/);
+        const snippetMatch = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/);
+        // Return realistic textContent (>= 800 chars so usableForOverview = true)
+        return {
+          title: titleMatch?.[1] ?? 'Test Title',
+          snippet: snippetMatch?.[1] ?? 'Test snippet',
+          publishedAt: null,
+          textContent: 'A'.repeat(1000),
+        };
+      },
+    };
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const fetcher = new FetcherParser(
+      articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const envelope = makeDiscoveredEnvelope(
+      'https://www.eltiempo.com/politica/diagnostics-test',
+      'eltiempo',
+    );
+    await fetcher.handler()(envelope);
+
+    expect(articleRepo.create).toHaveBeenCalledOnce();
+    const data = articleRepo.create.mock.calls[0][0];
+
+    // DOM cleaner extracts richer text from the real fixture HTML,
+    // so textContentLen >= the scraper's 1000 chars.
+    expect(data.textContentLen).toBeGreaterThanOrEqual(1000);
+    expect(['body', 'dom_cleaner_v1']).toContain(data.textContentSource);
+    expect(data.paywallDetected).toBe(false);
+    expect(data.usableForOverview).toBe(true);
+    expect(data.extractionFailReason).toBeNull();
+  });
+
+  it('sets extractionFailReason=empty when textContent is empty', async () => {
+    const mediaRepo = makeMockMediaRepo();
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>short</p></body></html>');
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: [],
+      extractUrls() { return []; },
+      parseArticle() {
+        return { title: 'Test', snippet: 'A snippet', publishedAt: null, textContent: '' };
+      },
+    };
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const fetcher = new FetcherParser(
+      articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/empty-test', 'eltiempo');
+    await fetcher.handler()(envelope);
+
+    const data = articleRepo.create.mock.calls[0][0];
+    expect(data.textContentLen).toBe(0);
+    expect(data.extractionFailReason).toBe('empty');
+    expect(data.usableForOverview).toBe(false);
+  });
+
+  it('detects paywall and sets paywallDetected + extractionFailReason', async () => {
+    const paywallHtml = '<html><body><div class="paywall">Contenido exclusivo para suscriptores</div><article><p>' + 'A'.repeat(100) + '</p></article></body></html>';
+    const mediaRepo = makeMockMediaRepo();
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn().mockResolvedValue(paywallHtml);
+
+    const mockScraper: MediaScraper = {
+      listPageUrls: [],
+      extractUrls() { return []; },
+      parseArticle() {
+        return { title: 'Paywall Article', snippet: 'Locked', publishedAt: null, textContent: 'A'.repeat(1000) };
+      },
+    };
+    const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+    const fetcher = new FetcherParser(
+      articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/paywall-test', 'eltiempo');
+    await fetcher.handler()(envelope);
+
+    const data = articleRepo.create.mock.calls[0][0];
+    expect(data.paywallDetected).toBe(true);
+    expect(data.extractionFailReason).toBe('paywall');
+    expect(data.usableForOverview).toBe(false);
+  });
+
+  describe('text acquisition ladder', () => {
+    it('prefers body text when scraper provides sufficient content', async () => {
+      const html = `<html><head>
+        <meta property="og:description" content="This meta description should not be used">
+        <link rel="amphtml" href="https://amp.example.com/test">
+      </head><body><article><p>Some short content</p></article></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(html);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Body Preferred', snippet: 'Snippet', publishedAt: null, textContent: 'C'.repeat(1000) };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/body-preferred', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      // AMP should NOT be fetched since body text is sufficient
+      expect(fetchHtml).toHaveBeenCalledTimes(1);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('body');
+      expect(data.textContentLen).toBe(1000);
+      expect(data.usableForOverview).toBe(true);
+      expect(data.extractionFailReason).toBeNull();
+    });
+
+    it('falls back to AMP when body text is too short', async () => {
+      const mainHtml = `<html><head>
+        <link rel="amphtml" href="https://amp.eltiempo.com/article-123">
+      </head><body><article><p>Short body</p></article></body></html>`;
+
+      const ampParagraphs = Array.from({ length: 10 }, (_, i) =>
+        `<p>Paragraph ${i}: ${'B'.repeat(100)}</p>`
+      ).join('');
+      const ampHtml = `<html><body><article>${ampParagraphs}</article></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn()
+        .mockResolvedValueOnce(mainHtml)
+        .mockResolvedValueOnce(ampHtml);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'AMP Fallback', snippet: 'Snippet', publishedAt: null, textContent: 'Short' };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/amp-fallback', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      expect(fetchHtml).toHaveBeenCalledTimes(2);
+      expect(fetchHtml).toHaveBeenLastCalledWith('https://amp.eltiempo.com/article-123');
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('amp');
+      expect(data.textContentLen).toBeGreaterThan(800);
+      expect(data.usableForOverview).toBe(true);
+    });
+
+    it('falls back to meta description when body and AMP are unavailable', async () => {
+      const metaDesc = 'X'.repeat(250);
+      const html = `<html><head>
+        <meta property="og:description" content="${metaDesc}">
+      </head><body></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(html);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Meta Fallback', snippet: 'Snippet', publishedAt: null, textContent: '' };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/meta-fallback', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('meta');
+      expect(data.textContentLen).toBe(250);
+      expect(data.usableForOverview).toBe(true);
+      expect(data.extractionFailReason).toBeNull();
+    });
+
+    it('sets textContentSource=none and extractionFailReason=empty when all steps fail', async () => {
+      const html = '<html><body></body></html>';
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(html);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Empty Test', snippet: '', publishedAt: null, textContent: '' };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/empty-ladder', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('none');
+      expect(data.textContentLen).toBe(0);
+      expect(data.usableForOverview).toBe(false);
+      expect(data.extractionFailReason).toBe('empty');
+    });
+
+    it('marks meta text below MIN_LEN_META as too_short and not usable', async () => {
+      const shortMeta = 'Y'.repeat(100);
+      const html = `<html><head>
+        <meta property="og:description" content="${shortMeta}">
+      </head><body></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(html);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Short Meta', snippet: 'Snippet', publishedAt: null, textContent: '' };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/short-meta', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('meta');
+      expect(data.textContentLen).toBe(100);
+      expect(data.usableForOverview).toBe(false);
+      expect(data.extractionFailReason).toBe('too_short');
+    });
+
+    it('skips AMP gracefully when AMP fetch fails, falls back to meta', async () => {
+      const html = `<html><head>
+        <link rel="amphtml" href="https://amp.eltiempo.com/broken">
+        <meta property="og:description" content="${'Z'.repeat(250)}">
+      </head><body></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn()
+        .mockResolvedValueOnce(html)
+        .mockRejectedValueOnce(new Error('AMP fetch failed'));
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'AMP Fail', snippet: 'Snippet', publishedAt: null, textContent: '' };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/amp-fail', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      expect(fetchHtml).toHaveBeenCalledTimes(2);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.textContentSource).toBe('meta');
+      expect(data.textContentLen).toBe(250);
+      expect(data.usableForOverview).toBe(true);
+    });
+
+    it('text_content_source and text_content_len are always set regardless of outcome', async () => {
+      const testCases = [
+        { textContent: 'A'.repeat(1000), expectedSource: 'body', expectedLen: 1000 },
+        { textContent: '', expectedSource: 'none', expectedLen: 0 },
+      ];
+
+      for (const tc of testCases) {
+        const mediaRepo = makeMockMediaRepo();
+        const articleRepo = makeMockArticleRepo();
+        const auditWriter = makeMockAuditWriter();
+        const localEventBus = new EventBus();
+        vi.spyOn(localEventBus, 'publish').mockResolvedValue(undefined);
+        const fetchHtml = vi.fn().mockResolvedValue('<html><body></body></html>');
+
+        const mockScraper: MediaScraper = {
+          listPageUrls: [],
+          extractUrls() { return []; },
+          parseArticle() {
+            return { title: 'T', snippet: 'S', publishedAt: null, textContent: tc.textContent };
+          },
+        };
+        const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+        const fetcher = new FetcherParser(
+          articleRepo, mediaRepo, localEventBus, auditWriter, fetchHtml, scraperLookup,
+        );
+
+        const envelope = makeDiscoveredEnvelope(`https://www.eltiempo.com/always-${tc.expectedSource}`, 'eltiempo');
+        await fetcher.handler()(envelope);
+
+        const data = articleRepo.create.mock.calls[0][0];
+        expect(data.textContentSource).toBe(tc.expectedSource);
+        expect(data.textContentLen).toBe(tc.expectedLen);
+        expect(data).toHaveProperty('textContentSource');
+        expect(data).toHaveProperty('textContentLen');
+        expect(data).toHaveProperty('paywallDetected');
+        expect(data).toHaveProperty('usableForOverview');
+        expect(data).toHaveProperty('extractionFailReason');
+      }
+    });
+  });
+
+  describe('paywall detection fixture', () => {
+    it('detects paywall with keyword + sparse content (< 3 real paragraphs)', async () => {
+      const paywallHtml = `<html><body>
+        <div class="content-lock">
+          <p>Suscríbase para continuar leyendo este artículo premium.</p>
+        </div>
+        <article>
+          <p>${'A'.repeat(50)}</p>
+        </article>
+      </body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(paywallHtml);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Paywall Article', snippet: 'Locked', publishedAt: null, textContent: 'A'.repeat(900) };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/paywall-fixture', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.paywallDetected).toBe(true);
+      expect(data.extractionFailReason).toBe('paywall');
+      expect(data.usableForOverview).toBe(false);
+    });
+
+    it('does not flag paywall when keywords are absent despite sparse content', async () => {
+      const sparseHtml = `<html><body><article><p>${'A'.repeat(50)}</p></article></body></html>`;
+
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue(sparseHtml);
+
+      const mockScraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title: 'Sparse Article', snippet: 'Sparse', publishedAt: null, textContent: 'A'.repeat(900) };
+        },
+      };
+      const scraperLookup = vi.fn().mockReturnValue(mockScraper);
+
+      const fetcher = new FetcherParser(
+        articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+      );
+
+      const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/no-paywall', 'eltiempo');
+      await fetcher.handler()(envelope);
+
+      const data = articleRepo.create.mock.calls[0][0];
+      expect(data.paywallDetected).toBe(false);
+      expect(data.extractionFailReason).toBeNull();
+      expect(data.usableForOverview).toBe(true);
+    });
+  });
+
   it('handles unique constraint violation as DUPLICATE_URL', async () => {
     const mediaRepo = makeMockMediaRepo();
     const articleRepo = makeMockArticleRepo();
@@ -199,7 +630,7 @@ describe('FetcherParser', () => {
     const mockScraper: MediaScraper = {
       listPageUrls: [],
       extractUrls() { return []; },
-      parseArticle() { return { title: 'T', snippet: 'S', publishedAt: null }; },
+      parseArticle() { return { title: 'T', snippet: 'S', publishedAt: null, textContent: '' }; },
     };
     const scraperLookup = vi.fn().mockReturnValue(mockScraper);
 
@@ -216,5 +647,96 @@ describe('FetcherParser', () => {
     expect(published).toHaveLength(1);
     expect(published[0].event_name).toBe('ArticlePolicyBlocked');
     expect(published[0].payload).toHaveProperty('reason_code', 'DUPLICATE_URL');
+  });
+
+  // ── Page-type gate tests ──
+
+  describe('page-type gate', () => {
+    function makeScraperFor(title: string): { scraper: MediaScraper; lookup: ReturnType<typeof vi.fn> } {
+      const scraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title, snippet: 'Snippet text', publishedAt: null, textContent: 'A'.repeat(1000) };
+        },
+      };
+      return { scraper, lookup: vi.fn().mockReturnValue(scraper) };
+    }
+
+    it('blocks /autor/ URL as PAGE_TYPE:AUTHOR_PAGE', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Noticias de Juan Pérez');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/autor/juan-perez', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published).toHaveLength(1);
+      expect(published[0].event_name).toBe('ArticlePolicyBlocked');
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:AUTHOR_PAGE');
+      expect(auditWriter.write).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'PAGE_TYPE_BLOCKED' }),
+      );
+    });
+
+    it('blocks /contenido-comercial/ URL as PAGE_TYPE:COMMERCIAL_CONTENT', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Oferta especial bancaria');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/contenido-comercial/oferta', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:COMMERCIAL_CONTENT');
+    });
+
+    it('blocks /tag/ URL as PAGE_TYPE:LISTING_INDEX', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Economía');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/tag/economia', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:LISTING_INDEX');
+    });
+
+    it('allows normal article URL (e.g. /bogota/...)', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Protestas en Bogotá por TransMilenio');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/bogota/protestas-123456', 'eltiempo'));
+
+      expect(articleRepo.create).toHaveBeenCalledOnce();
+      expect(published).toHaveLength(1);
+      expect(published[0].event_name).toBe('ArticleNormalized');
+    });
+
+    it('blocks title "Noticias, Fotos y Videos de" even without /autor/ in URL', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Noticias, Fotos y Videos de Gustavo Petro - El Tiempo');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/noticias/gustavo-petro', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:AUTHOR_PAGE');
+    });
   });
 });

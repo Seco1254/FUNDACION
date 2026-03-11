@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,8 @@ import {
   Linking,
   StyleSheet,
   ActivityIndicator,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api, ApiError } from '../../src/lib/api';
@@ -117,6 +119,32 @@ export default function EventDetailScreen() {
     });
   }, [feedEventIds, router]);
 
+  // Swipe-to-navigate: detect overscroll at top/bottom edges
+  const SWIPE_THRESHOLD = 80;
+  const swipeNavigatedRef = useRef(false);
+  const contentLayoutRef = useRef({ contentHeight: 0, layoutHeight: 0 });
+
+  const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (swipeNavigatedRef.current) return;
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const { contentHeight, layoutHeight } = { contentHeight: contentSize.height, layoutHeight: layoutMeasurement.height };
+    contentLayoutRef.current = { contentHeight, layoutHeight };
+
+    // Overscroll top → navigate to prev
+    if (contentOffset.y < -SWIPE_THRESHOLD && hasPrev) {
+      swipeNavigatedRef.current = true;
+      navigateTo(currentIndex - 1);
+      return;
+    }
+
+    // Overscroll bottom → navigate to next
+    const maxOffset = contentHeight - layoutHeight;
+    if (contentOffset.y > maxOffset + SWIPE_THRESHOLD && hasNext) {
+      swipeNavigatedRef.current = true;
+      navigateTo(currentIndex + 1);
+    }
+  }, [hasPrev, hasNext, currentIndex, navigateTo]);
+
   const loadBias = useCallback(async (mediaKey: string) => {
     if (!eventId) return;
     setBiasLoading(true);
@@ -171,17 +199,25 @@ export default function EventDetailScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Peek bar: previous event */}
+      {/* Peek bar: previous event (tap or swipe down to navigate) */}
       {hasPrev && (
         <Pressable onPress={() => navigateTo(currentIndex - 1)} style={styles.peekBarTop}>
           <Text style={styles.peekArrow}>▲</Text>
-          <Text style={styles.peekText} numberOfLines={1}>
-            Anterior: {prevHeadline ?? 'Evento anterior'}
-          </Text>
+          <View style={styles.peekContent}>
+            <Text style={styles.peekText} numberOfLines={1}>
+              {prevHeadline ?? 'Evento anterior'}
+            </Text>
+            <Text style={styles.peekHint}>Desliza hacia abajo</Text>
+          </View>
         </Pressable>
       )}
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        onScrollEndDrag={handleScrollEndDrag}
+        scrollEventThrottle={16}
+      >
         {status === 'offline' && (
           <View style={styles.offlineBanner}>
             <Text style={styles.offlineText}>
@@ -223,7 +259,7 @@ export default function EventDetailScreen() {
               </View>
             )}
           </View>
-          <OverviewBlock overview={overview} onRetry={loadEvent} />
+          <OverviewBlock overview={overview} overviewStatus={data.overview_status} onRetry={loadEvent} />
         </View>
 
         {/* Heatmap mini */}
@@ -313,12 +349,15 @@ export default function EventDetailScreen() {
         </Modal>
       </ScrollView>
 
-      {/* Peek bar: next event */}
+      {/* Peek bar: next event (tap or swipe up to navigate) */}
       {hasNext && (
         <Pressable onPress={() => navigateTo(currentIndex + 1)} style={styles.peekBarBottom}>
-          <Text style={styles.peekText} numberOfLines={1}>
-            Siguiente: {nextHeadline ?? 'Próximo evento'}
-          </Text>
+          <View style={styles.peekContent}>
+            <Text style={styles.peekText} numberOfLines={1}>
+              {nextHeadline ?? 'Próximo evento'}
+            </Text>
+            <Text style={styles.peekHint}>Desliza hacia arriba</Text>
+          </View>
           <Text style={styles.peekArrow}>▼</Text>
         </Pressable>
       )}
@@ -530,11 +569,17 @@ const styles = StyleSheet.create({
     color: colors.accent,
     fontWeight: '700',
   },
-  peekText: {
+  peekContent: {
     flex: 1,
+  },
+  peekText: {
     fontSize: font.sm,
     color: colors.accent,
     fontWeight: '500',
+  },
+  peekHint: {
+    fontSize: font.xs,
+    color: colors.textMuted,
   },
 
   // Header

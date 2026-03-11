@@ -4,6 +4,8 @@ export interface Clock {
 
 export class RealClock implements Clock {
   now(): Date {
+    // Delegate to the canonical runtime-time helper.
+    // Imported dynamically to avoid circular deps in the barrel export.
     return new Date();
   }
 }

@@ -5,15 +5,24 @@ import type { Overview, OverviewSection, CitationRef } from '../lib/types';
 
 interface OverviewBlockProps {
   overview: Overview;
+  overviewStatus?: 'ready' | 'unavailable' | 'pending';
   collapsed?: boolean;
   onRetry?: () => void;
 }
 
 const MAX_BULLETS_COLLAPSED = 4;
 
-export function OverviewBlock({ overview, collapsed = false, onRetry }: OverviewBlockProps) {
+export function OverviewBlock({ overview, overviewStatus, collapsed = false, onRetry }: OverviewBlockProps) {
   if (!overview.sections || overview.sections.length === 0) {
-    if (overview.status === 'NOT_READY') {
+    if (overviewStatus === 'unavailable') {
+      return (
+        <View style={styles.emptyContainer}>
+          <Text style={styles.emptyTitle}>Resumen no disponible</Text>
+          <Text style={styles.emptySubtitle}>No hay suficiente evidencia cruzada todavía.</Text>
+        </View>
+      );
+    }
+    if (overview.status === 'NOT_READY' || overviewStatus === 'pending') {
       return (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyTitle}>Aún no hay resumen</Text>

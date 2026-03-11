@@ -1,5 +1,5 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
-import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
+import { extractMeta, extractH1, extractLeadParagraph, extractArticleBody, isValidDate } from './html-utils.js';
 
 const LIST_PAGE_URL = 'https://www.eltiempo.com/';
 
@@ -24,7 +24,8 @@ export class ElTiempoScraper implements MediaScraper {
     const dateStr = extractMeta(html, 'article:published_time');
     const publishedAt = dateStr ? new Date(dateStr) : null;
 
-    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
+    const textContent = extractArticleBody(html);
+    return { title, snippet, textContent, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
   }
 
   private isArticleUrl(url: string): boolean {

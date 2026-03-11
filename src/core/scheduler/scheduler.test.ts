@@ -17,11 +17,35 @@ describe('Scheduler', () => {
     expect(scheduler.list()[0].jobKey).toBe('publish:evt-1');
   });
 
-  it('deduplicates by jobKey (idempotent)', () => {
+  it('upserts runAt when same jobKey re-registered with different time', () => {
     const { scheduler } = setup();
     scheduler.register('publish:evt-1', new Date('2025-06-01T13:00:00Z'), { event_id: 'evt-1' });
     scheduler.register('publish:evt-1', new Date('2025-06-01T14:00:00Z'), { event_id: 'evt-1' });
     expect(scheduler.list()).toHaveLength(1);
+    expect(scheduler.list()[0].runAt).toEqual(new Date('2025-06-01T14:00:00Z'));
+  });
+
+  it('no-ops when same jobKey re-registered with identical time', () => {
+    const { scheduler } = setup();
+    scheduler.register('publish:evt-1', new Date('2025-06-01T13:00:00Z'), { event_id: 'evt-1' });
+    scheduler.register('publish:evt-1', new Date('2025-06-01T13:00:00Z'), { event_id: 'evt-1' });
+    expect(scheduler.list()).toHaveLength(1);
+    expect(scheduler.list()[0].runAt).toEqual(new Date('2025-06-01T13:00:00Z'));
+  });
+
+  it('schedule twice same event yields 1 job with updated runAt', () => {
+    const { scheduler } = setup();
+    scheduler.register('publish:evt-A', new Date('2025-06-01T13:00:00Z'), { eventId: 'A' });
+    scheduler.register('publish:evt-A', new Date('2025-06-01T15:00:00Z'), { eventId: 'A' });
+    expect(scheduler.list()).toHaveLength(1);
+    expect(scheduler.list()[0].runAt).toEqual(new Date('2025-06-01T15:00:00Z'));
+  });
+
+  it('schedule different events yields 2 jobs', () => {
+    const { scheduler } = setup();
+    scheduler.register('publish:evt-A', new Date('2025-06-01T13:00:00Z'), { eventId: 'A' });
+    scheduler.register('publish:evt-B', new Date('2025-06-01T14:00:00Z'), { eventId: 'B' });
+    expect(scheduler.list()).toHaveLength(2);
   });
 
   it('cancels a job', () => {

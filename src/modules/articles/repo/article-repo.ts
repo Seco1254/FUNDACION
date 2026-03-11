@@ -17,6 +17,15 @@ export class ArticleRepository {
     url: string;
     title: string;
     snippet: string;
+    textNorm?: string | null;
+    textContentLen?: number | null;
+    textContentSource?: string | null;
+    extractionFailReason?: string | null;
+    paywallDetected?: boolean;
+    usableForOverview?: boolean;
+    contentType?: string | null;
+    contentTypeScore?: number | null;
+    routingDecision?: string | null;
     publishedAt?: Date | null;
     status?: string;
   }): Promise<ArticleEntity> {
@@ -26,6 +35,15 @@ export class ArticleRepository {
         url: data.url,
         title: data.title,
         snippet: data.snippet,
+        textNorm: data.textNorm ?? null,
+        textContentLen: data.textContentLen ?? null,
+        textContentSource: data.textContentSource ?? null,
+        extractionFailReason: data.extractionFailReason ?? null,
+        paywallDetected: data.paywallDetected ?? false,
+        usableForOverview: data.usableForOverview ?? false,
+        contentType: data.contentType ?? null,
+        contentTypeScore: data.contentTypeScore ?? null,
+        routingDecision: data.routingDecision ?? null,
         publishedAt: data.publishedAt ?? null,
         status: (data.status as any) ?? 'DISCOVERED',
       },
@@ -41,6 +59,21 @@ export class ArticleRepository {
       where: { id },
       data: { status: status as any, blockedReason: blockedReason as any },
     }) as Promise<ArticleEntity>;
+  }
+
+  async countSince(since: Date): Promise<{ total: number; byStatus: Record<string, number> }> {
+    const rows = await this.prisma.article.groupBy({
+      by: ['status'],
+      where: { createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      byStatus[row.status] = row._count._all;
+      total += row._count._all;
+    }
+    return { total, byStatus };
   }
 
   async updateEmbedding(

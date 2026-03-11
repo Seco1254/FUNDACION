@@ -2,11 +2,26 @@
 
 export type EventState = 'DETECTED' | 'PENDING_PUBLISH' | 'PUBLISHED' | 'UPDATING' | 'DORMANT' | 'CLOSED';
 
+export interface AnalisisFuentes {
+  consenso: string[];
+  desacuerdo: string[];
+  informacion_faltante: string[];
+}
+
 export interface FeedItemOverview {
+  overview?: string;
   what_happened: string[];
   context: string[];
   in_dispute: string[];
   confidence_label: string;
+  analisis_fuentes?: AnalisisFuentes;
+}
+
+export interface FeedItemSource {
+  source_id: string;
+  name: string;
+  domain: string;
+  article_count: number;
 }
 
 export interface FeedItem {
@@ -17,7 +32,17 @@ export interface FeedItem {
   published_at: string | null;
   cover_image_url: string | null;
   ai_overview?: FeedItemOverview | null;
+  overview_status?: 'ready' | 'unavailable' | 'pending' | 'failed';
   source_count?: number;
+  sources?: FeedItemSource[];
+  article_count?: number;
+  unique_sources_count?: number;
+  usable_articles_count?: number;
+  total_usable_text_len?: number;
+  key_facts_count?: number;
+  evidence_level?: 'high' | 'medium' | 'low' | 'none';
+  overview_mode?: string | null;
+  why_no_overview?: string | null;
 }
 
 export interface FeedResponse {
@@ -161,6 +186,7 @@ export interface EventDetailResponse {
   latest_version: LatestVersion | null;
   media_tabs: MediaTab[];
   overview: Overview;
+  overview_status?: 'ready' | 'unavailable' | 'pending';
   bias: BiasData;
   topics: TopicsData;
   topics_heatmap: HeatmapBin[];

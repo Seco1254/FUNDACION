@@ -1,5 +1,5 @@
 /**
- * Pair-scoring for Linking v2 — spec-exact implementation.
+ * Pair-scoring for Linking v2.1 — two-step linking with hard negative gates.
  *
  * Composite score = 0.55*embedding + 0.25*entity + 0.20*temporal
  *
@@ -8,10 +8,10 @@
  *   - city_mismatch: article city != event city (when both have high confidence)
  *   - date_gap: event fact dates differ by >7 days
  *
- * Merge decision:
- *   >= 0.62 AND no hard_block → assign (auto-link)
- *   0.50–0.62 → only assign if event has >= 2 unique media
- *   < 0.50 → create new event
+ * v2.1 additions:
+ *   - Hard negative gates (entity, topic, title) block auto-link → degrade to maybe
+ *   - Two-step: auto-link requires N strong signals (embedding, entity, topic)
+ *   - Enhanced entity guard with 2 thresholds (auto vs maybe)
  *
  * LLM response shape (when used):
  *   { same_event: 0..1, hard_block: boolean, reason_codes: string[] }
@@ -22,10 +22,42 @@ import { cosineSimilarity, computeCentroid } from './similarity.js';
 import { LlmClient } from '../../../core/llm/client.js';
 import { logger } from '../../../core/logging/logger.js';
 import { metrics } from '../../../core/metrics/metrics.js';
+import {
+  shouldBlockAutoLink,
+  checkTitleContradictionPair,
+  extractDesk,
+  desksCompatible,
+  extractTitleKeywords,
+  jaccardSets,
+  GateContext,
+} from './hard-negative-gates.js';
+import {
+  HARD_NEGATIVE_ENABLED,
+  TWO_STEP_ENABLED,
+  AUTO_MIN_ENTITY_JACCARD,
+  MAYBE_MIN_ENTITY_JACCARD,
+  AUTO_REQUIRES_SIGNALS,
+  SIGNAL_MIN_EMBED,
+  SIGNAL_MIN_ENTITY,
+  SIGNAL_MIN_TOPIC,
+  TITLE_GATE_ENABLED,
+  DESK_GATE_ENABLED,
+  TOPIC_CONFIDENCE_MIN,
+  FLOOR_GATES_ENABLED,
+  TITLE_ALIGN_FLOOR,
+  ENTITY_OVERLAP_FLOOR,
+} from './config.js';
 
-export const THETA_AUTO_LINK = 0.62;
-export const THETA_MAYBE_LINK = 0.50;
+export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
+export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.30');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// Kill switch: never auto-link, only maybe/create
+export const DISABLE_AUTO_LINK = process.env.DISABLE_AUTO_LINK === '1';
+
+// Legacy entity guard (kept for backward compat, now superseded by v2.1 gates)
+export const ENTITY_GUARD_ENABLED = process.env.EVENT_LINKER_ENTITY_GUARD_ENABLED !== '0';
+export const ENTITY_GUARD_MIN_JACCARD = parseFloat(process.env.EVENT_LINKER_ENTITY_GUARD_MIN_JACCARD ?? '0.01');
 
 // ── Weights for composite score ──
 const W_EMBEDDING = 0.55;
@@ -43,37 +75,38 @@ export interface CandidateScore {
   compositeScore: number;
   hardBlock: boolean;
   hardBlockReasons: string[];
+  /** v2.1: reasons from hard negative gates that block auto-link */
+  gatesBlockAutoReasons: string[];
+  /** v2.1: which strong signals passed */
+  signalsPassed: { embed: boolean; entity: boolean; topic: boolean; count: number };
+  /** v2.1: final action for this candidate */
+  finalAction: 'AUTO_LINK' | 'MAYBE_LINK' | 'CREATE';
 }
 
 export interface PairScoringResult {
   bestMatch: { eventId: string; score: number } | null;
   scores: CandidateScore[];
   action: 'LINK' | 'CREATE';
+  /** v2.1: specific link type */
+  linkType: 'AUTO_LINK' | 'MAYBE_LINK' | 'CREATE';
   llmUsed: boolean;
+  /** v2.3: floor gate reasons that caused degradation from AUTO → MAYBE for the best match */
+  maybeLinkDegradedReasons: string[];
 }
 
 // ── Hard block input ──
 export interface HardBlockContext {
-  /** Action/category of the article (e.g., 'protest', 'election', 'accident') */
   articleAction?: string | null;
-  /** City mentioned in the article */
   articleCity?: string | null;
-  /** Confidence of city extraction (0-1) */
   articleCityConfidence?: number;
-  /** Date of the fact described in the article */
   articleFactDate?: Date | null;
 }
 
 export interface EventCandidateContext {
-  /** Dominant action/category of the event */
   eventAction?: string | null;
-  /** Dominant city of the event */
   eventCity?: string | null;
-  /** Confidence of city extraction (0-1) */
   eventCityConfidence?: number;
-  /** Earliest fact date across event articles */
   eventFactDateEarliest?: Date | null;
-  /** Latest fact date across event articles */
   eventFactDateLatest?: Date | null;
 }
 
@@ -111,7 +144,6 @@ export function checkHardBlock(
     const earliest = event.eventFactDateEarliest?.getTime() ?? artDateMs;
     const latest = event.eventFactDateLatest?.getTime() ?? earliest;
 
-    // Check if article date is more than 7 days from the event's date range
     let gap = 0;
     if (artDateMs < earliest) {
       gap = earliest - artDateMs;
@@ -181,6 +213,12 @@ export interface ArticleForPairing {
   embeddingVec: number[];
   publishedAt: Date | null;
   hardBlockContext?: HardBlockContext;
+  /** v2.1: topic assigned to this article (top1) */
+  topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: article URL for desk extraction */
+  url?: string | null;
 }
 
 export interface EventCandidate {
@@ -192,11 +230,34 @@ export interface EventCandidate {
   articleCount: number;
   uniqueMediaCount: number;
   hardBlockContext?: EventCandidateContext;
+  /** v2.1: representative title for the event (first article's title) */
+  representativeTitle?: string;
+  /** v2.1: topic assigned to this event (top1) */
+  topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: representative URL for desk extraction (first article's URL) */
+  representativeUrl?: string | null;
+}
+
+/**
+ * Count how many strong signals pass for a candidate.
+ */
+function countStrongSignals(
+  embeddingSim: number,
+  entityOverlap: number,
+  topicSim: number | null,
+): { embed: boolean; entity: boolean; topic: boolean; count: number } {
+  const embed = embeddingSim >= SIGNAL_MIN_EMBED;
+  const entity = entityOverlap >= SIGNAL_MIN_ENTITY;
+  const topic = topicSim !== null ? topicSim >= SIGNAL_MIN_TOPIC : false;
+  const count = (embed ? 1 : 0) + (entity ? 1 : 0) + (topic ? 1 : 0);
+  return { embed, entity, topic, count };
 }
 
 /**
  * Score an article against a list of candidate events.
- * Includes hard block evaluation per candidate.
+ * Includes hard block evaluation + v2.1 gate evaluation per candidate.
  */
 export function scoreCandidates(
   article: ArticleForPairing,
@@ -224,11 +285,101 @@ export function scoreCandidates(
       W_ENTITY * entOverlap +
       W_TEMPORAL * tempProx;
 
-    // Hard block check
+    // Hard block check (original v2 hard blocks — force CREATE)
     const hardBlockCheck = checkHardBlock(
       article.hardBlockContext ?? {},
       candidate.hardBlockContext ?? {},
     );
+
+    // v2.1: Hard negative gates (block auto-link only, not maybe)
+    const gateReasons: string[] = [];
+    let gateMaybeBlock = false;
+
+    if (HARD_NEGATIVE_ENABLED && !hardBlockCheck.blocked) {
+      // Entity gate (v2.1 enhanced 2-threshold)
+      if (entOverlap < AUTO_MIN_ENTITY_JACCARD) {
+        gateReasons.push('ENTITY_LOW_FOR_AUTO');
+      }
+      if (entOverlap < MAYBE_MIN_ENTITY_JACCARD && embeddingSim < 0.60) {
+        gateReasons.push('ENTITY_VERY_LOW');
+        gateMaybeBlock = true;
+      }
+
+      // Topic gate (with confidence threshold)
+      if (article.topicTop1 && candidate.topicTop1) {
+        if (article.topicTop1 !== candidate.topicTop1) {
+          const artConf = article.topicConfidence ?? 0;
+          const evtConf = candidate.topicConfidence ?? 0;
+          if (artConf >= TOPIC_CONFIDENCE_MIN && evtConf >= TOPIC_CONFIDENCE_MIN) {
+            gateReasons.push('TOPIC_MISMATCH_HIGH_CONF');
+          } else {
+            gateReasons.push('TOPIC_MISMATCH');
+          }
+        }
+      }
+
+      // Desk mismatch gate (URL-based)
+      if (DESK_GATE_ENABLED) {
+        const articleDesk = extractDesk(article.url);
+        const eventDesk = extractDesk(candidate.representativeUrl);
+        if (!desksCompatible(articleDesk, eventDesk)) {
+          gateReasons.push('DESK_MISMATCH');
+        }
+      }
+
+      // Title contradiction gate
+      if (TITLE_GATE_ENABLED) {
+        const eventRepTitle = candidate.representativeTitle ?? candidate.articleTexts[0] ?? '';
+        const titleCheck = checkTitleContradictionPair(
+          article.title,
+          eventRepTitle,
+          article.title,   // raw title
+          eventRepTitle,
+          embeddingSim,
+          entOverlap,
+        );
+        if (titleCheck.blocked) {
+          gateReasons.push('TITLE_CONTRADICTION_LOW_OVERLAP');
+        }
+      }
+
+      // v2.3: Floor gates — hard floors on title alignment and entity overlap
+      if (FLOOR_GATES_ENABLED) {
+        const eventRepTitle = candidate.representativeTitle ?? candidate.articleTexts[0] ?? '';
+        const kwArticle = extractTitleKeywords(article.title);
+        const kwEvent = extractTitleKeywords(eventRepTitle);
+        const titleAlign = jaccardSets(kwArticle, kwEvent);
+
+        if (titleAlign < TITLE_ALIGN_FLOOR) {
+          gateReasons.push('TITLE_ALIGNMENT_FLOOR');
+        }
+        if (entOverlap < ENTITY_OVERLAP_FLOOR) {
+          gateReasons.push('ENTITY_OVERLAP_FLOOR');
+        }
+      }
+    }
+
+    // v2.1: Compute signal strength
+    const topicSim = (article.topicTop1 && candidate.topicTop1 && article.topicTop1 === candidate.topicTop1) ? 1.0 : null;
+    const signals = countStrongSignals(embeddingSim, entOverlap, topicSim);
+
+    // Determine finalAction per candidate
+    let finalAction: 'AUTO_LINK' | 'MAYBE_LINK' | 'CREATE' = 'CREATE';
+    if (hardBlockCheck.blocked) {
+      finalAction = 'CREATE';
+    } else if (compositeScore >= THETA_AUTO_LINK) {
+      if (DISABLE_AUTO_LINK) {
+        finalAction = 'MAYBE_LINK';
+      } else if (gateReasons.length > 0) {
+        finalAction = gateMaybeBlock ? 'CREATE' : 'MAYBE_LINK';
+      } else if (TWO_STEP_ENABLED && signals.count < AUTO_REQUIRES_SIGNALS) {
+        finalAction = 'MAYBE_LINK';
+      } else {
+        finalAction = 'AUTO_LINK';
+      }
+    } else if (compositeScore >= THETA_MAYBE_LINK) {
+      finalAction = gateMaybeBlock ? 'CREATE' : 'MAYBE_LINK';
+    }
 
     scores.push({
       eventId: candidate.id,
@@ -238,6 +389,9 @@ export function scoreCandidates(
       compositeScore,
       hardBlock: hardBlockCheck.blocked,
       hardBlockReasons: hardBlockCheck.reasons,
+      gatesBlockAutoReasons: gateReasons,
+      signalsPassed: signals,
+      finalAction,
     });
   }
 
@@ -246,12 +400,13 @@ export function scoreCandidates(
 }
 
 /**
- * Decide whether to link or create, using heuristic scores and optional LLM.
+ * Decide whether to link or create, using two-step scoring + hard negative gates + optional LLM.
  *
- * Decision rules:
- *   >= 0.62 AND no hard_block → LINK
- *   0.50–0.62 AND no hard_block AND event has >= 2 unique media → LINK
- *   otherwise → CREATE
+ * v2.1 Decision rules:
+ *   1. DISABLE_AUTO_LINK=1 → never auto-link
+ *   2. Auto-link ONLY if: score >= THETA_AUTO_LINK + no hard blocks + no gate blocks + >= N strong signals
+ *   3. Maybe-link: score >= THETA_MAYBE_LINK (or auto blocked by gate) — NO signal requirement
+ *   4. Below threshold → CREATE
  */
 export async function decideLinkAction(
   article: ArticleForPairing,
@@ -259,9 +414,10 @@ export async function decideLinkAction(
   llm: LlmClient | null,
 ): Promise<PairScoringResult> {
   const scores = scoreCandidates(article, candidates);
+  const FLOOR_REASONS = new Set(['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR']);
 
   if (scores.length === 0) {
-    return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
+    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: [] };
   }
 
   // Only consider non-hard-blocked candidates
@@ -270,67 +426,120 @@ export async function decideLinkAction(
   if (eligible.length === 0) {
     metrics.incCounter('linking.hard_block_total');
     metrics.incCounter('linking.create_total');
-    return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
+    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: [] };
   }
 
   const top = eligible[0];
   const topCandidate = candidates.find((c) => c.id === top.eventId);
 
-  // >= 0.62 → auto-link
-  if (top.compositeScore >= THETA_AUTO_LINK) {
+  // v2.3: Detect floor gate degradation (AUTO → MAYBE due to floor gates)
+  const floorDegradedReasons = (
+    top.finalAction === 'MAYBE_LINK' &&
+    top.compositeScore >= THETA_AUTO_LINK &&
+    top.gatesBlockAutoReasons.some((r) => FLOOR_REASONS.has(r))
+  )
+    ? top.gatesBlockAutoReasons.filter((r) => FLOOR_REASONS.has(r))
+    : [];
+
+  // ── Step 1: Check for auto-link eligibility ──
+  if (top.finalAction === 'AUTO_LINK') {
     metrics.incCounter('linking.auto_link_total');
     return {
       bestMatch: { eventId: top.eventId, score: top.compositeScore },
       scores,
       action: 'LINK',
+      linkType: 'AUTO_LINK',
       llmUsed: false,
+      maybeLinkDegradedReasons: [],
     };
   }
 
-  // 0.50–0.62 range
-  if (top.compositeScore >= THETA_MAYBE_LINK) {
+  // Track gate downgrades
+  if (top.gatesBlockAutoReasons.length > 0 && top.compositeScore >= THETA_AUTO_LINK) {
+    metrics.incCounter('linking.gate_downgrade_total');
+    logger.info({
+      article_id: article.id,
+      event_id: top.eventId,
+      gates: top.gatesBlockAutoReasons,
+      composite: +top.compositeScore.toFixed(4),
+      signals: top.signalsPassed,
+    }, 'gate_blocked_auto_link');
+  }
+
+  // v2.3: Track floor gate degradations for observability
+  if (floorDegradedReasons.length > 0) {
+    metrics.incCounter('linking.maybe_link_degraded_total');
+    logger.info({
+      article_id: article.id,
+      event_id: top.eventId,
+      decision: 'MAYBE_LINK_DEGRADED',
+      reasons: floorDegradedReasons,
+      composite: +top.compositeScore.toFixed(4),
+    }, 'maybe_link_degraded');
+  }
+
+  // Legacy entity guard metric (backward compat)
+  if (ENTITY_GUARD_ENABLED && top.compositeScore >= THETA_AUTO_LINK && top.entityOverlap < ENTITY_GUARD_MIN_JACCARD) {
+    metrics.incCounter('linking.entity_guard_downgrade_total');
+  }
+
+  // Track two-step signal downgrades
+  if (TWO_STEP_ENABLED && top.compositeScore >= THETA_AUTO_LINK && top.gatesBlockAutoReasons.length === 0 && top.signalsPassed.count < AUTO_REQUIRES_SIGNALS) {
+    metrics.incCounter('linking.two_step_downgrade_total');
+    logger.info({
+      article_id: article.id,
+      event_id: top.eventId,
+      signals: top.signalsPassed,
+      required: AUTO_REQUIRES_SIGNALS,
+    }, 'two_step_signal_insufficient');
+  }
+
+  // ── Step 2: Maybe-link zone ──
+  if (top.finalAction === 'MAYBE_LINK' || (top.compositeScore >= THETA_MAYBE_LINK && top.finalAction !== 'CREATE')) {
     // Try LLM first if available
     if (llm) {
       const top3 = eligible.slice(0, 3);
       const llmResult = await llmPairScore(article, candidates, top3, llm);
       if (llmResult) {
         if (llmResult.hardBlock) {
-          // LLM says hard_block → always respect
           metrics.incCounter('linking.llm_hard_block_total');
           metrics.incCounter('linking.create_total');
-          return { bestMatch: null, scores, action: 'CREATE', llmUsed: true };
+          return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: true, maybeLinkDegradedReasons: floorDegradedReasons };
         }
         metrics.incCounter('linking.llm_link_total');
         return {
           bestMatch: { eventId: llmResult.eventId, score: llmResult.score },
           scores,
           action: 'LINK',
+          linkType: 'MAYBE_LINK',
           llmUsed: true,
+          maybeLinkDegradedReasons: floorDegradedReasons,
         };
       }
     }
 
-    // Heuristic fallback: only link if event has >= 2 unique media
+    // Heuristic fallback: link if event has >= 1 article
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
-    if (uniqueMedia >= 2) {
+    if (uniqueMedia >= 1) {
       metrics.incCounter('linking.heuristic_link_total');
       return {
         bestMatch: { eventId: top.eventId, score: top.compositeScore },
         scores,
         action: 'LINK',
+        linkType: 'MAYBE_LINK',
         llmUsed: false,
+        maybeLinkDegradedReasons: floorDegradedReasons,
       };
     }
   }
 
   // Below threshold
   metrics.incCounter('linking.create_total');
-  return { bestMatch: null, scores, action: 'CREATE', llmUsed: false };
+  return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: floorDegradedReasons };
 }
 
 /**
  * LLM pair scoring — returns spec-exact response shape.
- * LLM is asked for: { same_event: 0..1, hard_block: boolean, reason_codes: string[] }
  */
 async function llmPairScore(
   article: ArticleForPairing,
@@ -378,7 +587,6 @@ Rules:
       latency_ms: response.meta.latency_ms,
     }, 'llm_pair_score_result');
 
-    // Hard block from LLM is always respected
     if (data.hard_block) {
       return {
         eventId: '',

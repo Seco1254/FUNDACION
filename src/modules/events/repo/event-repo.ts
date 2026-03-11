@@ -45,7 +45,7 @@ export class EventRepository {
   }
 
   async findPublishedFeed(cursor?: { publishedAt: Date; eventId: string }, pageSize: number = 20) {
-    const where: any = { state: 'PUBLISHED' as any };
+    const where: any = { state: 'PUBLISHED' as any, canonicalEventId: null };
     if (cursor) {
       where.AND = [
         {
@@ -65,6 +65,26 @@ export class EventRepository {
         versions: {
           orderBy: { versionIndex: 'desc' },
           take: 1,
+        },
+        eventArticles: {
+          include: {
+            article: {
+              select: {
+                id: true,
+                mediaId: true,
+                url: true,
+                title: true,
+                status: true,
+                textContentLen: true,
+                textContentSource: true,
+                extractionFailReason: true,
+                paywallDetected: true,
+                usableForOverview: true,
+                contentType: true,
+                media: { select: { id: true, mediaKey: true, name: true } },
+              },
+            },
+          },
         },
       },
     });
@@ -90,11 +110,18 @@ export class EventRepository {
     });
   }
 
+  async unlinkArticle(eventId: string, articleId: string): Promise<void> {
+    await this.prisma.eventArticle.delete({
+      where: { eventId_articleId: { eventId, articleId } },
+    });
+  }
+
   async findCandidateEvents(since: Date): Promise<EventEntity[]> {
     return this.prisma.event.findMany({
       where: {
         state: { not: 'CLOSED' as any },
         tLast: { gte: since },
+        canonicalEventId: null,
       },
     }) as Promise<EventEntity[]>;
   }
@@ -102,7 +129,7 @@ export class EventRepository {
   async findArticlesForEvent(eventId: string): Promise<any[]> {
     const rows = await this.prisma.eventArticle.findMany({
       where: { eventId },
-      include: { article: true },
+      include: { article: { include: { media: true } } },
     });
     return rows.map((r: any) => r.article);
   }
@@ -128,10 +155,33 @@ export class EventRepository {
     }) as Promise<EventEntity[]>;
   }
 
-  async findPendingPublish(): Promise<EventEntity[]> {
+
+  async findPendingPublish(): Promise<Array<{ id: string; publishAt: Date | null }>> {
     return this.prisma.event.findMany({
       where: { state: 'PENDING_PUBLISH' as any },
-    }) as Promise<EventEntity[]>;
+      select: { id: true, publishAt: true },
+    });
+  }
+
+  async countByState(): Promise<Record<string, number>> {
+    const rows = await this.prisma.event.groupBy({
+      by: ['state'],
+      _count: { _all: true },
+    });
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.state] = row._count._all;
+    }
+    return result;
+  }
+
+  async oldestPendingPublishAt(): Promise<Date | null> {
+    const row = await this.prisma.event.findFirst({
+      where: { state: 'PENDING_PUBLISH' as any },
+      orderBy: { publishAt: 'asc' },
+      select: { publishAt: true },
+    });
+    return row?.publishAt ?? null;
   }
 
   async findByIdWithDetails(id: string) {

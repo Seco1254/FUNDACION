@@ -6,4 +6,8 @@ export class FeedRepository {
   async getFeed(cursor?: { publishedAt: Date; eventId: string }, pageSize: number = 20) {
     return this.eventRepo.findPublishedFeed(cursor, pageSize);
   }
+
+  async countEventsByState(): Promise<Record<string, number>> {
+    return this.eventRepo.countByState();
+  }
 }

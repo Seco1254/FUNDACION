@@ -1,6 +1,9 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
-import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
+import { extractMeta, extractH1, extractLeadParagraph, isValidDate, extractArticleBody } from './html-utils.js';
 
+// NOTE: flip.org.co may render /pronunciamientos via client-side JS (SPA).
+// If extractUrls returns 0 in production, the list page HTML likely lacks
+// static <a> tags. Potential fallback: RSS feed or headless fetch.
 const LIST_PAGE_URL = 'https://flip.org.co/pronunciamientos';
 
 export class FlipScraper implements MediaScraper {
@@ -26,7 +29,9 @@ export class FlipScraper implements MediaScraper {
       extractMeta(html, 'datePublished');
     const publishedAt = dateStr ? new Date(dateStr) : null;
 
-    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
+    const textContent = extractArticleBody(html);
+
+    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null, textContent };
   }
 
   private isArticleUrl(url: string): boolean {
