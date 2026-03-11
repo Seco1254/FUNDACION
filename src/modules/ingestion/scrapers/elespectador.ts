@@ -1,5 +1,5 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
-import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
+import { extractMeta, extractH1, extractLeadParagraph, extractArticleBody, isValidDate } from './html-utils.js';
 
 const LIST_PAGE_URL = 'https://www.elespectador.com/';
 
@@ -24,10 +24,18 @@ export class ElEspectadorScraper implements MediaScraper {
     const dateStr = extractMeta(html, 'article:published_time');
     const publishedAt = dateStr ? new Date(dateStr) : null;
 
-    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
+    const textContent = extractArticleBody(html);
+    return { title, snippet, textContent, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
   }
 
   private isArticleUrl(url: string): boolean {
-    return /^https:\/\/www\.elespectador\.com\/[\w-]+\/[\w-]+\/$/.test(url);
+    // Reject noise paths: querystrings, fragments, file extensions, feed/author/tag pages
+    if (/[?#]/.test(url)) return false;
+    if (/\.(xml|rss|json|pdf|jpg|png|gif|svg)(\/?$)/i.test(url)) return false;
+    if (/\/(outboundfeeds|autor|tag|rss|feed|autor-invitado)\//i.test(url)) return false;
+
+    // Accept 2-4 path segments with optional trailing slash
+    // e.g. /politica/slug/, /deportes/futbol-mundial/slug, /seccion/sub/sub2/slug
+    return /^https:\/\/www\.elespectador\.com\/([\w-]+\/){1,3}[\w-]+\/?$/.test(url);
   }
 }

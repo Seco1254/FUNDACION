@@ -9,25 +9,29 @@ interface Props {
   item: FeedItem;
   onPress: () => void;
   onLongPress?: () => void;
+  onRetryOverview?: () => void;
 }
 
-const PREVIEW_MAX_BULLETS = 3;
-
-export function EventCard({ item, onPress, onLongPress }: Props) {
+export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props) {
   const updatedAt = relativeTime(item.t_last);
-  const [expanded, setExpanded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const ov = item.ai_overview;
   const hasOverview = ov && (ov.what_happened.length > 0 || ov.context.length > 0);
   const hasDispute = ov && ov.in_dispute.length > 0;
+  // 'blocked' = processed but insufficient data; undefined = not yet processed (pending)
+  const isBlocked = !hasOverview && item.overview_status?.state === 'blocked';
 
-  // Collect preview bullets: what_happened first, then context
-  const allBullets: string[] = [];
-  if (ov) {
-    allBullets.push(...ov.what_happened);
-    allBullets.push(...ov.context);
-  }
-  const previewBullets = expanded ? allBullets : allBullets.slice(0, PREVIEW_MAX_BULLETS);
-  const canExpand = allBullets.length > PREVIEW_MAX_BULLETS;
+  // Show narrative overview paragraph whenever it exists (backend guarantees quality)
+  const overviewParagraph = ov?.overview?.trim() ?? '';
+  const hasNarrativeOverview = overviewParagraph.length > 0;
+
+  // Source analysis section
+  const af = ov?.analisis_fuentes;
+  const hasAnalisisFuentes = af && (
+    (af.consenso?.length ?? 0) > 0 ||
+    (af.desacuerdo?.length ?? 0) > 0 ||
+    (af.informacion_faltante?.length ?? 0) > 0
+  );
 
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.card}>
@@ -51,37 +55,139 @@ export function EventCard({ item, onPress, onLongPress }: Props) {
         {item.headline ?? 'Evento en desarrollo...'}
       </Text>
 
-      {/* AI Overview preview */}
+      {/* AI Overview: narrative-first layout */}
       {hasOverview ? (
         <View style={styles.overviewBlock}>
           <Text style={styles.overviewLabel}>Resumen (IA)</Text>
-          {previewBullets.map((bullet, i) => (
-            <Text key={i} style={styles.overviewBullet} numberOfLines={expanded ? undefined : 2}>
-              {'•  '}{bullet}
-            </Text>
-          ))}
-          {hasDispute && !expanded && (
-            <Text style={styles.disputeHint}>
-              {'⚠  '}{ov!.in_dispute[0]}
-            </Text>
+
+          {/* Primary: narrative overview paragraph */}
+          {hasNarrativeOverview ? (
+            <>
+              <Text style={styles.overviewParagraph}>{overviewParagraph}</Text>
+
+              {/* Collapsible details */}
+              <Pressable
+                onPress={(e) => { e.stopPropagation(); setDetailsExpanded(!detailsExpanded); }}
+                hitSlop={8}
+              >
+                <Text style={styles.expandToggle}>
+                  {detailsExpanded ? 'Mostrar menos' : 'Ver detalles'}
+                </Text>
+              </Pressable>
+
+              {detailsExpanded && (
+                <View style={styles.detailsContainer}>
+                  {ov!.what_happened.length > 0 && (
+                    <View style={styles.detailSection}>
+                      <Text style={styles.detailSectionTitle}>Hechos clave</Text>
+                      {ov!.what_happened.map((bullet, i) => (
+                        <Text key={`wh-${i}`} style={styles.overviewBullet}>{'•  '}{bullet}</Text>
+                      ))}
+                    </View>
+                  )}
+                  {ov!.context.length > 0 && (
+                    <View style={styles.detailSection}>
+                      <Text style={styles.detailSectionTitle}>Contexto</Text>
+                      {ov!.context.map((bullet, i) => (
+                        <Text key={`ctx-${i}`} style={styles.overviewBullet}>{'•  '}{bullet}</Text>
+                      ))}
+                    </View>
+                  )}
+                  {hasAnalisisFuentes ? (
+                    <View style={styles.detailSection}>
+                      <Text style={styles.detailSectionTitle}>Análisis de fuentes</Text>
+                      {(af!.consenso ?? []).map((c, i) => (
+                        <Text key={`cons-${i}`} style={styles.consensusBullet}>{'✓  '}{c}</Text>
+                      ))}
+                      {(af!.desacuerdo ?? []).map((d, i) => (
+                        <Text key={`dis-${i}`} style={styles.disputeHint}>{'⚠  '}{d}</Text>
+                      ))}
+                      {(af!.informacion_faltante ?? []).map((f, i) => (
+                        <Text key={`falt-${i}`} style={styles.missingInfoBullet}>{'?  '}{f}</Text>
+                      ))}
+                    </View>
+                  ) : hasDispute && (
+                    <View style={styles.detailSection}>
+                      <Text style={styles.detailSectionTitle}>En disputa</Text>
+                      {ov!.in_dispute.map((bullet, i) => (
+                        <Text key={`disp-${i}`} style={styles.disputeHint}>{'⚠  '}{bullet}</Text>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+            </>
+          ) : (
+            /* Fallback: bullet-based layout (no narrative paragraph available) */
+            <>
+              {ov!.what_happened.slice(0, 3).map((bullet, i) => (
+                <Text key={i} style={styles.overviewBullet} numberOfLines={2}>
+                  {'•  '}{bullet}
+                </Text>
+              ))}
+              {hasDispute && (
+                <Text style={styles.disputeHint}>
+                  {'⚠  '}{ov!.in_dispute[0]}
+                </Text>
+              )}
+              {(ov!.what_happened.length > 3 || ov!.context.length > 0) && (
+                <Pressable
+                  onPress={(e) => { e.stopPropagation(); setDetailsExpanded(!detailsExpanded); }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.expandToggle}>
+                    {detailsExpanded ? 'Mostrar menos' : 'Ver más'}
+                  </Text>
+                </Pressable>
+              )}
+              {detailsExpanded && (
+                <>
+                  {ov!.what_happened.slice(3).map((bullet, i) => (
+                    <Text key={`wh-extra-${i}`} style={styles.overviewBullet}>{'•  '}{bullet}</Text>
+                  ))}
+                  {ov!.context.map((bullet, i) => (
+                    <Text key={`ctx-${i}`} style={styles.overviewBullet}>{'•  '}{bullet}</Text>
+                  ))}
+                </>
+              )}
+            </>
           )}
-          {canExpand && (
-            <Pressable
-              onPress={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-              hitSlop={8}
-            >
-              <Text style={styles.expandToggle}>
-                {expanded ? 'Mostrar menos' : 'Ver más'}
-              </Text>
-            </Pressable>
-          )}
+
           {ov!.confidence_label && (
             <Text style={styles.confidenceLabel}>{ov!.confidence_label}</Text>
           )}
         </View>
+      ) : isBlocked ? (
+        <View style={styles.overviewPlaceholder}>
+          <Text style={styles.placeholderText}>Datos insuficientes por ahora</Text>
+          <Text style={styles.placeholderHint}>Se necesitan más fuentes para generar un resumen.</Text>
+        </View>
       ) : (
         <View style={styles.overviewPlaceholder}>
-          <Text style={styles.placeholderText}>Generando resumen…</Text>
+          {item.overview_status === 'unavailable' ? (
+            <>
+              <Text style={styles.placeholderTitle}>Resumen no disponible</Text>
+              <Text style={styles.placeholderSubtitle}>
+                No hay suficiente evidencia cruzada todavía.
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
+              <Text style={styles.placeholderSubtitle}>
+                El análisis de fuentes está en proceso.
+              </Text>
+            </>
+          )}
+          {onRetryOverview && item.overview_status !== 'unavailable' && (
+            <Pressable
+              onPress={(e) => { e.stopPropagation(); onRetryOverview(); }}
+              style={styles.retryBtn}
+              hitSlop={8}
+            >
+              <Text style={styles.retryText}>Reintentar</Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -111,6 +217,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 2,
+    flex: 1,
   },
   topRow: {
     flexDirection: 'row',
@@ -152,6 +259,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     padding: spacing.md,
     gap: spacing.xs,
+    flex: 1,
   },
   overviewLabel: {
     fontSize: font.xs,
@@ -161,10 +269,40 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: spacing.xs,
   },
+  overviewParagraph: {
+    fontSize: font.sm,
+    color: colors.text,
+    lineHeight: 22,
+  },
   overviewBullet: {
     fontSize: font.sm,
     color: colors.text,
     lineHeight: 20,
+  },
+  detailsContainer: {
+    gap: spacing.md,
+    marginTop: spacing.sm,
+  },
+  detailSection: {
+    gap: spacing.xs,
+  },
+  detailSectionTitle: {
+    fontSize: font.xs,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  consensusBullet: {
+    fontSize: font.sm,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  missingInfoBullet: {
+    fontSize: font.sm,
+    color: colors.textMuted,
+    lineHeight: 20,
+    fontStyle: 'italic',
   },
   disputeHint: {
     fontSize: font.sm,
@@ -183,16 +321,42 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: spacing.xs,
   },
-  // Placeholder
+  // Placeholder — no overview yet
   overviewPlaceholder: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.md,
-    padding: spacing.md,
+    padding: spacing.xl,
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+    justifyContent: 'center',
   },
-  placeholderText: {
+  placeholderTitle: {
+    fontSize: font.md,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  placeholderSubtitle: {
     fontSize: font.sm,
     color: colors.textMuted,
-    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  retryBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    marginTop: spacing.xs,
+  },
+  retryText: {
+    color: '#FFFFFF',
+    fontSize: font.sm,
+    fontWeight: '600',
+  },
+  placeholderHint: {
+    fontSize: font.xs,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   footer: {
     flexDirection: 'row',

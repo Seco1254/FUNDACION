@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# bin/reset-db — migrate + seed the database
+# Usage: ./bin/reset-db [--wipe]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+SCHEMA="src/db/prisma/schema.prisma"
+
+# ── Load .env ──────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  echo "  .env not found"
+  echo "  Fix: cp .env.example .env  (then edit DATABASE_URL if needed)"
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "  DATABASE_URL is empty in .env"
+  echo "  Fix: edit .env and set DATABASE_URL"
+  exit 1
+fi
+
+# ── Build clean URL for libpq tools (strip ?query params) ─────────
+# Prisma uses DATABASE_URL as-is (supports ?schema=public).
+# libpq tools (psql, pg_isready) choke on unknown query params,
+# so we strip everything after '?' for those tools.
+DB_URL_CLEAN="${DATABASE_URL%%\?*}"
+
+# ── Check Postgres is reachable ────────────────────────────────────
+check_pg() {
+  # Use --schema so Prisma reads the datasource from schema.prisma
+  # (which references env("DATABASE_URL")).
+  npx prisma db execute --stdin --schema "$SCHEMA" <<< "SELECT 1" > /dev/null 2>&1
+}
+
+echo "  Checking Postgres connectivity..."
+echo "  DATABASE_URL (clean): ${DB_URL_CLEAN}"
+
+if ! check_pg; then
+  echo ""
+  echo "  Cannot connect to Postgres"
+  echo ""
+  echo "  DATABASE_URL = ${DB_URL_CLEAN}"
+  echo ""
+  echo "  Troubleshoot:"
+  echo "    1. Is Postgres running?"
+  echo "       Homebrew: brew services start postgresql@16"
+  echo "       Docker:   docker compose up -d"
+  echo "       Check:    psql \"${DB_URL_CLEAN}\" -c 'SELECT 1'"
+  echo ""
+  echo "    2. Does the database exist?"
+  echo "       createdb fundacion    (if using Homebrew Postgres)"
+  echo ""
+  echo "    3. Is the user correct?"
+  echo "       psql -l              (list databases and owners)"
+  echo ""
+  echo "  Debug: run the check manually:"
+  echo "    echo 'SELECT 1' | DATABASE_URL=\"${DATABASE_URL}\" npx prisma db execute --stdin --schema ${SCHEMA}"
+  exit 1
+fi
+
+echo "  Postgres reachable"
+
+# ── Optional wipe ──────────────────────────────────────────────────
+if [ "${1:-}" = "--wipe" ]; then
+  echo "  Wiping database (prisma migrate reset --force)..."
+  npx prisma migrate reset --force --schema "$SCHEMA"
+  echo "  Database wiped"
+fi
+
+# ── Migrate ────────────────────────────────────────────────────────
+echo "  Running migrations..."
+npx prisma migrate deploy --schema "$SCHEMA"
+echo "  Migrations applied"
+
+# ── Seed ───────────────────────────────────────────────────────────
+echo "  Seeding database..."
+npx tsx src/db/seeds/seed.ts
+echo "  Seed complete"
+
+echo ""
+echo "  reset-db finished successfully"

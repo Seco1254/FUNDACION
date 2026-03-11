@@ -8,6 +8,6 @@ export class StubScraper implements MediaScraper {
   }
 
   parseArticle(_html: string, _url: string): ParsedArticle {
-    return { title: '', snippet: '', publishedAt: null };
+    return { title: '', snippet: '', textContent: '', publishedAt: null };
   }
 }

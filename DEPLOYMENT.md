@@ -118,3 +118,7 @@ Cache is automatically invalidated via the event bus:
 - `EventVersionCommitted` → clears event detail + all feed caches
 - `BiasLabelsBuilt` → clears event detail + bias caches
 - `SubEventsBuilt` → clears event detail cache
+
+## Troubleshooting
+
+If the UI shows empty or the feed returns no items, see [RUNBOOK_UI_NOT_LOADING.md](./RUNBOOK_UI_NOT_LOADING.md) or run `npm run debug:ui`.

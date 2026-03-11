@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { LifecycleManager } from './lifecycle-manager.js';
+import { LifecycleManager, PUBLISH_DELAY_MS } from './lifecycle-manager.js';
 import { EventBus } from '../../../core/event_bus/dispatcher.js';
 import { EventEnvelope } from '../../../core/event_bus/envelope.js';
 import { FakeClock } from '../../../core/time/clock.js';
@@ -61,7 +61,7 @@ describe('LifecycleManager', () => {
       }));
 
       const publishAt = eventRepo.update.mock.calls[0][1].publishAt as Date;
-      expect(publishAt.getTime() - clock.now().getTime()).toBe(5 * 60 * 1000);
+      expect(publishAt.getTime() - clock.now().getTime()).toBe(PUBLISH_DELAY_MS);
 
       const jobs = scheduler.list();
       expect(jobs).toHaveLength(1);
@@ -213,11 +213,75 @@ describe('LifecycleManager', () => {
       expect(published.filter((e) => e.event_name === 'EventPublished')).toHaveLength(0);
 
       // Advance clock past publish time
-      clock.advanceBy(5 * 60 * 1000 + 1);
+      clock.advanceBy(PUBLISH_DELAY_MS + 1);
 
       // Now publish should work
       await lm.executePublish('ev-11');
       expect(published.filter((e) => e.event_name === 'EventPublished')).toHaveLength(1);
+    });
+  });
+
+  describe('timestamp consistency (timezone)', () => {
+    it('publishAt = clock.now() + PUBLISH_DELAY_MS exactly', async () => {
+      // Use a specific time to prove it's clock-based, not raw Date
+      const specificTime = new Date('2025-06-15T18:30:00.000Z');
+      clock.setNow(specificTime);
+
+      const lm = new LifecycleManager(eventRepo, eventBus, auditWriter, scheduler, clock);
+      await lm.handleEventCreated()(makeEventCreatedEnvelope('ev-tz-1', 'art-tz-1'));
+
+      const savedPublishAt = eventRepo.update.mock.calls[0][1].publishAt as Date;
+      // PUBLISH_DELAY_MS default = 5 * 60 * 1000 = 300000
+      expect(savedPublishAt.getTime()).toBe(specificTime.getTime() + 5 * 60 * 1000);
+    });
+
+    it('publishedAt = clock.now() when executePublish runs', async () => {
+      const publishTime = new Date('2025-06-15T19:00:00.000Z');
+      clock.setNow(publishTime);
+
+      eventRepo.findById.mockResolvedValue({
+        id: 'ev-tz-2',
+        state: 'PENDING_PUBLISH',
+        publishAt: new Date('2025-06-15T18:55:00.000Z'), // in the past
+        publishedAt: null,
+      });
+
+      const lm = new LifecycleManager(eventRepo, eventBus, auditWriter, scheduler, clock);
+      await lm.executePublish('ev-tz-2');
+
+      const savedPublishedAt = eventRepo.update.mock.calls[0][1].publishedAt as Date;
+      expect(savedPublishedAt.getTime()).toBe(publishTime.getTime());
+    });
+
+    it('rehydration comparison uses same clock basis as scheduling', async () => {
+      // This test verifies the invariant: if publishAt was computed as
+      // clock.now() + delay, then the "is it due?" check (publishAt <= now)
+      // also uses clock.now(). With FakeClock this is provable.
+      const t0 = new Date('2025-06-15T12:00:00.000Z');
+      clock.setNow(t0);
+
+      const lm = new LifecycleManager(eventRepo, eventBus, auditWriter, scheduler, clock);
+      await lm.handleEventCreated()(makeEventCreatedEnvelope('ev-tz-3', 'art-tz-3'));
+
+      const publishAt = eventRepo.update.mock.calls[0][1].publishAt as Date;
+
+      eventRepo.findById.mockResolvedValue({
+        id: 'ev-tz-3',
+        state: 'PENDING_PUBLISH',
+        publishAt,
+        publishedAt: null,
+      });
+
+      // At t0, publish should NOT fire (publishAt is 5min in the future)
+      await lm.executePublish('ev-tz-3');
+      expect(eventRepo.update).toHaveBeenCalledTimes(1); // only the initial PENDING_PUBLISH
+
+      // Advance past publishAt
+      clock.advanceBy(5 * 60 * 1000 + 1);
+      await lm.executePublish('ev-tz-3');
+      // Now it should have been called again for PUBLISHED
+      expect(eventRepo.update).toHaveBeenCalledTimes(2);
+      expect(eventRepo.update.mock.calls[1][1].state).toBe('PUBLISHED');
     });
   });
 });

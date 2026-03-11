@@ -1,5 +1,5 @@
 import { MediaScraper, ParsedArticle } from '../domain/types.js';
-import { extractMeta, extractH1, extractLeadParagraph, isValidDate } from './html-utils.js';
+import { extractMeta, extractH1, extractLeadParagraph, isValidDate, extractArticleBody } from './html-utils.js';
 
 const LIST_PAGE_URL = 'https://oec.caroycuervo.gov.co/';
 
@@ -26,7 +26,9 @@ export class OecScraper implements MediaScraper {
       extractMeta(html, 'datePublished');
     const publishedAt = dateStr ? new Date(dateStr) : null;
 
-    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null };
+    const textContent = extractArticleBody(html);
+
+    return { title, snippet, publishedAt: isValidDate(publishedAt) ? publishedAt : null, textContent };
   }
 
   private isArticleUrl(url: string): boolean {

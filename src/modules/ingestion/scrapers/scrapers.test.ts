@@ -9,8 +9,15 @@ import { ConsonanteScraper } from './consonante.js';
 import { OecScraper } from './oec.js';
 import { AscolbiScraper } from './ascolbi.js';
 import { AciurScraper } from './aciur.js';
+import { LaRepublicaScraper } from './larepublica.js';
+import { CambioScraper } from './cambio.js';
+import { AmericasQuarterlyScraper } from './americas-quarterly.js';
+import { PbsNewshourScraper } from './pbs-newshour.js';
+import { CarnegieScraper } from './carnegie.js';
+import { CrisisGroupScraper } from './crisis-group.js';
 import { StubScraper } from './stub-scraper.js';
 import { getScraperForMedia } from './registry.js';
+import { extractArticleBody, extractAmpUrl, extractMetaDescription, detectPaywall } from './html-utils.js';
 
 function loadFixture(name: string): string {
   return readFileSync(resolve(process.cwd(), `test/fixtures/${name}`), 'utf-8');
@@ -50,6 +57,17 @@ describe('ElTiempoScraper', () => {
     expect(parsed.snippet.length).toBeGreaterThan(80);
     expect(parsed.publishedAt).toEqual(new Date('2026-02-15T10:30:00Z'));
   });
+
+  it('extracts full article body text (textContent >= 800 chars)', () => {
+    const html = loadFixture('eltiempo-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.eltiempo.com/politica/test-12345');
+    expect(parsed.textContent.length).toBeGreaterThan(800);
+    expect(parsed.textContent).toContain('impuesto de renta');
+    expect(parsed.textContent).toContain('Banco de la República');
+    expect(parsed.textContent).not.toContain('Suscríbete');
+    expect(parsed.textContent).not.toContain('newsletter');
+    expect(parsed.textContent).not.toContain('También le puede interesar');
+  });
 });
 
 describe('ElEspectadorScraper', () => {
@@ -60,13 +78,37 @@ describe('ElEspectadorScraper', () => {
     expect(scraper.listPageUrls[0]).toContain('elespectador.com');
   });
 
-  it('extracts 3 article URLs from list page fixture', () => {
+  it('extracts 5 article URLs from list page fixture (2-seg + 3-seg)', () => {
     const html = loadFixture('elespectador-list.html');
     const urls = scraper.extractUrls(html);
-    expect(urls).toHaveLength(3);
+    expect(urls).toHaveLength(5);
+    // 2-segment with trailing slash
     expect(urls[0]).toContain('nueva-ley-de-educacion-aprobada');
     expect(urls[1]).toContain('banco-central-baja-tasas-interes');
     expect(urls[2]).toContain('seleccion-colombia-clasifica-mundial');
+    // 3-segment without trailing slash
+    expect(urls[3]).toContain('nuevo-campeon-liga-betplay');
+    expect(urls[4]).toContain('resultados-primera-vuelta');
+  });
+
+  it('filters out noise URLs (xml, outboundfeeds, querystrings, tags)', () => {
+    const noiseHtml = `
+      <a href="https://www.elespectador.com/outboundfeeds/rss/">RSS</a>
+      <a href="https://www.elespectador.com/sitemap.xml">Sitemap</a>
+      <a href="https://www.elespectador.com/politica/slug?page=2">QS</a>
+      <a href="https://www.elespectador.com/tag/colombia/">Tag</a>
+      <a href="https://www.elespectador.com/politica/">Section</a>
+    `;
+    expect(scraper.extractUrls(noiseHtml)).toHaveLength(0);
+  });
+
+  it('accepts URLs with and without trailing slash', () => {
+    const html = `
+      <a href="https://www.elespectador.com/politica/slug-one/">With slash</a>
+      <a href="https://www.elespectador.com/politica/slug-two">Without slash</a>
+    `;
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
   });
 
   it('parses article page fixture', () => {
@@ -76,6 +118,18 @@ describe('ElEspectadorScraper', () => {
     expect(parsed.snippet).toContain('El Congreso de la República');
     expect(parsed.snippet.length).toBeGreaterThan(80);
     expect(parsed.publishedAt).toEqual(new Date('2026-02-14T08:00:00Z'));
+  });
+
+  it('extracts full article body text (textContent >= 800 chars, no boilerplate)', () => {
+    const html = loadFixture('elespectador-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.elespectador.com/politica/test/');
+    expect(parsed.textContent.length).toBeGreaterThan(800);
+    expect(parsed.textContent).toContain('3 billones de pesos');
+    expect(parsed.textContent).toContain('Corte Constitucional');
+    expect(parsed.textContent).not.toContain('Suscríbete');
+    expect(parsed.textContent).not.toContain('Inicia sesión');
+    expect(parsed.textContent).not.toContain('Copyright');
+    expect(parsed.textContent).not.toContain('Términos y condiciones');
   });
 });
 
@@ -291,5 +345,370 @@ describe('Registry', () => {
   it('returns stub for unknown media key', () => {
     const scraper = getScraperForMedia('unknown_media_xyz');
     expect(scraper.listPageUrls).toHaveLength(0);
+  });
+});
+
+describe('extractArticleBody', () => {
+  it('extracts paragraphs from <article> tag', () => {
+    const html = `<html><body><article>
+      <p>Primer párrafo con contenido suficiente para pasar el filtro de longitud mínima de treinta caracteres.</p>
+      <p>Segundo párrafo con más contenido relevante sobre el tema de la noticia colombiana.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('Primer párrafo');
+    expect(text).toContain('Segundo párrafo');
+  });
+
+  it('removes boilerplate (suscríbete, newsletter, copyright)', () => {
+    const html = `<html><body><article>
+      <p>La reforma tributaria fue presentada ante el Congreso de la República de Colombia.</p>
+      <p>Los gremios económicos expresaron su preocupación por el impacto en la economía colombiana.</p>
+    </article>
+    <aside><p>Suscríbete a nuestro newsletter para recibir las últimas noticias.</p></aside>
+    <footer><p>Copyright © 2026 Todos los derechos reservados.</p></footer>
+    </body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('reforma tributaria');
+    expect(text).not.toContain('Suscríbete');
+    expect(text).not.toContain('newsletter');
+    expect(text).not.toContain('Copyright');
+  });
+
+  it('skips short paragraphs under 30 chars', () => {
+    const html = `<html><body><article>
+      <p>Corto</p>
+      <p>Un párrafo suficientemente largo como para pasar el filtro de longitud mínima de caracteres.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).not.toContain('Corto');
+    expect(text).toContain('párrafo suficientemente largo');
+  });
+
+  it('deduplicates consecutive identical paragraphs', () => {
+    const html = `<html><body><article>
+      <p>La misma frase repetida dos veces para probar la deduplicación de párrafos consecutivos.</p>
+      <p>La misma frase repetida dos veces para probar la deduplicación de párrafos consecutivos.</p>
+    </article></body></html>`;
+    const text = extractArticleBody(html);
+    const count = text.split('La misma frase repetida').length - 1;
+    expect(count).toBe(1);
+  });
+
+  it('falls back to <main> then <body> when no <article>', () => {
+    const html = `<html><body><main>
+      <p>Contenido dentro de main tag con información relevante sobre el evento noticioso.</p>
+    </main></body></html>`;
+    const text = extractArticleBody(html);
+    expect(text).toContain('Contenido dentro de main');
+  });
+});
+
+describe('extractAmpUrl', () => {
+  it('extracts AMP URL from link rel=amphtml', () => {
+    const html = '<html><head><link rel="amphtml" href="https://amp.example.com/article"></head></html>';
+    expect(extractAmpUrl(html)).toBe('https://amp.example.com/article');
+  });
+
+  it('handles reversed attribute order (href before rel)', () => {
+    const html = '<html><head><link href="https://amp.example.com/art" rel="amphtml"></head></html>';
+    expect(extractAmpUrl(html)).toBe('https://amp.example.com/art');
+  });
+
+  it('returns null when no AMP link exists', () => {
+    const html = '<html><head><link rel="canonical" href="https://example.com"></head></html>';
+    expect(extractAmpUrl(html)).toBeNull();
+  });
+});
+
+describe('extractMetaDescription', () => {
+  it('prefers og:description', () => {
+    const html = `<html><head>
+      <meta property="og:description" content="OG desc">
+      <meta name="description" content="Plain desc">
+      <meta name="twitter:description" content="Twitter desc">
+    </head></html>`;
+    expect(extractMetaDescription(html)).toBe('OG desc');
+  });
+
+  it('falls back to description when og:description is missing', () => {
+    const html = '<html><head><meta name="description" content="Plain desc"></head></html>';
+    expect(extractMetaDescription(html)).toBe('Plain desc');
+  });
+
+  it('falls back to twitter:description as last resort', () => {
+    const html = '<html><head><meta name="twitter:description" content="Tweet desc"></head></html>';
+    expect(extractMetaDescription(html)).toBe('Tweet desc');
+  });
+
+  it('returns null when no meta description exists', () => {
+    const html = '<html><head><title>No desc</title></head></html>';
+    expect(extractMetaDescription(html)).toBeNull();
+  });
+});
+
+describe('detectPaywall', () => {
+  it('returns true when paywall keywords + sparse content (< 3 real paragraphs)', () => {
+    const html = `<html><body>
+      <div class="content-lock"><p>Suscríbase para continuar.</p></div>
+      <article><p>${'A'.repeat(50)}</p></article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(true);
+  });
+
+  it('returns false when no paywall keywords even with sparse content', () => {
+    const html = `<html><body><article><p>${'A'.repeat(50)}</p></article></body></html>`;
+    expect(detectPaywall(html)).toBe(false);
+  });
+
+  it('returns false when paywall keywords exist but content is rich (>= 3 paragraphs, no keywords in article)', () => {
+    // paywall keyword in sidebar but article has plenty of paragraphs and no paywall text
+    const paragraphs = Array.from({ length: 5 }, (_, i) =>
+      `<p>Párrafo número ${i} con contenido suficiente para pasar el filtro de longitud.</p>`
+    ).join('');
+    const html = `<html><body>
+      <aside><div class="paywall">Premium</div></aside>
+      <article>${paragraphs}</article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(false);
+  });
+
+  it('returns true when paywall keywords appear inside <article> container', () => {
+    const paragraphs = Array.from({ length: 5 }, (_, i) =>
+      `<p>Párrafo número ${i} con contenido suficiente para pasar el filtro de longitud.</p>`
+    ).join('');
+    const html = `<html><body>
+      <article>
+        ${paragraphs}
+        <div class="content-lock">Contenido exclusivo para suscriptores</div>
+      </article>
+    </body></html>`;
+    expect(detectPaywall(html)).toBe(true);
+  });
+});
+
+// ── Premium Sources (Wave 1) ──────────────────────────────────────
+
+describe('LaRepublicaScraper', () => {
+  const scraper = new LaRepublicaScraper();
+
+  it('has multiple list page URLs', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(3);
+    expect(scraper.listPageUrls[0]).toContain('larepublica.co');
+  });
+
+  it('extracts article URLs from list page fixture', () => {
+    const html = loadFixture('larepublica-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('banco-republica-mantiene-tasas');
+  });
+
+  it('blocks opinion URLs', () => {
+    const html = loadFixture('larepublica-list.html');
+    const urls = scraper.extractUrls(html);
+    const opinionUrls = urls.filter((u) => u.includes('/opinion/'));
+    expect(opinionUrls).toHaveLength(0);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('larepublica-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.larepublica.co/economia/test-123');
+    expect(parsed.title).toContain('Banco de la República');
+    expect(parsed.snippet.length).toBeGreaterThan(50);
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-05T14:30:00Z'));
+  });
+
+  it('extracts article body text', () => {
+    const html = loadFixture('larepublica-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.larepublica.co/economia/test-123');
+    expect(parsed.textContent.length).toBeGreaterThan(200);
+    expect(parsed.textContent).toContain('tasa de intervención');
+  });
+});
+
+describe('CambioScraper', () => {
+  const scraper = new CambioScraper();
+
+  it('has list page URLs for pais, economia, politica', () => {
+    expect(scraper.listPageUrls.length).toBe(3);
+    expect(scraper.listPageUrls.some((u) => u.includes('/pais'))).toBe(true);
+  });
+
+  it('extracts article URLs from list page fixture', () => {
+    const html = loadFixture('cambio-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('congreso-aprueba-reforma-pensional');
+  });
+
+  it('blocks opinion/columnistas URLs', () => {
+    const html = loadFixture('cambio-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/opinion/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('cambio-article.html');
+    const parsed = scraper.parseArticle(html, 'https://cambiocolombia.com/pais/test');
+    expect(parsed.title).toContain('reforma pensional');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-04T08:00:00Z'));
+  });
+
+  it('extracts body text with political content', () => {
+    const html = loadFixture('cambio-article.html');
+    const parsed = scraper.parseArticle(html, 'https://cambiocolombia.com/pais/test');
+    expect(parsed.textContent).toContain('Comisión Séptima');
+  });
+});
+
+describe('AmericasQuarterlyScraper', () => {
+  const scraper = new AmericasQuarterlyScraper();
+
+  it('has list page URL', () => {
+    expect(scraper.listPageUrls).toHaveLength(1);
+    expect(scraper.listPageUrls[0]).toContain('americasquarterly.org');
+  });
+
+  it('extracts only /article/ URLs from list page', () => {
+    const html = loadFixture('americas-quarterly-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls.every((u) => u.includes('/article/'))).toBe(true);
+  });
+
+  it('blocks /podcasts/ URLs', () => {
+    const html = loadFixture('americas-quarterly-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/podcasts/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('americas-quarterly-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.americasquarterly.org/article/test');
+    expect(parsed.title).toContain('Peace Process');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-01T16:00:00Z'));
+  });
+});
+
+describe('PbsNewshourScraper', () => {
+  const scraper = new PbsNewshourScraper();
+
+  it('has list page URLs for politics, economy, world', () => {
+    expect(scraper.listPageUrls.length).toBe(3);
+    expect(scraper.listPageUrls.some((u) => u.includes('/politics'))).toBe(true);
+    expect(scraper.listPageUrls.some((u) => u.includes('/world'))).toBe(true);
+  });
+
+  it('extracts article URLs from list page', () => {
+    const html = loadFixture('pbs-newshour-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toContain('latin-america-policy-shift');
+  });
+
+  it('blocks /video/ URLs', () => {
+    const html = loadFixture('pbs-newshour-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/video/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('pbs-newshour-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.pbs.org/newshour/politics/test');
+    expect(parsed.title).toContain('Latin America policy shift');
+    expect(parsed.publishedAt).toEqual(new Date('2026-03-03T20:00:00Z'));
+  });
+});
+
+describe('CarnegieScraper', () => {
+  const scraper = new CarnegieScraper();
+
+  it('has list page URL', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(1);
+    expect(scraper.listPageUrls[0]).toContain('carnegieendowment.org');
+  });
+
+  it('extracts /commentary/ and /analysis/ URLs', () => {
+    const html = loadFixture('carnegie-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
+    expect(urls.some((u) => u.includes('/commentary/'))).toBe(true);
+    expect(urls.some((u) => u.includes('/analysis/'))).toBe(true);
+  });
+
+  it('blocks /events/ URLs', () => {
+    const html = loadFixture('carnegie-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/events/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('carnegie-article.html');
+    const parsed = scraper.parseArticle(html, 'https://carnegieendowment.org/commentary/test');
+    expect(parsed.title).toContain('Security Challenges');
+    expect(parsed.publishedAt).toEqual(new Date('2026-02-28T12:00:00Z'));
+  });
+});
+
+describe('CrisisGroupScraper', () => {
+  const scraper = new CrisisGroupScraper();
+
+  it('has list page URL for Latin America', () => {
+    expect(scraper.listPageUrls.length).toBeGreaterThanOrEqual(1);
+    expect(scraper.listPageUrls[0]).toContain('latin-america');
+  });
+
+  it('extracts /latin-america-caribbean/ URLs', () => {
+    const html = loadFixture('crisis-group-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls).toHaveLength(2);
+    expect(urls.every((u) => u.includes('latin-america'))).toBe(true);
+  });
+
+  it('blocks /press/ URLs', () => {
+    const html = loadFixture('crisis-group-list.html');
+    const urls = scraper.extractUrls(html);
+    expect(urls.every((u) => !u.includes('/press/'))).toBe(true);
+  });
+
+  it('parses article page fixture', () => {
+    const html = loadFixture('crisis-group-article.html');
+    const parsed = scraper.parseArticle(html, 'https://www.crisisgroup.org/latin-america-caribbean/test');
+    expect(parsed.title).toContain('Total Peace');
+    expect(parsed.publishedAt).toEqual(new Date('2026-02-25T09:00:00Z'));
+  });
+});
+
+// ── Registry integration ────────────────────────────────────────────
+
+describe('scraper registry — new sources', () => {
+  it('returns LaRepublicaScraper for larepublica', () => {
+    const scraper = getScraperForMedia('larepublica');
+    expect(scraper).toBeInstanceOf(LaRepublicaScraper);
+  });
+
+  it('returns CambioScraper for cambio', () => {
+    const scraper = getScraperForMedia('cambio');
+    expect(scraper).toBeInstanceOf(CambioScraper);
+  });
+
+  it('returns AmericasQuarterlyScraper for americas_quarterly', () => {
+    const scraper = getScraperForMedia('americas_quarterly');
+    expect(scraper).toBeInstanceOf(AmericasQuarterlyScraper);
+  });
+
+  it('returns PbsNewshourScraper for pbs_newshour', () => {
+    const scraper = getScraperForMedia('pbs_newshour');
+    expect(scraper).toBeInstanceOf(PbsNewshourScraper);
+  });
+
+  it('returns CarnegieScraper for carnegie', () => {
+    const scraper = getScraperForMedia('carnegie');
+    expect(scraper).toBeInstanceOf(CarnegieScraper);
+  });
+
+  it('returns CrisisGroupScraper for crisis_group', () => {
+    const scraper = getScraperForMedia('crisis_group');
+    expect(scraper).toBeInstanceOf(CrisisGroupScraper);
   });
 });

@@ -12,6 +12,10 @@ export class MediaRepository {
     return this.prisma.media.findUnique({ where: { id } });
   }
 
+  async findAll(): Promise<MediaEntity[]> {
+    return this.prisma.media.findMany({ orderBy: { mediaKey: 'asc' } });
+  }
+
   async findAllAllowlisted(): Promise<MediaEntity[]> {
     return this.prisma.media.findMany({ where: { allowlisted: true } });
   }

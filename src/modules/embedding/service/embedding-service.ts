@@ -4,6 +4,7 @@ import { AuditLogWriter } from '../../../core/event_bus/dispatcher.js';
 import { ArticleRepository } from '../../articles/repo/article-repo.js';
 import { computeEmbedding, computeEmbeddingHash, textForEmbedding, MODEL_NAME } from './hash-vector.js';
 import { logger } from '../../../core/logging/logger.js';
+import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 
 export class EmbeddingService {
   constructor(
@@ -23,7 +24,12 @@ export class EmbeddingService {
         return;
       }
 
-      const text = textForEmbedding(article.title, article.snippet);
+      const rawText = textForEmbedding(article.title, article.snippet);
+      const { cleaned_text } = sanitizeText({
+        text: rawText,
+        source: { media_key: undefined, url: article.url },
+      });
+      const text = cleaned_text;
       const hash = computeEmbeddingHash(text);
 
       if (article.embeddingHash === hash) {

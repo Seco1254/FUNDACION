@@ -1,0 +1,14 @@
+/* eslint-disable */
+import * as Router from 'expo-router';
+
+export * from 'expo-router';
+
+declare module 'expo-router' {
+  export namespace ExpoRouter {
+    export interface __routes<T extends string | object = string> {
+      hrefInputParams: { pathname: Router.RelativePathString, params?: Router.UnknownInputParams } | { pathname: Router.ExternalPathString, params?: Router.UnknownInputParams } | { pathname: `/_sitemap`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/acerca` | `/acerca`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/historico` | `/historico`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}` | `/`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/temas` | `/temas`; params?: Router.UnknownInputParams; } | { pathname: `/event/[eventId]`, params: Router.UnknownInputParams & { eventId: string | number; } };
+      hrefOutputParams: { pathname: Router.RelativePathString, params?: Router.UnknownOutputParams } | { pathname: Router.ExternalPathString, params?: Router.UnknownOutputParams } | { pathname: `/_sitemap`; params?: Router.UnknownOutputParams; } | { pathname: `${'/(tabs)'}/acerca` | `/acerca`; params?: Router.UnknownOutputParams; } | { pathname: `${'/(tabs)'}/historico` | `/historico`; params?: Router.UnknownOutputParams; } | { pathname: `${'/(tabs)'}` | `/`; params?: Router.UnknownOutputParams; } | { pathname: `${'/(tabs)'}/temas` | `/temas`; params?: Router.UnknownOutputParams; } | { pathname: `/event/[eventId]`, params: Router.UnknownOutputParams & { eventId: string; } };
+      href: Router.RelativePathString | Router.ExternalPathString | `/_sitemap${`?${string}` | `#${string}` | ''}` | `${'/(tabs)'}/acerca${`?${string}` | `#${string}` | ''}` | `/acerca${`?${string}` | `#${string}` | ''}` | `${'/(tabs)'}/historico${`?${string}` | `#${string}` | ''}` | `/historico${`?${string}` | `#${string}` | ''}` | `${'/(tabs)'}${`?${string}` | `#${string}` | ''}` | `/${`?${string}` | `#${string}` | ''}` | `${'/(tabs)'}/temas${`?${string}` | `#${string}` | ''}` | `/temas${`?${string}` | `#${string}` | ''}` | { pathname: Router.RelativePathString, params?: Router.UnknownInputParams } | { pathname: Router.ExternalPathString, params?: Router.UnknownInputParams } | { pathname: `/_sitemap`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/acerca` | `/acerca`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/historico` | `/historico`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}` | `/`; params?: Router.UnknownInputParams; } | { pathname: `${'/(tabs)'}/temas` | `/temas`; params?: Router.UnknownInputParams; } | `/event/${Router.SingleRoutePart<T>}` | { pathname: `/event/[eventId]`, params: Router.UnknownInputParams & { eventId: string | number; } };
+    }
+  }
+}

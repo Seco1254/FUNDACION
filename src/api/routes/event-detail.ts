@@ -5,6 +5,7 @@ import { BiasLabelRepository } from '../../modules/bias/repo/bias-label-repo.js'
 import { Cache } from '../../core/cache/cache.js';
 import { SingleFlight } from '../../core/cache/singleflight.js';
 import { handleEtag } from '../../core/http/etag.js';
+import { computeEvidenceLevel, buildWhyNoOverview } from '../../modules/feed/service/evidence-level.js';
 
 /**
  * Bias safeguard: degrade display-level when confidence or evidence is insufficient.
@@ -84,6 +85,11 @@ export function eventDetailRoutes(
             snippet: ea.article.snippet,
             url: ea.article.url,
             published_at: ea.article.publishedAt?.toISOString?.() ?? null,
+            text_content_len: ea.article.textContentLen ?? 0,
+            text_content_source: ea.article.textContentSource ?? 'none',
+            extraction_fail_reason: ea.article.extractionFailReason ?? null,
+            paywall_detected: ea.article.paywallDetected ?? false,
+            usable_for_overview: ea.article.usableForOverview ?? false,
           }));
 
           const mediaMap = new Map<string, any[]>();
@@ -141,6 +147,15 @@ export function eventDetailRoutes(
           const packetJson = (latestVersion?.packetJson as any) ?? {};
           const overview = packetJson.overview ?? { status: 'NOT_READY' };
 
+          // Derive overview_status for client-side state handling
+          const aiOv = packetJson.ai_overview;
+          let overviewStatus: 'ready' | 'unavailable' | 'pending' = 'pending';
+          if (aiOv) {
+            const wh = Array.isArray(aiOv.what_happened) ? aiOv.what_happened : [];
+            const ctx = Array.isArray(aiOv.context) ? aiOv.context : [];
+            overviewStatus = (wh.length > 0 || ctx.length > 0) ? 'ready' : 'unavailable';
+          }
+
           // Bias from bias_label table with safeguards
           let bias: { media_level: any[]; article_level: any[] } = { media_level: [], article_level: [] };
           if (biasRepo && latestVersion) {
@@ -180,6 +195,26 @@ export function eventDetailRoutes(
           const topicsHeatmap = packetJson.topics_heatmap ?? [];
           const subevents = packetJson.subevents ?? [];
 
+          // Event-level evidence diagnostics
+          const uniqueMediaKeys = new Set(articles.map((a: any) => a.media_key));
+          const usableArticles = articles.filter((a: any) => a.usable_for_overview);
+          const totalUsableTextLen = usableArticles.reduce(
+            (sum: number, a: any) => sum + (a.text_content_len ?? 0), 0,
+          );
+          const keyFactsCount: number = packetJson.key_facts_count ?? 0;
+          const evidenceLevel = computeEvidenceLevel(uniqueMediaKeys.size, totalUsableTextLen);
+          const failReasons = articles
+            .map((a: any) => a.extraction_fail_reason)
+            .filter(Boolean) as string[];
+          const whyNoOverview = buildWhyNoOverview({
+            overviewStatus,
+            uniqueSourcesCount: uniqueMediaKeys.size,
+            usableArticlesCount: usableArticles.length,
+            totalUsableTextLen,
+            articleFailReasons: failReasons,
+            keyFactsCount,
+          });
+
           return {
             event: {
               id: eventWithDetails.id,
@@ -202,6 +237,15 @@ export function eventDetailRoutes(
               : null,
             media_tabs: mediaTabs,
             overview,
+            overview_status: overviewStatus,
+            overview_mode: packetJson.overview_mode ?? null,
+            article_count: articles.length,
+            unique_sources_count: uniqueMediaKeys.size,
+            usable_articles_count: usableArticles.length,
+            total_usable_text_len: totalUsableTextLen,
+            key_facts_count: keyFactsCount,
+            evidence_level: evidenceLevel,
+            why_no_overview: whyNoOverview,
             bias,
             topics,
             topics_heatmap: topicsHeatmap,

@@ -1,6 +1,7 @@
 export interface ParsedArticle {
   title: string;
   snippet: string;
+  textContent: string;
   publishedAt: Date | null;
 }
 
