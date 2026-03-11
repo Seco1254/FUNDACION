@@ -173,7 +173,7 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
 /**
  * Build a FeedItem from a DB row, applying gate and fallback logic.
  */
-function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
+export function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
   const latestVersion = row.versions?.[0] ?? null;
   const packet = (latestVersion?.packetJson as any) ?? {};
   const teaser: string | null = packet.ai_teaser || null;

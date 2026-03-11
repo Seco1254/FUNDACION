@@ -51,6 +51,8 @@ import { debugLinkerRoutes } from './api/routes/debug-linker.js';
 import { debugLifecycleRoutes } from './api/routes/debug-lifecycle.js';
 import { debugMediaRoutes } from './api/routes/debug-media.js';
 import { debugPipelineRoutes } from './api/routes/debug-pipeline.js';
+import { topicsRoutes } from './api/routes/topics.js';
+import { searchRoutes } from './api/routes/search.js';
 import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
@@ -67,7 +69,7 @@ import { withTimeout } from './core/async/with-timeout.js';
 import { RankingService } from './modules/ranking/service/ranking-service.js';
 
 const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '5000', 10);
-const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
+const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(10 * 60 * 1000), 10);
 const CLOSE_CHECK_INTERVAL_MS = parseInt(process.env.CLOSE_CHECK_INTERVAL_MS ?? String(6 * 60 * 60 * 1000), 10);
 const REFRESH_INTERVAL_MS = parseInt(process.env.REFRESH_INTERVAL_MS ?? String(30 * 60 * 1000), 10);
 
@@ -266,6 +268,8 @@ export function buildApp() {
   app.register(debugLifecycleRoutes(lifecycleManager, eventRepo));
   app.register(debugMediaRoutes(mediaRepo));
   app.register(debugPipelineRoutes(prisma));
+  app.register(topicsRoutes(prisma, cache));
+  app.register(searchRoutes(eventRepo, cache));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }

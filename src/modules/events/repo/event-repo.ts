@@ -182,6 +182,46 @@ export class EventRepository {
     return row?.publishAt ?? null;
   }
 
+  async searchPublished(query: string, limit: number = 20) {
+    return this.prisma.event.findMany({
+      where: {
+        state: 'PUBLISHED' as any,
+        canonicalEventId: null,
+        versions: {
+          some: {
+            headline: { contains: query, mode: 'insensitive' },
+          },
+        },
+      },
+      orderBy: [{ publishedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+      take: limit,
+      include: {
+        versions: {
+          orderBy: { versionIndex: 'desc' },
+          take: 1,
+        },
+        eventArticles: {
+          include: {
+            article: {
+              select: {
+                id: true,
+                mediaId: true,
+                url: true,
+                status: true,
+                textContentLen: true,
+                textContentSource: true,
+                extractionFailReason: true,
+                paywallDetected: true,
+                usableForOverview: true,
+                media: { select: { id: true, mediaKey: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   async findByIdWithDetails(id: string) {
     return this.prisma.event.findUnique({
       where: { id },
