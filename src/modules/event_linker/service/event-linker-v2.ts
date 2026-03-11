@@ -59,6 +59,16 @@ export class EventLinkerV2 {
         return;
       }
 
+      // Content-type routing: only cluster NEWS articles
+      if (article.routingDecision && article.routingDecision !== 'NEWS') {
+        logger.info({
+          article_id,
+          routing_decision: article.routingDecision,
+        }, 'linker_skip_non_news');
+        metrics.incCounter('linking.skipped_non_news_total');
+        return;
+      }
+
       const articleVec = article.embeddingVec as number[];
       const now = this.clock.now();
 
@@ -183,6 +193,20 @@ export class EventLinkerV2 {
             finalAction: s.finalAction,
           })),
         }, 'linker_decision_debug');
+      }
+
+      // v2.3: Write MAYBE_LINK_DEGRADED audit log when floor gates caused degradation
+      if (decision.maybeLinkDegradedReasons.length > 0 && decision.bestMatch) {
+        await this.auditWriter.write({
+          entity_type: 'EVENT',
+          entity_id: decision.bestMatch.eventId,
+          action: 'MAYBE_LINK_DEGRADED',
+          trace_id: traceId,
+          data: {
+            article_id,
+            reasons: decision.maybeLinkDegradedReasons,
+          },
+        });
       }
 
       if (decision.action === 'LINK' && decision.bestMatch) {

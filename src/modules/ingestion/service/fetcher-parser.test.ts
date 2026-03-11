@@ -227,8 +227,10 @@ describe('FetcherParser', () => {
     expect(articleRepo.create).toHaveBeenCalledOnce();
     const data = articleRepo.create.mock.calls[0][0];
 
-    expect(data.textContentLen).toBe(1000);
-    expect(data.textContentSource).toBe('body');
+    // DOM cleaner extracts richer text from the real fixture HTML,
+    // so textContentLen >= the scraper's 1000 chars.
+    expect(data.textContentLen).toBeGreaterThanOrEqual(1000);
+    expect(['body', 'dom_cleaner_v1']).toContain(data.textContentSource);
     expect(data.paywallDetected).toBe(false);
     expect(data.usableForOverview).toBe(true);
     expect(data.extractionFailReason).toBeNull();
@@ -645,5 +647,96 @@ describe('FetcherParser', () => {
     expect(published).toHaveLength(1);
     expect(published[0].event_name).toBe('ArticlePolicyBlocked');
     expect(published[0].payload).toHaveProperty('reason_code', 'DUPLICATE_URL');
+  });
+
+  // ── Page-type gate tests ──
+
+  describe('page-type gate', () => {
+    function makeScraperFor(title: string): { scraper: MediaScraper; lookup: ReturnType<typeof vi.fn> } {
+      const scraper: MediaScraper = {
+        listPageUrls: [],
+        extractUrls() { return []; },
+        parseArticle() {
+          return { title, snippet: 'Snippet text', publishedAt: null, textContent: 'A'.repeat(1000) };
+        },
+      };
+      return { scraper, lookup: vi.fn().mockReturnValue(scraper) };
+    }
+
+    it('blocks /autor/ URL as PAGE_TYPE:AUTHOR_PAGE', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Noticias de Juan Pérez');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/autor/juan-perez', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published).toHaveLength(1);
+      expect(published[0].event_name).toBe('ArticlePolicyBlocked');
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:AUTHOR_PAGE');
+      expect(auditWriter.write).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'PAGE_TYPE_BLOCKED' }),
+      );
+    });
+
+    it('blocks /contenido-comercial/ URL as PAGE_TYPE:COMMERCIAL_CONTENT', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Oferta especial bancaria');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/contenido-comercial/oferta', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:COMMERCIAL_CONTENT');
+    });
+
+    it('blocks /tag/ URL as PAGE_TYPE:LISTING_INDEX', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Economía');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/tag/economia', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:LISTING_INDEX');
+    });
+
+    it('allows normal article URL (e.g. /bogota/...)', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Protestas en Bogotá por TransMilenio');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/bogota/protestas-123456', 'eltiempo'));
+
+      expect(articleRepo.create).toHaveBeenCalledOnce();
+      expect(published).toHaveLength(1);
+      expect(published[0].event_name).toBe('ArticleNormalized');
+    });
+
+    it('blocks title "Noticias, Fotos y Videos de" even without /autor/ in URL', async () => {
+      const mediaRepo = makeMockMediaRepo();
+      const articleRepo = makeMockArticleRepo();
+      const auditWriter = makeMockAuditWriter();
+      const fetchHtml = vi.fn().mockResolvedValue('<html><body><p>Content</p></body></html>');
+      const { lookup } = makeScraperFor('Noticias, Fotos y Videos de Gustavo Petro - El Tiempo');
+
+      const fetcher = new FetcherParser(articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, lookup);
+      await fetcher.handler()(makeDiscoveredEnvelope('https://www.eltiempo.com/noticias/gustavo-petro', 'eltiempo'));
+
+      expect(articleRepo.create).not.toHaveBeenCalled();
+      expect(published[0].payload).toHaveProperty('reason_code', 'PAGE_TYPE:AUTHOR_PAGE');
+    });
   });
 });

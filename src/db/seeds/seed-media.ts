@@ -17,6 +17,13 @@ const MEDIA_ALLOWLIST = [
   { mediaKey: 'oec', name: 'Observatorio Editorial Colombiano' },
   { mediaKey: 'ascolbi', name: 'Ascolbi' },
   { mediaKey: 'aciur', name: 'ACIUR' },
+  // Premium sources (Wave 1)
+  { mediaKey: 'larepublica', name: 'La República' },
+  { mediaKey: 'cambio', name: 'CAMBIO' },
+  { mediaKey: 'americas_quarterly', name: 'Americas Quarterly' },
+  { mediaKey: 'pbs_newshour', name: 'PBS NewsHour' },
+  { mediaKey: 'carnegie', name: 'Carnegie Endowment for International Peace' },
+  { mediaKey: 'crisis_group', name: 'International Crisis Group' },
 ];
 
 async function main() {

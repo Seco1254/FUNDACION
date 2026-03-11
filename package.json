@@ -26,7 +26,14 @@
     "link:once": "tsx src/scripts/link-once.ts",
     "reset:db": "./bin/reset-db",
     "smoke": "./bin/smoke",
-    "debug:ui": "./bin/debug-ui"
+    "debug:ui": "./bin/debug-ui",
+    "db:backfill:coherence": "tsx scripts/backfill-coherence-metrics.ts",
+    "debug:coherence:canary": "tsx scripts/coherence-canary.ts",
+    "debug:feed:doctor": "tsx scripts/feed-doctor.ts",
+    "debug:events:relink": "tsx scripts/events-relink.ts",
+    "debug:events:label": "tsx scripts/events-label.ts",
+    "debug:labels:export": "tsx scripts/labels-export.ts",
+    "debug:labels:session": "tsx scripts/labels-session.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
@@ -34,6 +41,7 @@
     "ajv": "^8.17.0",
     "ajv-formats": "^3.0.0",
     "fastify": "^5.2.0",
+    "node-html-parser": "^7.0.2",
     "pino": "^9.6.0",
     "ulid": "^2.3.0"
   },

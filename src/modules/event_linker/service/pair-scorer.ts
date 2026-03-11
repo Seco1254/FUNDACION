@@ -25,6 +25,10 @@ import { metrics } from '../../../core/metrics/metrics.js';
 import {
   shouldBlockAutoLink,
   checkTitleContradictionPair,
+  extractDesk,
+  desksCompatible,
+  extractTitleKeywords,
+  jaccardSets,
   GateContext,
 } from './hard-negative-gates.js';
 import {
@@ -37,6 +41,11 @@ import {
   SIGNAL_MIN_ENTITY,
   SIGNAL_MIN_TOPIC,
   TITLE_GATE_ENABLED,
+  DESK_GATE_ENABLED,
+  TOPIC_CONFIDENCE_MIN,
+  FLOOR_GATES_ENABLED,
+  TITLE_ALIGN_FLOOR,
+  ENTITY_OVERLAP_FLOOR,
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
@@ -81,6 +90,8 @@ export interface PairScoringResult {
   /** v2.1: specific link type */
   linkType: 'AUTO_LINK' | 'MAYBE_LINK' | 'CREATE';
   llmUsed: boolean;
+  /** v2.3: floor gate reasons that caused degradation from AUTO → MAYBE for the best match */
+  maybeLinkDegradedReasons: string[];
 }
 
 // ── Hard block input ──
@@ -204,6 +215,10 @@ export interface ArticleForPairing {
   hardBlockContext?: HardBlockContext;
   /** v2.1: topic assigned to this article (top1) */
   topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: article URL for desk extraction */
+  url?: string | null;
 }
 
 export interface EventCandidate {
@@ -219,6 +234,10 @@ export interface EventCandidate {
   representativeTitle?: string;
   /** v2.1: topic assigned to this event (top1) */
   topicTop1?: string | null;
+  /** v2.2: topic confidence (0..1) */
+  topicConfidence?: number | null;
+  /** v2.2: representative URL for desk extraction (first article's URL) */
+  representativeUrl?: string | null;
 }
 
 /**
@@ -286,10 +305,25 @@ export function scoreCandidates(
         gateMaybeBlock = true;
       }
 
-      // Topic gate (top1 equality)
+      // Topic gate (with confidence threshold)
       if (article.topicTop1 && candidate.topicTop1) {
         if (article.topicTop1 !== candidate.topicTop1) {
-          gateReasons.push('TOPIC_MISMATCH');
+          const artConf = article.topicConfidence ?? 0;
+          const evtConf = candidate.topicConfidence ?? 0;
+          if (artConf >= TOPIC_CONFIDENCE_MIN && evtConf >= TOPIC_CONFIDENCE_MIN) {
+            gateReasons.push('TOPIC_MISMATCH_HIGH_CONF');
+          } else {
+            gateReasons.push('TOPIC_MISMATCH');
+          }
+        }
+      }
+
+      // Desk mismatch gate (URL-based)
+      if (DESK_GATE_ENABLED) {
+        const articleDesk = extractDesk(article.url);
+        const eventDesk = extractDesk(candidate.representativeUrl);
+        if (!desksCompatible(articleDesk, eventDesk)) {
+          gateReasons.push('DESK_MISMATCH');
         }
       }
 
@@ -306,6 +340,21 @@ export function scoreCandidates(
         );
         if (titleCheck.blocked) {
           gateReasons.push('TITLE_CONTRADICTION_LOW_OVERLAP');
+        }
+      }
+
+      // v2.3: Floor gates — hard floors on title alignment and entity overlap
+      if (FLOOR_GATES_ENABLED) {
+        const eventRepTitle = candidate.representativeTitle ?? candidate.articleTexts[0] ?? '';
+        const kwArticle = extractTitleKeywords(article.title);
+        const kwEvent = extractTitleKeywords(eventRepTitle);
+        const titleAlign = jaccardSets(kwArticle, kwEvent);
+
+        if (titleAlign < TITLE_ALIGN_FLOOR) {
+          gateReasons.push('TITLE_ALIGNMENT_FLOOR');
+        }
+        if (entOverlap < ENTITY_OVERLAP_FLOOR) {
+          gateReasons.push('ENTITY_OVERLAP_FLOOR');
         }
       }
     }
@@ -365,9 +414,10 @@ export async function decideLinkAction(
   llm: LlmClient | null,
 ): Promise<PairScoringResult> {
   const scores = scoreCandidates(article, candidates);
+  const FLOOR_REASONS = new Set(['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR']);
 
   if (scores.length === 0) {
-    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false };
+    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: [] };
   }
 
   // Only consider non-hard-blocked candidates
@@ -376,11 +426,20 @@ export async function decideLinkAction(
   if (eligible.length === 0) {
     metrics.incCounter('linking.hard_block_total');
     metrics.incCounter('linking.create_total');
-    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false };
+    return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: [] };
   }
 
   const top = eligible[0];
   const topCandidate = candidates.find((c) => c.id === top.eventId);
+
+  // v2.3: Detect floor gate degradation (AUTO → MAYBE due to floor gates)
+  const floorDegradedReasons = (
+    top.finalAction === 'MAYBE_LINK' &&
+    top.compositeScore >= THETA_AUTO_LINK &&
+    top.gatesBlockAutoReasons.some((r) => FLOOR_REASONS.has(r))
+  )
+    ? top.gatesBlockAutoReasons.filter((r) => FLOOR_REASONS.has(r))
+    : [];
 
   // ── Step 1: Check for auto-link eligibility ──
   if (top.finalAction === 'AUTO_LINK') {
@@ -391,6 +450,7 @@ export async function decideLinkAction(
       action: 'LINK',
       linkType: 'AUTO_LINK',
       llmUsed: false,
+      maybeLinkDegradedReasons: [],
     };
   }
 
@@ -404,6 +464,18 @@ export async function decideLinkAction(
       composite: +top.compositeScore.toFixed(4),
       signals: top.signalsPassed,
     }, 'gate_blocked_auto_link');
+  }
+
+  // v2.3: Track floor gate degradations for observability
+  if (floorDegradedReasons.length > 0) {
+    metrics.incCounter('linking.maybe_link_degraded_total');
+    logger.info({
+      article_id: article.id,
+      event_id: top.eventId,
+      decision: 'MAYBE_LINK_DEGRADED',
+      reasons: floorDegradedReasons,
+      composite: +top.compositeScore.toFixed(4),
+    }, 'maybe_link_degraded');
   }
 
   // Legacy entity guard metric (backward compat)
@@ -432,7 +504,7 @@ export async function decideLinkAction(
         if (llmResult.hardBlock) {
           metrics.incCounter('linking.llm_hard_block_total');
           metrics.incCounter('linking.create_total');
-          return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: true };
+          return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: true, maybeLinkDegradedReasons: floorDegradedReasons };
         }
         metrics.incCounter('linking.llm_link_total');
         return {
@@ -441,6 +513,7 @@ export async function decideLinkAction(
           action: 'LINK',
           linkType: 'MAYBE_LINK',
           llmUsed: true,
+          maybeLinkDegradedReasons: floorDegradedReasons,
         };
       }
     }
@@ -455,13 +528,14 @@ export async function decideLinkAction(
         action: 'LINK',
         linkType: 'MAYBE_LINK',
         llmUsed: false,
+        maybeLinkDegradedReasons: floorDegradedReasons,
       };
     }
   }
 
   // Below threshold
   metrics.incCounter('linking.create_total');
-  return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false };
+  return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false, maybeLinkDegradedReasons: floorDegradedReasons };
 }
 
 /**

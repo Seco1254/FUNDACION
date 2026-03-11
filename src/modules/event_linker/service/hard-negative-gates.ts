@@ -1,9 +1,20 @@
 /**
- * Hard Negative Gates v2.1 — cheap heuristics that block auto-link.
+ * Hard Negative Gates v2.3 — cheap heuristics that block auto-link.
  *
  * Gates only block auto-link (degrade to maybe-link), never block maybe-link
  * (to avoid "mil eventos" explosion). Exception: entity gate can block maybe
  * when entityJaccard is extremely low AND embedding is not high.
+ *
+ * v2.2 additions:
+ *   - Desk mismatch gate: URL-based desk/section extraction + compatibility matrix
+ *   - Topic confidence gate: block if topics differ AND both have confidence >= threshold
+ *   - Title gate thresholds tightened: title_jaccard < 0.03 AND entity_overlap < 0.02
+ *
+ * v2.3 additions:
+ *   - TITLE_ALIGNMENT_FLOOR: block if title keyword alignment < floor (default 0.05)
+ *   - ENTITY_OVERLAP_FLOOR: block if entity overlap < floor (default 0.03)
+ *   - Both are fail-open: if metric is null/undefined, gate is skipped
+ *   - Controlled by EVENT_LINKER_FLOOR_GATES_ENABLED (default 1)
  */
 
 import { logger } from '../../../core/logging/logger.js';
@@ -16,6 +27,11 @@ import {
   TITLE_GATE_ENABLED,
   TITLE_KEYWORD_JACCARD_MIN,
   TITLE_ENTITY_JACCARD_MIN,
+  DESK_GATE_ENABLED,
+  TOPIC_CONFIDENCE_MIN,
+  FLOOR_GATES_ENABLED,
+  TITLE_ALIGN_FLOOR,
+  ENTITY_OVERLAP_FLOOR,
 } from './config.js';
 
 // ── Spanish stopwords (short list for title keyword extraction) ──
@@ -34,6 +50,166 @@ const ES_STOPWORDS = new Set([
   'por', 'que', 'más', 'sus', 'les',
 ]);
 
+// ── Desk extraction from URL path ────────────────────────────────
+
+const DESK_SEGMENT_MAP: Record<string, string> = {
+  'politica': 'POLITICA',
+  'gobierno': 'POLITICA',
+  'economia': 'ECONOMIA',
+  'finanzas': 'ECONOMIA',
+  'negocios': 'ECONOMIA',
+  'deportes': 'DEPORTES',
+  'deporte': 'DEPORTES',
+  'futbol': 'DEPORTES',
+  'salud': 'SALUD',
+  'vida': 'SALUD',
+  'seguridad': 'CRIMEN',
+  'justicia': 'CRIMEN',
+  'judicial': 'CRIMEN',
+  'crimen': 'CRIMEN',
+  'unidad-investigativa': 'CRIMEN',
+  'bogota': 'BOGOTA',
+  'colombia': 'COLOMBIA',
+  'mundo': 'MUNDO',
+  'internacional': 'MUNDO',
+  'medio-ambiente': 'MEDIO_AMBIENTE',
+  'ambiente': 'MEDIO_AMBIENTE',
+  'entretenimiento': 'ENTRETENIMIENTO',
+  'cultura': 'ENTRETENIMIENTO',
+  'gente': 'ENTRETENIMIENTO',
+  'opinion': 'OPINION',
+  'columnistas': 'OPINION',
+  'tecnologia': 'TECNOLOGIA',
+  'tech': 'TECNOLOGIA',
+};
+
+// ── razonpublica.com category path mappings ──
+const RAZON_PUBLICA_CATEGORY_MAP: Record<string, string> = {
+  'politica-y-gobierno': 'POLITICA',
+  'economia-y-sociedad': 'ECONOMIA',
+  'conflicto-drogas-y-paz': 'CRIMEN',
+  'internacional': 'MUNDO',
+  'medio-ambiente': 'MEDIO_AMBIENTE',
+  'regiones': 'COLOMBIA',
+  'educacion': 'SALUD',
+};
+
+// ── consonante.org slug keywords ──
+const CONSONANTE_SLUG_KEYWORDS: Record<string, string[]> = {
+  CRIMEN: ['asesinato', 'masacre', 'violencia', 'eln', 'disidencias', 'armado', 'conflicto', 'minas', 'desplazamiento', 'amenaza', 'ataque'],
+  MEDIO_AMBIENTE: ['rio', 'agua', 'acueducto', 'contaminacion', 'mineria', 'deforestacion', 'ambiental', 'inundacion', 'sequia', 'biodiversidad'],
+  POLITICA: ['gobierno', 'elecciones', 'alcalde', 'gobernador', 'congreso', 'consulta', 'voto'],
+  ECONOMIA: ['empleo', 'trabajo', 'pobreza', 'produccion', 'cafe', 'campesino', 'cooperativa'],
+  SALUD: ['hospital', 'salud', 'eps', 'medico', 'enfermedad', 'vacuna'],
+};
+
+export interface DeskResult {
+  desk: string | null;
+  desk_source: 'url_segment' | 'domain_rule' | 'none';
+}
+
+/**
+ * Extract a "desk" label from a URL's path segments.
+ * Returns null if no recognized segment is found.
+ *
+ * v2: domain-specific rules for razonpublica.com and consonante.org.
+ * Normalizes URL: lowercase, strip querystring/hash, tolerate trailing slashes.
+ */
+export function extractDesk(url: string | null | undefined): string | null {
+  return extractDeskDetailed(url).desk;
+}
+
+/**
+ * Detailed desk extraction with source tracing.
+ */
+export function extractDeskDetailed(url: string | null | undefined): DeskResult {
+  if (!url) return { desk: null, desk_source: 'none' };
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+    const segments = path.split('/').filter(Boolean);
+
+    // ── Domain-specific rules (priority) ──
+
+    if (host === 'razonpublica.com') {
+      // Category pages: /categoria/temas/politica-y-gobierno/
+      if (segments[0] === 'categoria' && segments[1] === 'temas' && segments[2]) {
+        const mapped = RAZON_PUBLICA_CATEGORY_MAP[segments[2]];
+        if (mapped) return { desk: mapped, desk_source: 'domain_rule' };
+      }
+      // Default: razonpublica is opinion/analysis
+      return { desk: 'OPINION', desk_source: 'domain_rule' };
+    }
+
+    if (host === 'consonante.org') {
+      // Articles at /noticia/slug — scan slug tokens for topic hints
+      if (segments[0] === 'noticia' && segments[1]) {
+        const slugTokens = segments[1].split('-');
+        for (const [desk, keywords] of Object.entries(CONSONANTE_SLUG_KEYWORDS)) {
+          for (const kw of keywords) {
+            if (slugTokens.includes(kw)) {
+              return { desk, desk_source: 'domain_rule' };
+            }
+          }
+        }
+        // Default for consonante /noticia/: COLOMBIA (community journalism)
+        return { desk: 'COLOMBIA', desk_source: 'domain_rule' };
+      }
+      // /cat/ pages — regional
+      if (segments[0] === 'cat') {
+        return { desk: 'COLOMBIA', desk_source: 'domain_rule' };
+      }
+      return { desk: null, desk_source: 'none' };
+    }
+
+    // ── Generic segment-based extraction ──
+    for (const seg of segments) {
+      const desk = DESK_SEGMENT_MAP[seg];
+      if (desk) return { desk, desk_source: 'url_segment' };
+    }
+    return { desk: null, desk_source: 'none' };
+  } catch {
+    return { desk: null, desk_source: 'none' };
+  }
+}
+
+// ── Desk compatibility matrix ──
+// Desks within the same group are compatible; across groups they are NOT.
+// null desk is compatible with everything (no signal).
+
+const DESK_COMPAT_GROUPS: string[][] = [
+  ['CRIMEN', 'BOGOTA', 'COLOMBIA'],
+  ['POLITICA', 'ECONOMIA'],
+  ['SALUD'],
+  ['DEPORTES'],
+  ['MEDIO_AMBIENTE'],
+  ['ENTRETENIMIENTO'],
+  ['OPINION'],
+  ['TECNOLOGIA'],
+  ['MUNDO'],
+];
+
+const DESK_GROUP_INDEX = new Map<string, number>();
+for (let i = 0; i < DESK_COMPAT_GROUPS.length; i++) {
+  for (const d of DESK_COMPAT_GROUPS[i]) {
+    DESK_GROUP_INDEX.set(d, i);
+  }
+}
+
+/**
+ * Check if two desks are compatible.
+ * null desk → always compatible (no signal).
+ */
+export function desksCompatible(deskA: string | null, deskB: string | null): boolean {
+  if (deskA === null || deskB === null) return true;
+  if (deskA === deskB) return true;
+  const groupA = DESK_GROUP_INDEX.get(deskA);
+  const groupB = DESK_GROUP_INDEX.get(deskB);
+  if (groupA === undefined || groupB === undefined) return true;
+  return groupA === groupB;
+}
+
 export interface GateContext {
   articleTitle: string;
   articleTitleRaw?: string;
@@ -41,6 +217,14 @@ export interface GateContext {
   articleEntityJaccard: number;
   articleTopicTop1?: string | null;
   eventTopicTop1?: string | null;
+  articleUrl?: string | null;
+  eventUrl?: string | null;
+  articleTopicConfidence?: number | null;
+  eventTopicConfidence?: number | null;
+  /** v2.3: title keyword alignment (Jaccard) between article and event titles. undefined = not computed. */
+  titleAlignment?: number | undefined;
+  /** v2.3: entity overlap (Jaccard) between article and event entities. undefined = not computed. */
+  entityOverlap?: number | undefined;
 }
 
 export interface GateResult {
@@ -70,22 +254,47 @@ export function shouldBlockAutoLink(ctx: GateContext): GateResult {
     blockMaybe = true;
   }
 
-  // 2) Topic mismatch gate (top1 equality)
+  // 2) Topic mismatch gate (with confidence threshold)
   if (TOPIC_GATE_ENABLED && TOPIC_TOP1_MUST_MATCH) {
     if (ctx.articleTopicTop1 && ctx.eventTopicTop1) {
       if (ctx.articleTopicTop1 !== ctx.eventTopicTop1) {
-        reasons.push('TOPIC_MISMATCH');
+        const artConf = ctx.articleTopicConfidence ?? 0;
+        const evtConf = ctx.eventTopicConfidence ?? 0;
+        if (artConf >= TOPIC_CONFIDENCE_MIN && evtConf >= TOPIC_CONFIDENCE_MIN) {
+          reasons.push('TOPIC_MISMATCH_HIGH_CONF');
+        } else {
+          reasons.push('TOPIC_MISMATCH');
+        }
       }
     } else if (!ctx.articleTopicTop1 || !ctx.eventTopicTop1) {
       logger.debug({ article_topic: ctx.articleTopicTop1, event_topic: ctx.eventTopicTop1 }, 'topic_gate_missing_topics');
     }
   }
 
-  // 3) Title contradiction gate
+  // 3) Desk mismatch gate (URL-based)
+  if (DESK_GATE_ENABLED) {
+    const articleDesk = extractDesk(ctx.articleUrl);
+    const eventDesk = extractDesk(ctx.eventUrl);
+    if (!desksCompatible(articleDesk, eventDesk)) {
+      reasons.push('DESK_MISMATCH');
+    }
+  }
+
+  // 4) Title contradiction gate
   if (TITLE_GATE_ENABLED) {
     const titleCheck = checkTitleContradiction(ctx);
     if (titleCheck.blocked) {
       reasons.push('TITLE_CONTRADICTION_LOW_OVERLAP');
+    }
+  }
+
+  // 5) Floor gates v2.3 — hard floors on title alignment and entity overlap
+  if (FLOOR_GATES_ENABLED) {
+    if (ctx.titleAlignment != null && ctx.titleAlignment < TITLE_ALIGN_FLOOR) {
+      reasons.push('TITLE_ALIGNMENT_FLOOR');
+    }
+    if (ctx.entityOverlap != null && ctx.entityOverlap < ENTITY_OVERLAP_FLOOR) {
+      reasons.push('ENTITY_OVERLAP_FLOOR');
     }
   }
 

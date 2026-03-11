@@ -9,6 +9,7 @@ export type BlockedReason =
 
 export type TextContentSource = 'body' | 'meta' | 'none';
 export type ExtractionFailReason = 'paywall' | 'blocked' | 'parse_error' | 'empty' | 'too_short' | 'unknown';
+export type RoutingDecision = 'NEWS' | 'LOW_CONFIDENCE' | 'NON_NEWS';
 
 export interface ArticleEntity {
   id: string;
@@ -23,6 +24,9 @@ export interface ArticleEntity {
   extractionFailReason: string | null;
   paywallDetected: boolean;
   usableForOverview: boolean;
+  contentType: string | null;
+  contentTypeScore: number | null;
+  routingDecision: string | null;
   status: ArticleStatus;
   blockedReason: BlockedReason | null;
   embeddingModel: string | null;

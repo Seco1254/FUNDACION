@@ -11,6 +11,10 @@ import {
   extractMetaDescription,
 } from '../scrapers/html-utils.js';
 import { logger } from '../../../core/logging/logger.js';
+import { classifyContent } from '../../text_sanitizer/content-classifier.js';
+import { evaluateRoutingDecision } from './content-router.js';
+import { cleanDom } from '../../text_sanitizer/dom-cleaner.js';
+import { classifyPageType, shouldBlockPageType } from '../page-type.js';
 
 export class FetcherParser {
   constructor(
@@ -116,12 +120,64 @@ export class FetcherParser {
         return;
       }
 
+      // --- Page-type gate (block non-article pages early) ---
+      const pageClassification = classifyPageType({
+        url,
+        title: parsed.title,
+        mediaKey: media_key,
+      });
+
+      if (shouldBlockPageType(pageClassification.pageType)) {
+        logger.info(
+          { url, pageType: pageClassification.pageType, reasons: pageClassification.reasons },
+          'article_blocked_page_type',
+        );
+        await this.auditWriter.write({
+          entity_type: 'ARTICLE',
+          entity_id: url,
+          action: 'PAGE_TYPE_BLOCKED',
+          trace_id: traceId,
+          data: {
+            url,
+            page_type: pageClassification.pageType,
+            confidence: pageClassification.confidence,
+            reasons: pageClassification.reasons,
+          },
+        });
+        const blockedEnvelope: EventEnvelope = {
+          event_name: 'ArticlePolicyBlocked',
+          event_id: ulid(),
+          occurred_at: new Date().toISOString(),
+          trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
+          payload: { url, reason_code: `PAGE_TYPE:${pageClassification.pageType}` },
+        };
+        await this.eventBus.publish(blockedEnvelope);
+        return;
+      }
+
       const snippet = parsed.snippet.slice(0, MAX_SNIPPET_CHARS);
 
       // --- Text acquisition ladder ---
-      // 1) Body extraction (from scraper's extractArticleBody)
-      let bestText = parsed.textContent || '';
-      let textContentSource: string = bestText.length > 0 ? 'body' : 'none';
+      // 0) DOM Cleaner: structure-aware HTML cleaning (strips boilerplate
+      //    nodes, sidebars, UGC, donation blocks, etc.) before extraction.
+      //    Falls through to legacy extraction if result is too short.
+      let bestText = '';
+      let textContentSource = 'none';
+
+      const domResult = cleanDom({ html, url });
+      if (domResult.text.length > 0) {
+        bestText = domResult.text;
+        textContentSource = 'dom_cleaner_v1';
+      }
+
+      // 1) Body extraction (from scraper's extractArticleBody) — legacy fallback
+      if (bestText.length < TEXT_MIN_LEN) {
+        const bodyText = parsed.textContent || '';
+        if (bodyText.length > bestText.length) {
+          bestText = bodyText;
+          textContentSource = bodyText.length > 0 ? 'body' : 'none';
+        }
+      }
 
       // 2) AMP fallback: if body text too short, try AMP page
       if (bestText.length < TEXT_MIN_LEN) {
@@ -160,22 +216,38 @@ export class FetcherParser {
       // Paywall detection
       const paywallDetected = detectPaywall(html);
 
+      // Sources that are "body-grade" (full article text, not just meta snippet)
+      const isBodyGrade = ['body', 'amp', 'rss', 'dom_cleaner_v1'].includes(textContentSource);
+
       // Extraction fail reason
       let extractionFailReason: string | null = null;
       if (paywallDetected) extractionFailReason = 'paywall';
       else if (textContentLen === 0) extractionFailReason = 'empty';
-      else if (
-        ['body', 'amp', 'rss'].includes(textContentSource) && textContentLen < TEXT_MIN_LEN
-      ) extractionFailReason = 'too_short';
+      else if (isBodyGrade && textContentLen < TEXT_MIN_LEN) extractionFailReason = 'too_short';
       else if (textContentSource === 'meta' && textContentLen < MIN_LEN_META) {
         extractionFailReason = 'too_short';
       }
 
       // Flexible usability threshold
       const usableForOverview = !paywallDetected && (
-        (['body', 'amp', 'rss'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
+        (isBodyGrade && textContentLen >= TEXT_MIN_LEN) ||
         (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
       );
+
+      // Content type classification (soft — score + reasons, no exclusion)
+      const classification = textNorm
+        ? classifyContent({ text: textNorm, title: parsed.title, url })
+        : null;
+      const contentType = classification?.content_type ?? null;
+      const contentTypeScore = classification?.score ?? null;
+
+      // Content-type routing: assign bucket before clustering
+      const routingDecision = evaluateRoutingDecision({
+        contentType,
+        textContentLen,
+        title: parsed.title,
+        usableForOverview,
+      });
 
       let article;
       try {
@@ -190,6 +262,9 @@ export class FetcherParser {
           extractionFailReason,
           paywallDetected,
           usableForOverview,
+          contentType,
+          contentTypeScore,
+          routingDecision,
           publishedAt: parsed.publishedAt,
           status: 'NORMALIZED',
         });

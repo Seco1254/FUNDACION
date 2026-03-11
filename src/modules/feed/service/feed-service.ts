@@ -2,9 +2,31 @@ import { FeedRepository } from '../repo/feed-repo.js';
 import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
-import { evaluatePublishGate } from '../../../core/llm/gates.js';
+import { evaluatePublishGate, computeImportanceScore, computeDemotionMultiplier, computePublicImportanceV3 } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
+import { aggregateEventTopic } from '../../topics/service/topic-heuristic.js';
+import { detectIntraSplitProxy } from '../../quality/detectors/intra-split-proxy.js';
+import { getSourceQualityPolicy } from '../../media/service/source-quality-registry.js';
+import { composeFeedTopN } from './feed-composition.js';
+import { classifyPageType } from '../../ingestion/page-type.js';
 import { logger } from '../../../core/logging/logger.js';
+
+// ── Podcast headline detection ────────────────────────────────────────
+const PODCAST_HEADLINE_RE = /^P[OÓ]DCAST[\s:|-]/i;
+
+// ── Topic filter config ──────────────────────────────────────────────
+const FEED_TOPIC_FILTER_ENABLED = process.env.FEED_TOPIC_FILTER_ENABLED === '1';
+const FEED_ALLOWED_TOPICS: string[] = (process.env.FEED_ALLOWED_TOPICS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// ── ANALYSIS mode demotion (applied to v3_final for source_mode=ANALYSIS) ──
+// Default 0.75: ANALYSIS items score at 75% of their raw v3. Env-overridable.
+const ANALYSIS_MODE_DEMOTION = parseFloat(process.env.ANALYSIS_MODE_DEMOTION ?? '0.75');
+
+// ── Split proxy quarantine config ────────────────────────────────────
+const FEED_SPLIT_PROXY_QUARANTINE_ENABLED = process.env.FEED_SPLIT_PROXY_QUARANTINE_ENABLED !== '0';
 
 function extractAiOverview(packet: any): FeedItemOverview | null {
   const ai = packet?.ai_overview;
@@ -14,7 +36,122 @@ function extractAiOverview(packet: any): FeedItemOverview | null {
   const disp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
   const label = typeof ai.confidence_label === 'string' ? ai.confidence_label : 'No concluyente';
   if (wh.length === 0 && ctx.length === 0) return null;
-  return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+
+  const result: FeedItemOverview = { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+
+  // Pass through or build overview paragraph
+  if (typeof ai.overview === 'string' && ai.overview.trim().length > 0) {
+    result.overview = ai.overview;
+  } else {
+    // Fallback: build narrative paragraph from what_happened bullets
+    const fallbackParagraph = buildNarrativeFallback(wh, ctx);
+    if (fallbackParagraph) {
+      result.overview = fallbackParagraph;
+    }
+  }
+
+  // Pass through analisis_fuentes if present (backward compatible)
+  if (ai.analisis_fuentes && typeof ai.analisis_fuentes === 'object') {
+    const af = ai.analisis_fuentes;
+    result.analisis_fuentes = {
+      consenso: Array.isArray(af.consenso) ? af.consenso : [],
+      desacuerdo: Array.isArray(af.desacuerdo) ? af.desacuerdo : [],
+      informacion_faltante: Array.isArray(af.informacion_faltante) ? af.informacion_faltante : [],
+    };
+  }
+
+  return result;
+}
+
+const CONNECTORS = [' Además, ', ' Por otra parte, ', ' Asimismo, ', ' También, ', ' De igual manera, '];
+const MIN_FALLBACK_WORDS = 90;
+
+/**
+ * Build a narrative paragraph from what_happened bullets + context as fallback
+ * when the LLM overview is missing or empty. Produces 3-5 sentences with connectors.
+ * Returns null if not enough content to reach a reasonable paragraph.
+ */
+export function buildNarrativeFallback(whatHappened: string[], context: string[]): string | null {
+  // Collect candidate sentences (what_happened first, then context)
+  const candidates = [...whatHappened, ...context].filter(
+    (s) => typeof s === 'string' && s.trim().length > 0,
+  );
+  if (candidates.length === 0) return null;
+
+  // Take up to 5 sentences to build the paragraph
+  const sentences = candidates.slice(0, 5);
+  if (sentences.length < 2) {
+    // Single sentence — only viable if it's long enough
+    const single = sentences[0].trim();
+    const wordCount = single.split(/\s+/).length;
+    return wordCount >= MIN_FALLBACK_WORDS ? single : null;
+  }
+
+  // Join with connectors
+  const parts: string[] = [sentences[0].replace(/\.\s*$/, '') + '.'];
+  for (let i = 1; i < sentences.length; i++) {
+    const connector = CONNECTORS[(i - 1) % CONNECTORS.length];
+    const sentence = sentences[i].replace(/^\s*/, '').replace(/\.\s*$/, '') + '.';
+    // Lowercase first char after connector (unless proper noun)
+    const firstChar = sentence[0];
+    const lowered = firstChar === firstChar.toUpperCase() && /^[A-ZÁÉÍÓÚÑ]/.test(firstChar)
+      ? sentence // keep uppercase (likely proper noun or start of sentence)
+      : sentence[0].toLowerCase() + sentence.slice(1);
+    parts.push(connector + lowered);
+  }
+
+  const paragraph = parts.join('');
+  const wordCount = paragraph.split(/\s+/).length;
+  return wordCount >= 15 ? paragraph : null; // At least a reasonable length
+}
+
+// ── Institutional Event Eligibility ─────────────────────────────────
+
+/**
+ * Determine if an event is dominated by institutional/static content
+ * and should be excluded from the feed.
+ *
+ * Rules:
+ * - If all articles are institutional_static and no news articles => exclude
+ * - If institutional_static >= 70% and no news articles => exclude
+ * - If all articles are institutional (convocatoria) and no news => exclude
+ */
+export function isInstitutionalEvent(row: any): { excluded: boolean; reason: string } {
+  const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const totalArticles = articles.length;
+
+  if (totalArticles === 0) return { excluded: false, reason: '' };
+
+  let newsCount = 0;
+  let institutionalStaticCount = 0;
+  let institutionalCount = 0;
+
+  for (const a of articles) {
+    const ct = a.contentType ?? 'unknown';
+    if (ct === 'news') newsCount++;
+    else if (ct === 'institutional_static') institutionalStaticCount++;
+    else if (ct === 'institutional') institutionalCount++;
+  }
+
+  // Rule 1: All articles are institutional_static, no news => exclude
+  if (institutionalStaticCount >= 1 && newsCount === 0 && institutionalCount === 0) {
+    return { excluded: true, reason: 'ALL_INSTITUTIONAL_STATIC' };
+  }
+
+  // Rule 2: institutional_static dominates (>= 70%) and no news => exclude
+  if (newsCount === 0 && institutionalStaticCount > 0) {
+    const staticPct = institutionalStaticCount / totalArticles;
+    if (staticPct >= 0.7) {
+      return { excluded: true, reason: 'INSTITUTIONAL_STATIC_DOMINANT' };
+    }
+  }
+
+  // Rule 3: All institutional (convocatoria etc.) and no news => exclude
+  if (newsCount === 0 && (institutionalCount + institutionalStaticCount) === totalArticles && totalArticles >= 1) {
+    return { excluded: true, reason: 'ALL_INSTITUTIONAL' };
+  }
+
+  return { excluded: false, reason: '' };
 }
 
 /**
@@ -53,11 +190,24 @@ export function buildFeedFallbackOverview(
 
 /**
  * Derive overview_status for the feed item so the client can distinguish states.
+ * Uses overview_lifecycle if present (v3), falls back to content inspection.
  * - 'ready': ai_overview is populated and usable
  * - 'unavailable': pipeline ran but produced no usable overview (gate FAIL, insufficient evidence)
- * - 'pending': pipeline hasn't run yet
+ * - 'pending': pipeline hasn't run yet or is in progress
+ * - 'failed': overview generation failed (may retry)
  */
-function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
+function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' | 'failed' {
+  const lc = packet?.overview_lifecycle;
+  if (lc && typeof lc === 'object' && typeof lc.status === 'string') {
+    switch (lc.status) {
+      case 'READY': return 'ready';
+      case 'SKIPPED': return 'unavailable';
+      case 'FAILED': return 'failed';
+      case 'PENDING': return 'pending';
+      case 'NOT_REQUESTED': return 'pending';
+    }
+  }
+  // Backward compat: inspect ai_overview content
   const ai = packet?.ai_overview;
   if (!ai) return 'pending';
   const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
@@ -141,10 +291,44 @@ function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
  * Apply the publish gate to a feed item.
  * Returns the gate result and optionally mutates item to 'failed' status.
  */
-function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
+function applyPublishGate(
+  item: FeedItem,
+  packet: any,
+  row?: any,
+  importanceScore?: number,
+  topicKey?: string | null,
+  topicConfidence?: number | null,
+): PublishGateResult {
   const ai = packet?.ai_overview;
   const hasDisclaimer = typeof ai?.why === 'string'
     && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
+
+  // Extract page_types from articles (contentType maps to page_type heuristic)
+  // Since non-article pages are blocked at ingestion, all surviving articles are ARTICLE.
+  // This serves as defense-in-depth for any that slip through.
+  const pageTypes: string[] | undefined = row?.eventArticles
+    ? (row.eventArticles as any[]).map((ea: any) => {
+        const ct = ea.article?.contentType;
+        // Map contentType to page_type for publish gate (best-effort without URL re-analysis)
+        if (ct === 'institutional_static' || ct === 'institutional') return ct;
+        return 'ARTICLE';
+      })
+    : undefined;
+
+  // Extract title_alignment from coherence metrics if available
+  const coherenceGate = packet?.coherence_gate;
+  const titleAlignment: number | null = coherenceGate?.metrics?.title_jaccard ?? null;
+
+  // Evidence fields for title_align bypass — read from quality_flags (populated by claim extraction)
+  const supportedCount: number =
+    packet?.quality_flags?.supported_count ??
+    packet?.claims_supported_count ??
+    packet?.facts_packet?.supported_count ??
+    0;
+  const evidenceRate: number =
+    packet?.quality_flags?.evidence_rate ??
+    packet?.evidence_rate ??
+    0;
 
   const gateResult = evaluatePublishGate({
     unique_sources_count: item.unique_sources_count ?? 0,
@@ -152,6 +336,15 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
     key_facts_count: item.key_facts_count ?? 0,
     overview_status: item.overview_status ?? 'pending',
     has_disclaimer: hasDisclaimer,
+    page_types: pageTypes,
+    title_alignment: titleAlignment,
+    importance_score: importanceScore ?? null,
+    topic_key: topicKey ?? null,
+    topic_confidence: topicConfidence ?? null,
+    allowed_topics: FEED_ALLOWED_TOPICS.length > 0 ? FEED_ALLOWED_TOPICS : undefined,
+    headline: item.headline,
+    supported_count: supportedCount,
+    evidence_rate: evidenceRate,
   });
 
   if (!gateResult.eligible) {
@@ -174,8 +367,171 @@ function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
  * Build a FeedItem from a DB row, applying gate and fallback logic.
  */
 function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
+  // ── Coherence gate (block incoherent clusters) ─────────────────────
+  const latestVersionForCoherence = row.versions?.[0] ?? null;
+  const packetForCoherence = (latestVersionForCoherence?.packetJson as any) ?? {};
+  const coherenceGate = packetForCoherence.coherence_gate;
+  if (coherenceGate && coherenceGate.status === 'FAIL') {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersionForCoherence?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      overview_status: 'failed',
+      why_no_overview: `Coherence gate failed: ${coherenceGate.failed_checks?.join(', ') ?? 'unknown'}`,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['COHERENCE_GATE_FAILED', ...(coherenceGate.failed_checks ?? [])] };
+  }
+
+  // ── Institutional content gate (before building the full item) ─────
+  const institutionalCheck = isInstitutionalEvent(row);
+  if (institutionalCheck.excluded) {
+    // Build a minimal item for logging but mark as ineligible
+    const latestVersion = row.versions?.[0] ?? null;
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: [institutionalCheck.reason] };
+  }
+
+  // ── Split proxy quarantine gate ─────────────────────────────────
+  if (FEED_SPLIT_PROXY_QUARANTINE_ENABLED) {
+    const splitArticles = (row.eventArticles ?? []).map((ea: any) => ({
+      title: ea.article?.title ?? null,
+      url: ea.article?.url ?? null,
+      contentType: ea.article?.contentType ?? null,
+    }));
+    const splitResult = detectIntraSplitProxy(splitArticles);
+    if (splitResult.split_proxy) {
+      const latestV = row.versions?.[0] ?? null;
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: latestV?.headline ?? null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+        overview_status: 'failed',
+        why_no_overview: `Split proxy quarantine: ${splitResult.reasons.join(', ')}`,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['SPLIT_PROXY_QUARANTINE', ...splitResult.reasons] };
+    }
+  }
+
+  // ── Podcast gate (block podcast/audio content) ────────────────────
+  const allArticlesRaw = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const eventHeadlineRaw = row.versions?.[0]?.headline ?? '';
+  if (PODCAST_HEADLINE_RE.test(eventHeadlineRaw)) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: eventHeadlineRaw || null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_FORMAT_BLOCKED:PODCAST'] };
+  }
+  // Check if any article URL matches podcast patterns
+  for (const art of allArticlesRaw) {
+    const ptResult = classifyPageType({ url: art.url ?? '', title: art.title ?? null });
+    if (ptResult.pageType === 'PODCAST') {
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: eventHeadlineRaw || null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_FORMAT_BLOCKED:PODCAST'] };
+    }
+  }
+
   const latestVersion = row.versions?.[0] ?? null;
   const packet = (latestVersion?.packetJson as any) ?? {};
+
+  // ── Topic classification (multi-article voting) ─────────────────
+  const headline = latestVersion?.headline ?? '';
+  const aiWhText = Array.isArray(packet.ai_overview?.what_happened)
+    ? packet.ai_overview.what_happened.join(' ')
+    : '';
+  const articleInputs = (row.eventArticles ?? []).map((ea: any) => ({
+    title: ea.article?.title ?? null,
+    url: ea.article?.url ?? null,
+    contentType: ea.article?.contentType ?? null,
+  }));
+  const topicResult = aggregateEventTopic(headline, articleInputs, aiWhText || null);
+  const topicKey = topicResult.topic_key;
+  const topicConfidence = topicResult.topic_confidence;
+
+  // ── Topic filter (early exit before building full item) ──────────
+  if (FEED_TOPIC_FILTER_ENABLED && FEED_ALLOWED_TOPICS.length > 0) {
+    if (!FEED_ALLOWED_TOPICS.includes(topicKey)) {
+      const minimalItem: FeedItem = {
+        event_id: row.id,
+        state: row.state,
+        headline: headline || null,
+        t_last: row.tLast?.toISOString() ?? null,
+        published_at: row.publishedAt?.toISOString() ?? null,
+        cover_image_url: null,
+        topic_key: topicKey,
+      };
+      return { item: minimalItem, eligible: false, gateReasons: ['TOPIC_FILTERED'] };
+    }
+  }
+
+  // ── Source quality policy (representative article = longest text, prefer news) ──
+  const allArticlesForPolicy = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const sortedForRep = [...allArticlesForPolicy].sort((a: any, b: any) => {
+    const aCt = a.contentType === 'news' ? 0 : 1;
+    const bCt = b.contentType === 'news' ? 0 : 1;
+    if (aCt !== bCt) return aCt - bCt;
+    return (b.textContentLen ?? 0) - (a.textContentLen ?? 0);
+  });
+  const repMediaKey: string = sortedForRep[0]?.media?.mediaKey ?? 'unknown';
+  const sourcePolicy = getSourceQualityPolicy(repMediaKey);
+
+  // Source policy gate: allow_in_feed
+  if (!sourcePolicy.allow_in_feed) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      source_tier: sourcePolicy.source_tier,
+      source_mode: sourcePolicy.source_mode,
+      source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_POLICY_BLOCKED'] };
+  }
+
+  // Source policy gate: single_source_allowed
+  const uniqueMediaKeys = new Set(allArticlesForPolicy.map((a: any) => a.media?.mediaKey ?? 'unknown'));
+  if (uniqueMediaKeys.size === 1 && !sourcePolicy.single_source_allowed) {
+    const minimalItem: FeedItem = {
+      event_id: row.id,
+      state: row.state,
+      headline: latestVersion?.headline ?? null,
+      t_last: row.tLast?.toISOString() ?? null,
+      published_at: row.publishedAt?.toISOString() ?? null,
+      cover_image_url: null,
+      source_tier: sourcePolicy.source_tier,
+      source_mode: sourcePolicy.source_mode,
+      source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    };
+    return { item: minimalItem, eligible: false, gateReasons: ['SOURCE_SINGLE_SOURCE_BLOCKED'] };
+  }
+
   const teaser: string | null = packet.ai_teaser || null;
   const item: FeedItem = {
     event_id: row.id,
@@ -186,9 +542,61 @@ function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReaso
     cover_image_url: teaser,
     ai_overview: extractAiOverview(packet),
     overview_status: deriveOverviewStatus(packet),
+    topic_key: topicKey,
+    topic_confidence: topicConfidence,
+    source_tier: sourcePolicy.source_tier,
+    source_mode: sourcePolicy.source_mode,
+    source_policy_multiplier: sourcePolicy.ranking_multiplier,
+    representative_media_key: repMediaKey,
     ...enrichFeedItem(row, packet),
   };
-  const gate = applyPublishGate(item, packet);
+
+  // ── Importance score v2 (multi vs single formula) ────────────────
+  const hoursAge = row.publishedAt
+    ? (Date.now() - new Date(row.publishedAt).getTime()) / (3600 * 1000)
+    : null;
+  const importanceScore = computeImportanceScore({
+    topic_key: topicKey,
+    text_len: item.total_usable_text_len ?? 0,
+    hours_since_published: hoursAge,
+    unique_sources_count: item.unique_sources_count ?? 1,
+  });
+  item.importance_score = importanceScore;
+
+  const gate = applyPublishGate(item, packet, row, importanceScore, topicKey, topicConfidence);
+
+  // Apply demotion multiplier (affects ranking, not eligibility)
+  if (gate.eligible) {
+    const demotion = computeDemotionMultiplier({
+      unique_sources_count: item.unique_sources_count ?? 1,
+      topic_confidence: topicConfidence,
+      topic_key: topicKey,
+      total_usable_text_len: item.total_usable_text_len ?? 0,
+    });
+    item.demotion_multiplier = demotion.multiplier;
+    item.demotion_reasons = demotion.reasons;
+
+    // v3 topic-first ranking score
+    const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+    const now6h = Date.now() - 6 * 60 * 60 * 1000;
+    const momentum6h = (row.eventArticles ?? []).filter(
+      (ea: any) => ea.createdAt && new Date(ea.createdAt).getTime() >= now6h,
+    ).length;
+    const v3 = computePublicImportanceV3({
+      topic_key: topicKey,
+      topic_confidence: topicConfidence,
+      num_sources_unique: item.unique_sources_count ?? 1,
+      num_articles: articles.length,
+      momentum_6h: momentum6h,
+      demotion_multiplier: demotion.multiplier,
+    });
+    item.public_importance_v3_raw = v3.raw;
+    // Apply source policy multiplier + extra demotion for ANALYSIS mode
+    const analysisFactor = sourcePolicy.source_mode === 'ANALYSIS' ? ANALYSIS_MODE_DEMOTION : 1.0;
+    const v3Final = Math.round(v3.final * sourcePolicy.ranking_multiplier * analysisFactor * 1000) / 1000;
+    item.public_importance_v3_final = v3Final;
+    item.public_importance_v3_components = v3.components;
+  }
 
   // Fallback overview for non-ready items that pass the gate
   if (gate.eligible && item.overview_status !== 'ready' && !item.ai_overview) {
@@ -224,6 +632,21 @@ function logGatedItems(
       })),
     }, 'feed_publish_gate_filtered');
   }
+}
+
+/**
+ * Sort feed items by public_importance_v3_final descending, with recency tiebreaker.
+ */
+function sortByV3(items: Array<{ item: FeedItem }>): void {
+  items.sort((a, b) => {
+    const aScore = a.item.public_importance_v3_final ?? 0;
+    const bScore = b.item.public_importance_v3_final ?? 0;
+    if (Math.abs(bScore - aScore) > 1e-9) return bScore - aScore;
+    // Recency tiebreaker: more recent first
+    const aTs = a.item.published_at ? new Date(a.item.published_at).getTime() : 0;
+    const bTs = b.item.published_at ? new Date(b.item.published_at).getTime() : 0;
+    return bTs - aTs;
+  });
 }
 
 const PAGE_SIZE = 20;
@@ -281,15 +704,22 @@ export class FeedService {
     const gated = allRankedItems.filter((r) => !r.eligible);
     logGatedItems(allRankedItems.length, eligible, gated);
 
-    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
+    // v3: re-sort eligible items by public_importance_v3_final desc, recency tiebreaker
+    sortByV3(eligible);
+
+    // Composition: apply editorial rules to top 10, then append rest
+    const allEligibleItems = eligible.map((r) => r.item);
+    const composition = composeFeedTopN(allEligibleItems);
+    const composedItems = [...composition.topItems, ...composition.restItems];
+    const feedItems = composedItems.slice(0, PAGE_SIZE);
 
     // Cursor for page 2+: fall back to chronological after ranked page 1
     let next_cursor: string | null = null;
-    if (eligible.length > PAGE_SIZE) {
-      const lastIdx = PAGE_SIZE - 1;
-      const lastRow = rankedRows[scored.findIndex((s) => s.eventId === eligible[lastIdx].item.event_id)] ?? rankedRows[lastIdx];
+    if (composedItems.length > PAGE_SIZE) {
+      const lastItem = feedItems[feedItems.length - 1];
+      const lastRow = rankedRows.find((r: any) => r.id === lastItem.event_id) ?? rankedRows[rankedRows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[lastIdx].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {
@@ -320,13 +750,21 @@ export class FeedService {
     const gated = allItems.filter((r) => !r.eligible);
     logGatedItems(allItems.length, eligible, gated);
 
-    const feedItems = eligible.slice(0, PAGE_SIZE).map((r) => r.item);
+    // v3: sort eligible items by public_importance_v3_final desc, recency tiebreaker
+    sortByV3(eligible);
+
+    // Composition: apply editorial rules to top 10, then append rest
+    const allEligibleItems = eligible.map((r) => r.item);
+    const composition = composeFeedTopN(allEligibleItems);
+    const composedItems = [...composition.topItems, ...composition.restItems];
+    const feedItems = composedItems.slice(0, PAGE_SIZE);
 
     let next_cursor: string | null = null;
-    if (eligible.length > PAGE_SIZE) {
-      const lastRow = rows.find((r: any) => r.id === eligible[PAGE_SIZE - 1].item.event_id) ?? rows[rows.length - 1];
+    if (composedItems.length > PAGE_SIZE) {
+      const lastItem = feedItems[feedItems.length - 1];
+      const lastRow = rows.find((r: any) => r.id === lastItem.event_id) ?? rows[rows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[PAGE_SIZE - 1].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {

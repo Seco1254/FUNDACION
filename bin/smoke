@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bin/smoke — end-to-end smoke test: reset-db → scrape → wait publish → validate feed
 # Usage: ./bin/smoke [--skip-reset]
+#   SMOKE_FAST=1 ./bin/smoke   — skip real scraping, use seed data only
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,6 +25,8 @@ fi
 BACKEND_URL="${BACKEND_URL:-http://localhost:${PORT:-3000}}"
 PUBLISH_TIMEOUT="${PUBLISH_TIMEOUT:-120}"
 PUBLISH_MIN="${PUBLISH_MIN:-5}"
+SCRAPE_TIMEOUT="${SCRAPE_TIMEOUT:-90}"
+FEED_MIN="${FEED_MIN:-1}"
 
 # ── Helpers ────────────────────────────────────────────────────────
 ts() { date '+%H:%M:%S'; }
@@ -39,6 +42,32 @@ ok() {
 
 info() {
   echo "🔄 $(ts) $1"
+}
+
+warn() {
+  echo "⚠️  $(ts) $1"
+}
+
+# Parse simple JSON field via node: json_field '.field.path'
+json_field() {
+  local field="$1"
+  node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      try { const v=JSON.parse(d)${field}; console.log(v===undefined||v===null?'':v); }
+      catch { console.log(''); }
+    });
+  "
+}
+
+# Evaluate arbitrary JS expression on parsed JSON: json_eval 'j => expr'
+json_eval() {
+  local expr="$1"
+  node -e "
+    let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
+      try { const j=JSON.parse(d); const fn=${expr}; console.log(fn(j)); }
+      catch { console.log(''); }
+    });
+  "
 }
 
 # ── Check backend is running ───────────────────────────────────────
@@ -57,20 +86,51 @@ else
   info "Skipping database reset (--skip-reset)"
 fi
 
-# ── Step 2: Trigger scrape ─────────────────────────────────────────
-info "Triggering scrape via POST $BACKEND_URL/v1/debug/scrape/run ..."
-SCRAPE_RESP=$(curl -sf -X POST "$BACKEND_URL/v1/debug/scrape/run" 2>&1) || die "Scrape request failed (is backend running?)"
+# ── SMOKE_FAST mode: skip real scraping ────────────────────────────
+if [ "${SMOKE_FAST:-}" = "1" ]; then
+  info "SMOKE_FAST=1 — skipping real scrape, using seed data only"
+else
+  # ── Step 2: Trigger scrape (async — returns job_id) ──────────────
+  info "Triggering scrape via POST $BACKEND_URL/v1/debug/scrape/run ..."
+  SCRAPE_RESP=$(curl -sf --max-time 10 -X POST "$BACKEND_URL/v1/debug/scrape/run" 2>&1) \
+    || die "Scrape request failed (is backend running?). Hint: check server logs."
 
-DISCOVERED=$(echo "$SCRAPE_RESP" | node -e "
-  let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
-    try { console.log(JSON.parse(d).discovered ?? 0); }
-    catch { console.log(0); }
-  });
-")
-ok "Scrape complete — discovered: $DISCOVERED articles"
+  JOB_ID=$(echo "$SCRAPE_RESP" | json_field '.job_id')
+  if [ -z "$JOB_ID" ]; then
+    die "No job_id in scrape response. Response: $SCRAPE_RESP"
+  fi
+  ok "Scrape accepted — job_id: $JOB_ID"
 
-if [ "$DISCOVERED" -eq 0 ]; then
-  echo "⚠️  No articles discovered. Check internet connectivity and scraper config."
+  # ── Step 2b: Poll scrape job until done/failed ───────────────────
+  info "Polling scrape job status (timeout: ${SCRAPE_TIMEOUT}s) ..."
+  SCRAPE_ELAPSED=0
+  SCRAPE_POLL=2
+  SCRAPE_STATE=""
+
+  while [ "$SCRAPE_ELAPSED" -lt "$SCRAPE_TIMEOUT" ]; do
+    STATUS_RESP=$(curl -sf --max-time 5 "$BACKEND_URL/v1/debug/scrape/status?job_id=$JOB_ID" 2>&1) || true
+
+    if [ -n "$STATUS_RESP" ]; then
+      SCRAPE_STATE=$(echo "$STATUS_RESP" | json_field '.state')
+
+      if [ "$SCRAPE_STATE" = "done" ]; then
+        DISCOVERED=$(echo "$STATUS_RESP" | json_field '.discovered')
+        ok "Scrape done — discovered: ${DISCOVERED:-0} articles"
+        break
+      elif [ "$SCRAPE_STATE" = "failed" ]; then
+        SCRAPE_ERROR=$(echo "$STATUS_RESP" | json_field '.error')
+        die "Scrape failed: ${SCRAPE_ERROR:-unknown}. Check server logs for job_id=$JOB_ID"
+      fi
+    fi
+
+    echo "   ⏳ $(ts) scrape ${SCRAPE_STATE:-unknown}... (${SCRAPE_ELAPSED}s / ${SCRAPE_TIMEOUT}s)"
+    sleep "$SCRAPE_POLL"
+    SCRAPE_ELAPSED=$((SCRAPE_ELAPSED + SCRAPE_POLL))
+  done
+
+  if [ "$SCRAPE_ELAPSED" -ge "$SCRAPE_TIMEOUT" ]; then
+    die "Scrape timed out after ${SCRAPE_TIMEOUT}s (state: ${SCRAPE_STATE:-unknown}). Check server logs for job_id=$JOB_ID. Hint: review SCRAPE_TIMEOUT_MS and SCRAPE_MEDIA_TIMEOUT_MS env vars."
+  fi
 fi
 
 # ── Step 3: Wait for events to reach PUBLISHED ─────────────────────
@@ -112,26 +172,55 @@ fi
 info "Validating feed at GET $BACKEND_URL/v1/feed?tab=global ..."
 FEED_RESP=$(curl -sf "$BACKEND_URL/v1/feed?tab=global" 2>&1) || die "Feed request failed"
 
-FEED_LENGTH=$(echo "$FEED_RESP" | node -e "
+FEED_LENGTH=$(echo "$FEED_RESP" | json_eval 'j => (j.items || j.data || []).length')
+FEED_LENGTH="${FEED_LENGTH//[^0-9]/}"
+FEED_LENGTH="${FEED_LENGTH:-0}"
+
+EMPTY_REASON=$(echo "$FEED_RESP" | json_field '.empty_reason')
+
+if [ "$FEED_LENGTH" -ge "$FEED_MIN" ]; then
+  ok "Feed has $FEED_LENGTH items (>= $FEED_MIN)"
+else
+  if [ -n "$EMPTY_REASON" ] && [ "$EMPTY_REASON" != "" ]; then
+    die "Feed has $FEED_LENGTH items (need >= $FEED_MIN). empty_reason: $EMPTY_REASON"
+  else
+    die "Feed has $FEED_LENGTH items (need >= $FEED_MIN). Events may be published but gate-filtered."
+  fi
+fi
+
+# ── Step 4b: Validate no garbage in feed ───────────────────────────
+info "Checking feed items for garbage content ..."
+GARBAGE_COUNT=$(echo "$FEED_RESP" | node -e "
   let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
-    try { const j=JSON.parse(d); console.log((j.items||j.data||[]).length); }
-    catch { console.log(0); }
+    try {
+      const j = JSON.parse(d);
+      const items = j.items || j.data || [];
+      let garbage = 0;
+      for (const item of items) {
+        const h = (item.headline || '').toLowerCase();
+        if (/noticias,?\s*fotos\s*y\s*videos\s*de/i.test(h)) garbage++;
+        if (item.overview_status === 'failed') garbage++;
+      }
+      console.log(garbage);
+    } catch { console.log(0); }
   });
 ")
+GARBAGE_COUNT="${GARBAGE_COUNT//[^0-9]/}"
+GARBAGE_COUNT="${GARBAGE_COUNT:-0}"
 
-if [ "$FEED_LENGTH" -ge 1 ]; then
-  ok "Feed has $FEED_LENGTH items"
+if [ "$GARBAGE_COUNT" -eq 0 ]; then
+  ok "No garbage items in feed"
 else
-  die "Feed is empty (0 items). Events may be published but feed query may have issues."
+  warn "$GARBAGE_COUNT items with failed/garbage status in feed (non-blocking)"
 fi
 
 # ── Step 5: Summary ───────────────────────────────────────────────
 echo ""
-echo "╔══════════════════════════════════════════════╗"
-echo "║           SMOKE TEST SUMMARY                 ║"
-echo "╠══════════════════════════════════════════════╣"
+echo "╔══════════════════════════════════════════════════╗"
+echo "║             SMOKE TEST SUMMARY                   ║"
+echo "╠══════════════════════════════════════════════════╣"
 
-# Counts via prisma/psql
+# Counts via psql/prisma
 query_count() {
   local sql="$1"
   if command -v psql > /dev/null 2>&1; then
@@ -142,23 +231,33 @@ query_count() {
 }
 
 MEDIA_COUNT=$(query_count "SELECT COUNT(*) FROM media")
+ART_TOTAL=$(query_count "SELECT COUNT(*) FROM article")
 ART_POLICY_OK=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'POLICY_OK'")
 ART_BLOCKED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'POLICY_BLOCKED'")
 ART_NORMALIZED=$(query_count "SELECT COUNT(*) FROM article WHERE status = 'NORMALIZED'")
+EVT_DETECTED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'DETECTED'")
 EVT_PENDING=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PENDING_PUBLISH'")
 EVT_PUBLISHED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'PUBLISHED'")
 EVT_CLOSED=$(query_count "SELECT COUNT(*) FROM event WHERE state = 'CLOSED'")
+PAGE_TYPE_BLOCKS=$(query_count "SELECT COUNT(*) FROM audit_log WHERE action = 'PAGE_TYPE_BLOCKED'")
 
-echo "║  Media:              ${MEDIA_COUNT}"
-echo "║  Articles:"
-echo "║    POLICY_OK:        ${ART_POLICY_OK}"
-echo "║    POLICY_BLOCKED:   ${ART_BLOCKED}"
-echo "║    NORMALIZED:       ${ART_NORMALIZED}"
+echo "║  Media sources:       ${MEDIA_COUNT}"
+echo "║  Articles:            ${ART_TOTAL}"
+echo "║    POLICY_OK:         ${ART_POLICY_OK}"
+echo "║    POLICY_BLOCKED:    ${ART_BLOCKED}"
+echo "║    NORMALIZED:        ${ART_NORMALIZED}"
+echo "║  Page-type blocked:   ${PAGE_TYPE_BLOCKS}"
 echo "║  Events:"
-echo "║    PENDING_PUBLISH:  ${EVT_PENDING}"
-echo "║    PUBLISHED:        ${EVT_PUBLISHED}"
-echo "║    CLOSED:           ${EVT_CLOSED}"
-echo "║  Feed items:         ${FEED_LENGTH}"
-echo "╚══════════════════════════════════════════════╝"
+echo "║    DETECTED:          ${EVT_DETECTED}"
+echo "║    PENDING_PUBLISH:   ${EVT_PENDING}"
+echo "║    PUBLISHED:         ${EVT_PUBLISHED}"
+echo "║    CLOSED:            ${EVT_CLOSED}"
+echo "║  Feed:"
+echo "║    Items returned:    ${FEED_LENGTH}"
+echo "║    Garbage filtered:  ${GARBAGE_COUNT}"
+if [ -n "$EMPTY_REASON" ] && [ "$EMPTY_REASON" != "" ]; then
+echo "║    Empty reason:      ${EMPTY_REASON}"
+fi
+echo "╚══════════════════════════════════════════════════╝"
 echo ""
 ok "Smoke test PASSED"

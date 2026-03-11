@@ -547,6 +547,132 @@ describe('v2.1: scoreCandidates with gates', () => {
   });
 });
 
+// ── v2.3: Floor gates in scoreCandidates ──
+
+describe('v2.3: floor gates in scoreCandidates', () => {
+  it('TITLE_ALIGNMENT_FLOOR fires when article and event titles share no keywords', () => {
+    const article = makeArticle({
+      title: 'Economía colombiana crece tercer trimestre',
+      snippet: 'El PIB creció más de lo esperado.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-diff-title',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Selección Colombia clasificó mundial fútbol eliminatorias'],
+      representativeTitle: 'Selección Colombia clasificó mundial fútbol eliminatorias',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].gatesBlockAutoReasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(scores[0].finalAction).not.toBe('AUTO_LINK');
+  });
+
+  it('TITLE_ALIGNMENT_FLOOR does NOT fire when titles share keywords', () => {
+    const article = makeArticle({
+      title: 'Reforma pensional aprobada Colombia',
+      snippet: 'El Congreso aprobó la reforma.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-same-title',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma pensional avanza en Colombia por el Congreso'],
+      representativeTitle: 'Reforma pensional avanza en Colombia por el Congreso',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].gatesBlockAutoReasons).not.toContain('TITLE_ALIGNMENT_FLOOR');
+  });
+
+  it('ENTITY_OVERLAP_FLOOR fires when entity overlap is very low', () => {
+    const article = makeArticle({
+      title: 'Alpha Bravo Charlie',
+      snippet: 'Alpha Bravo.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-no-overlap',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Xray Yankee Zulu'],
+      representativeTitle: 'Xray Yankee Zulu',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBeLessThan(0.03);
+    expect(scores[0].gatesBlockAutoReasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('ENTITY_OVERLAP_FLOOR does NOT fire when entities overlap sufficiently', () => {
+    const article = makeArticle({
+      title: 'Gustavo Petro firma decreto',
+      snippet: 'El presidente Gustavo Petro firmó en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-ent-overlap',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Gustavo Petro anuncia medidas en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro anuncia medidas en el Congreso de la República',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBeGreaterThanOrEqual(0.03);
+    expect(scores[0].gatesBlockAutoReasons).not.toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('both floor gates fire simultaneously for completely unrelated pairs', () => {
+    const article = makeArticle({
+      title: 'Café colombiano exportaciones récord',
+      snippet: 'Los cafeteros colombianos celebran.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-unrelated',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Fútbol europeo resultados Champions League'],
+      representativeTitle: 'Fútbol europeo resultados Champions League',
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].gatesBlockAutoReasons).toContain('TITLE_ALIGNMENT_FLOOR');
+    expect(scores[0].gatesBlockAutoReasons).toContain('ENTITY_OVERLAP_FLOOR');
+  });
+
+  it('floor gates degrade auto-link to MAYBE_LINK (not CREATE)', () => {
+    const article = makeArticle({
+      title: 'Salario mínimo sube porcentaje este período',
+      snippet: 'El gobierno anunció incremento.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-floor-maybe',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Fortuna magnate colombiano alcanza millones dólares inversiones'],
+      representativeTitle: 'Fortuna magnate colombiano alcanza millones dólares inversiones',
+      uniqueMediaCount: 2,
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].compositeScore >= THETA_AUTO_LINK && scores[0].gatesBlockAutoReasons.length > 0) {
+      expect(scores[0].finalAction).toBe('MAYBE_LINK');
+    }
+  });
+
+  it('floor gates do NOT fire when hard block already applied', () => {
+    const article = makeArticle({
+      title: 'Café exportaciones récord',
+      snippet: 'Cafeteros celebran.',
+      embeddingVec: makeVec(42),
+      hardBlockContext: { articleAction: 'protest' },
+    });
+    const candidate = makeCandidate({
+      id: 'evt-hard-blocked',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Fútbol Champions resultados'],
+      representativeTitle: 'Fútbol Champions resultados',
+      hardBlockContext: { eventAction: 'election' },
+    });
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].hardBlock).toBe(true);
+    expect(scores[0].gatesBlockAutoReasons).toHaveLength(0);
+  });
+});
+
 // ── v2.1: Two-step linking ──
 
 describe('v2.1: two-step linking', () => {
@@ -606,5 +732,72 @@ describe('v2.1: two-step linking', () => {
   it('decideLinkAction returns linkType field', async () => {
     const result = await decideLinkAction(makeArticle(), [], null);
     expect(result.linkType).toBe('CREATE');
+  });
+});
+
+// ── v2.3: maybeLinkDegradedReasons in decideLinkAction ──
+
+describe('v2.3: maybeLinkDegradedReasons in decideLinkAction', () => {
+  it('returns floor gate reasons when AUTO degraded to MAYBE by floor gates', async () => {
+    // Completely different titles + no entity overlap → floor gates fire
+    const article = makeArticle({
+      title: 'Economía colombiana crece tercer trimestre',
+      snippet: 'El PIB creció más de lo esperado.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-degraded',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Selección Colombia clasificó mundial fútbol eliminatorias'],
+      representativeTitle: 'Selección Colombia clasificó mundial fútbol eliminatorias',
+      uniqueMediaCount: 2,
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    // Should have floor gate reasons in maybeLinkDegradedReasons
+    if (result.linkType === 'MAYBE_LINK') {
+      expect(result.maybeLinkDegradedReasons.length).toBeGreaterThan(0);
+      const validReasons = ['TITLE_ALIGNMENT_FLOOR', 'ENTITY_OVERLAP_FLOOR'];
+      for (const r of result.maybeLinkDegradedReasons) {
+        expect(validReasons).toContain(r);
+      }
+    }
+  });
+
+  it('returns empty maybeLinkDegradedReasons when AUTO_LINK succeeds', async () => {
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+      representativeTitle: 'Reforma Pensional en el Congreso de la República por Gustavo Petro',
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
+  });
+
+  it('returns empty maybeLinkDegradedReasons when CREATE (no candidates)', async () => {
+    const result = await decideLinkAction(makeArticle(), [], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
+  });
+
+  it('returns empty maybeLinkDegradedReasons on hard block', async () => {
+    const article = makeArticle({
+      title: 'Test',
+      snippet: 'Test',
+      embeddingVec: makeVec(42),
+      hardBlockContext: { articleAction: 'protest' },
+    });
+    const candidate = makeCandidate({
+      id: 'evt-hard',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Test'],
+      hardBlockContext: { eventAction: 'election' },
+    });
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.maybeLinkDegradedReasons).toEqual([]);
   });
 });

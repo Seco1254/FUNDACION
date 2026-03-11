@@ -51,6 +51,10 @@ import { debugLinkerRoutes } from './api/routes/debug-linker.js';
 import { debugLifecycleRoutes } from './api/routes/debug-lifecycle.js';
 import { debugMediaRoutes } from './api/routes/debug-media.js';
 import { debugPipelineRoutes } from './api/routes/debug-pipeline.js';
+import { debugCoherenceRoutes } from './api/routes/debug-coherence.js';
+import { debugRoutingRoutes } from './api/routes/debug-routing.js';
+import { debugExtractorRoutes } from './api/routes/debug-extractor.js';
+import { debugLabelsRoutes } from './api/routes/debug-labels.js';
 import { QualitySnapshotService } from './modules/quality/service/quality-snapshot.js';
 import { createPublishedHandler } from './modules/overview/service/ai-enrichment.js';
 
@@ -166,7 +170,7 @@ export function buildApp() {
   const llmClient = new LlmClient();
   const llm = llmClient.isAvailable() ? llmClient : null;
   if (llm) {
-    logger.info('llm_client_available');
+    logger.info({ provider: llmClient.activeProvider, model: process.env.OPENAI_MODEL ?? process.env.LLM_MODEL ?? 'default' }, 'llm_client_available');
   } else {
     logger.info('llm_client_unavailable_heuristic_mode');
   }
@@ -266,6 +270,10 @@ export function buildApp() {
   app.register(debugLifecycleRoutes(lifecycleManager, eventRepo));
   app.register(debugMediaRoutes(mediaRepo));
   app.register(debugPipelineRoutes(prisma));
+  app.register(debugCoherenceRoutes(prisma));
+  app.register(debugRoutingRoutes(prisma));
+  app.register(debugExtractorRoutes(prisma));
+  app.register(debugLabelsRoutes(prisma));
 
   return { app, scheduler, lifecycleManager, eventRepo, scrapeOrchestrator, clock };
 }

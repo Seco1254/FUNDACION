@@ -7,7 +7,9 @@
 export interface KeyFact {
   text: string;
   source_id: string;
+  sources: string[];
   quote?: string;
+  context_sentence?: string;
 }
 
 export interface FactsPacket {
@@ -132,10 +134,30 @@ export function extractFacts(
     if (quotes.length === 0) continue;
 
     const topQuote = quotes[0];
+    const quoteText = topQuote.quoteText?.slice(0, 180);
+
+    // Collect all distinct media sources for this claim
+    const claimSources = [...new Set(
+      quotes
+        .map((q) => q.article?.media?.name ?? q.article?.media?.mediaKey)
+        .filter(Boolean) as string[],
+    )];
+
+    // Extract the full sentence containing the quote for narrative context
+    let contextSentence: string | undefined;
+    if (quoteText && quoteText.length > 20) {
+      // Find the sentence boundary around the quote
+      const fullQuote = topQuote.quoteText ?? '';
+      const sentences = fullQuote.split(/(?<=[.;:])\s+/).filter((s) => s.length >= 30);
+      contextSentence = sentences[0]?.slice(0, 250);
+    }
+
     keyFacts.push({
       text: claim.claimText,
       source_id: topQuote.article?.media?.mediaKey ?? 'unknown',
-      quote: topQuote.quoteText?.slice(0, 180),
+      sources: claimSources.length > 0 ? claimSources : ['unknown'],
+      quote: quoteText,
+      context_sentence: contextSentence,
     });
   }
 

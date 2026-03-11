@@ -23,6 +23,9 @@ export class ArticleRepository {
     extractionFailReason?: string | null;
     paywallDetected?: boolean;
     usableForOverview?: boolean;
+    contentType?: string | null;
+    contentTypeScore?: number | null;
+    routingDecision?: string | null;
     publishedAt?: Date | null;
     status?: string;
   }): Promise<ArticleEntity> {
@@ -38,6 +41,9 @@ export class ArticleRepository {
         extractionFailReason: data.extractionFailReason ?? null,
         paywallDetected: data.paywallDetected ?? false,
         usableForOverview: data.usableForOverview ?? false,
+        contentType: data.contentType ?? null,
+        contentTypeScore: data.contentTypeScore ?? null,
+        routingDecision: data.routingDecision ?? null,
         publishedAt: data.publishedAt ?? null,
         status: (data.status as any) ?? 'DISCOVERED',
       },

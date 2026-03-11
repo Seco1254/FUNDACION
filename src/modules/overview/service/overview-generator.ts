@@ -19,8 +19,117 @@ import { extractFacts } from '../../../core/llm/facts-extractor.js';
 import type { FactsPacket } from '../../../core/llm/facts-extractor.js';
 import { deriveTeaser } from '../../../core/llm/teaser.js';
 import { sanitizeText } from '../../text_sanitizer/sanitize.js';
+import {
+  evaluateClusterCoherence,
+  buildCoherenceGatePacket,
+  type EventCluster,
+  type CoherenceCheckResult,
+} from '../../events/coherence-gate.js';
 
+/**
+ * Minimum article text length for the LLM pipeline.
+ * The text *fallback* pipeline uses a lower threshold (200 chars) so that
+ * single-source or short articles still produce a non-empty overview when
+ * no API key is configured.
+ */
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
+const TEXT_FALLBACK_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_FALLBACK_MIN_LEN ?? '200', 10);
+
+// ── Mixed-topic tripwire ─────────────────────────────────────────────
+
+const STOP_WORDS_TRIPWIRE = new Set([
+  'el', 'la', 'los', 'las', 'un', 'una', 'de', 'del', 'al', 'en', 'con',
+  'por', 'para', 'sin', 'sobre', 'entre', 'hasta', 'desde', 'que', 'se',
+  'es', 'son', 'fue', 'hay', 'más', 'como', 'pero', 'no', 'su', 'sus',
+  'ya', 'y', 'o', 'a', 'ante', 'este', 'esta', 'estos', 'estas', 'ese',
+  'esa', 'esos', 'esas', 'lo', 'le', 'les', 'nos', 'ser', 'ha', 'han',
+  'muy', 'también', 'donde', 'cuando', 'porque', 'si', 'así', 'según',
+  'colombia', 'colombiano', 'colombiana', 'país', 'gobierno', 'año', 'años',
+]);
+
+/**
+ * Extract top meaningful terms from a text (proper nouns + key nouns).
+ * Returns a Set of lowercased terms for Jaccard comparison.
+ */
+function extractTopTerms(text: string, maxTerms = 15): Set<string> {
+  const words = text
+    .replace(/[^\wáéíóúñÁÉÍÓÚÑ\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4)
+    .map((w) => w.toLowerCase());
+
+  // Count frequency
+  const freq = new Map<string, number>();
+  for (const w of words) {
+    if (STOP_WORDS_TRIPWIRE.has(w)) continue;
+    freq.set(w, (freq.get(w) ?? 0) + 1);
+  }
+
+  // Sort by frequency descending, take top N
+  const sorted = [...freq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
+    .map(([term]) => term);
+
+  return new Set(sorted);
+}
+
+/**
+ * Compute Jaccard similarity between two Sets.
+ */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const item of a) {
+    if (b.has(item)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Detect if articles in a FactsPacket likely cover different topics.
+ * Returns true if Jaccard similarity between article term-sets is very low.
+ */
+function detectMixedTopics(
+  articles: Array<{ title: string; textNorm: string | null; mediaKey: string }>,
+): { isMixed: boolean; avgJaccard: number; evidence: string } {
+  if (articles.length < 2) {
+    return { isMixed: false, avgJaccard: 1, evidence: '' };
+  }
+
+  // Extract top terms per article
+  const termSets = articles.map((a) => {
+    const text = [a.title, (a.textNorm ?? '').slice(0, 1000)].join(' ');
+    return { mediaKey: a.mediaKey, terms: extractTopTerms(text) };
+  });
+
+  // Compute pairwise Jaccard
+  let totalJaccard = 0;
+  let pairCount = 0;
+  for (let i = 0; i < termSets.length; i++) {
+    for (let j = i + 1; j < termSets.length; j++) {
+      totalJaccard += jaccardSimilarity(termSets[i].terms, termSets[j].terms);
+      pairCount++;
+    }
+  }
+
+  const avgJaccard = pairCount > 0 ? totalJaccard / pairCount : 1;
+  const MIXED_THRESHOLD = 0.05;
+
+  if (avgJaccard < MIXED_THRESHOLD) {
+    const termSamples = termSets.map((ts) =>
+      `${ts.mediaKey}: [${[...ts.terms].slice(0, 5).join(', ')}]`,
+    ).join('; ');
+    return {
+      isMixed: true,
+      avgJaccard,
+      evidence: `Avg Jaccard=${avgJaccard.toFixed(3)}. Terms: ${termSamples}`,
+    };
+  }
+
+  return { isMixed: false, avgJaccard, evidence: '' };
+}
 
 export interface OverviewBullet {
   claim_id: string;
@@ -150,6 +259,16 @@ export class OverviewGenerator {
       };
     }
 
+    // ── Mixed-topic tripwire (pre-LLM) ──────────────────────
+    const mixedTopicResult = detectMixedTopics(articleInputs);
+    if (mixedTopicResult.isMixed) {
+      (factsPacket as any).mixed_topic_flag = true;
+      logger.info(
+        { eventId, avgJaccard: mixedTopicResult.avgJaccard, evidence: mixedTopicResult.evidence },
+        'event_possible_mixed_topic',
+      );
+    }
+
     try {
       // ── Step 2: Single LLM call — overview writer ────────────
       const overviewPrompt = buildOverviewWriterPrompt(factsPacket);
@@ -158,6 +277,11 @@ export class OverviewGenerator {
         what_happened: string[];
         context: string[];
         in_dispute: string[];
+        analisis_fuentes?: {
+          consenso?: string[];
+          desacuerdo?: string[];
+          informacion_faltante?: string[];
+        };
         confidence_label: string;
         why: string;
         fuentes: string;
@@ -194,6 +318,15 @@ export class OverviewGenerator {
 
       const heuristicOverview = this.buildOverview(claimsWithQuotes);
 
+      // Parse analisis_fuentes (backward compatible — optional field)
+      const analisisFuentes = aiOverview.analisis_fuentes && typeof aiOverview.analisis_fuentes === 'object'
+        ? {
+          consenso: Array.isArray(aiOverview.analisis_fuentes.consenso) ? aiOverview.analisis_fuentes.consenso : [],
+          desacuerdo: Array.isArray(aiOverview.analisis_fuentes.desacuerdo) ? aiOverview.analisis_fuentes.desacuerdo : [],
+          informacion_faltante: Array.isArray(aiOverview.analisis_fuentes.informacion_faltante) ? aiOverview.analisis_fuentes.informacion_faltante : [],
+        }
+        : undefined;
+
       return {
         overview: {
           gate_status: heuristicOverview.gate_status,
@@ -204,6 +337,7 @@ export class OverviewGenerator {
           what_happened: whatHappened,
           context: Array.isArray(aiOverview.context) ? aiOverview.context : [],
           in_dispute: Array.isArray(aiOverview.in_dispute) ? aiOverview.in_dispute : [],
+          ...(analisisFuentes && { analisis_fuentes: analisisFuentes }),
           confidence_label: confidenceLabel,
           why: aiOverview.why ?? '',
           fuentes: aiOverview.fuentes ?? '',
@@ -239,6 +373,68 @@ export class OverviewGenerator {
       const version = await this.versionRepo.findById(version_id);
       const existingPacket = (version?.packetJson as any) ?? {};
 
+      // ── Hard Coherence Gate (pre-overview, pre-LLM) ────────────────
+      let coherenceResult: CoherenceCheckResult | null = null;
+      if (this.eventRepo) {
+        const articlesForCoherence = await this.eventRepo.findArticlesForEvent(event_id);
+        const cluster: EventCluster = {
+          event_id,
+          headline: version?.headline ?? null,
+          articles: articlesForCoherence.map((a: any) => ({
+            id: a.id,
+            title: a.title ?? '',
+            titleRaw: a.title ?? '',
+            textNorm: a.textNorm ?? null,
+            embeddingVec: a.embeddingVec ?? null,
+          })),
+        };
+        coherenceResult = evaluateClusterCoherence(cluster);
+
+        if (!coherenceResult.passed) {
+          const gatePacket = buildCoherenceGatePacket(coherenceResult);
+
+          logger.info(
+            {
+              event_id,
+              version_id,
+              failed_checks: gatePacket.failed_checks,
+              metrics: gatePacket.metrics,
+              article_count: gatePacket.metrics.article_count,
+            },
+            'coherence_gate_blocked_overview',
+          );
+
+          // Store coherence failure in packet and skip overview generation
+          if (version) {
+            const updatedPacket = {
+              ...existingPacket,
+              coherence_gate: gatePacket,
+              overview_status: { state: 'blocked', reason: 'coherence_gate_failed' },
+            };
+            await this.versionRepo.update(version_id, {
+              packetJson: updatedPacket,
+              gateStatus: 'FAIL',
+            });
+          }
+
+          await this.auditWriter.write({
+            entity_type: 'OVERVIEW',
+            entity_id: event_id,
+            action: 'COHERENCE_GATE_BLOCKED',
+            trace_id: traceId,
+            data: {
+              version_id,
+              failed_checks: gatePacket.failed_checks,
+              metrics: gatePacket.metrics,
+              article_count: gatePacket.metrics.article_count,
+            },
+          });
+
+          // Do NOT emit OverviewGenerated — block the pipeline
+          return;
+        }
+      }
+
       // ── Dedupe: compute overview hash, skip LLM if input unchanged ──
       const existingHashes = existingPacket._ai_hashes ?? {};
       const claimsHash = existingHashes.claims_hash ?? '';
@@ -273,7 +469,7 @@ export class OverviewGenerator {
           ? { state: 'ready', reason: null }
           : { state: 'blocked', reason: 'Evidencia insuficiente' };
 
-        const updatedPacket = {
+        const updatedPacket: Record<string, unknown> = {
           ...existingPacket,
           overview: heuristicOverview,
           ai_overview: llmResult.ai_overview,
@@ -293,6 +489,9 @@ export class OverviewGenerator {
             ...existingHashes,
             overview_hash: newOverviewHash,
           },
+          ...(coherenceResult && {
+            coherence_gate: buildCoherenceGatePacket(coherenceResult),
+          }),
         };
 
         if (version) {
@@ -366,6 +565,9 @@ export class OverviewGenerator {
               ...existingHashes,
               overview_hash: newOverviewHash,
             },
+            ...(coherenceResult && {
+              coherence_gate: buildCoherenceGatePacket(coherenceResult),
+            }),
           };
 
           await this.versionRepo.update(version_id, {
@@ -441,8 +643,8 @@ export class OverviewGenerator {
    * Extracts factual sentences from the article body and organizes them into sections.
    */
   buildTextFallbackOverview(articles: Array<{ title: string; textNorm: string | null; snippet: string; url: string; mediaKey: string }>): Record<string, unknown> | null {
-    // Collect text from articles with sufficient content
-    const usable = articles.filter((a) => (a.textNorm ?? '').length >= TEXT_MIN_LEN);
+    // Collect text from articles with sufficient content (lower threshold for fallback)
+    const usable = articles.filter((a) => (a.textNorm ?? '').length >= TEXT_FALLBACK_MIN_LEN);
     if (usable.length === 0) return null;
 
     const uniqueMedia = new Set(usable.map((a) => a.mediaKey));
@@ -494,7 +696,17 @@ export class OverviewGenerator {
       }
     }
 
-    if (whatHappened.length === 0) return null;
+    // If sentence extraction found nothing, try using title + snippet directly
+    if (whatHappened.length === 0) {
+      for (const article of usable) {
+        if (article.title && article.title.length >= 20) {
+          whatHappened.push(article.title);
+          break;
+        }
+      }
+      // Still nothing usable
+      if (whatHappened.length === 0) return null;
+    }
 
     // Build "En disputa" — for single source, add a standard note
     const inDispute = ['No se identifican versiones contradictorias por ahora (evidencia limitada).'];
@@ -553,12 +765,8 @@ export class OverviewGenerator {
         // RULE: INSUFFICIENT → only in "Qué falta por confirmar"
         queFalta.push(bullet);
       } else if (claim.status === 'DISPUTED') {
-        // RULE: DISPUTED → only in "En disputa", must include >=2 citations
-        if (citations.length >= 2) {
-          enDisputa.push(bullet);
-        } else {
-          enDisputa.push(bullet);
-        }
+        // RULE: DISPUTED → "En disputa"
+        enDisputa.push(bullet);
       } else {
         // SUPPORTED claims
         if (claim.claimType === 'FACT' || claim.claimType === 'QUANT') {
