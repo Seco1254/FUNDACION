@@ -57,7 +57,7 @@ async function main() {
 
   const events = await prisma.event.findMany({
     where,
-    include: { versions: { orderBy: { createdAt: 'desc' as const }, take: 1 } },
+    include: { versions: { orderBy: { versionIndex: 'desc' as const }, take: 1 } },
     orderBy: { publishedAt: 'desc' as const },
     take: LIMIT,
   });
