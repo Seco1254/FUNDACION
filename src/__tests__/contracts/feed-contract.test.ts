@@ -28,8 +28,8 @@ describe('Feed contract', () => {
         headline: 'Test contract headline',
         packetJson: {
           ai_overview: {
-            what_happened: ['Evento de prueba para contrato.'],
-            context: ['Contexto de prueba.'],
+            what_happened: ['La reforma tributaria fue aprobada en segundo debate del Congreso.'],
+            context: ['El gobierno espera que la reforma genere nuevos ingresos fiscales.'],
             in_dispute: [],
             confidence_label: 'Alta',
           },
@@ -127,7 +127,7 @@ describe('Feed contract', () => {
       createdAt: new Date(),
       versions: [{
         id: 'v1', headline: 'H',
-        packetJson: { ai_overview: { what_happened: ['x'], context: [], in_dispute: [], confidence_label: 'INVALID' } },
+        packetJson: { ai_overview: { what_happened: ['La reforma fue aprobada en debate final por el Congreso.'], context: [], in_dispute: [], confidence_label: 'INVALID' } },
       }],
       topicAssignments: [],
       eventArticles: [{

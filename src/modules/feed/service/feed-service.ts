@@ -4,6 +4,7 @@ import type { FeedCardSource, FeedCardTopic, OverviewConfidenceLabel } from '../
 import { PRODUCT_TOPIC_LABELS, PRODUCT_TOPIC_KEYS } from '../../../contracts/product/shared.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
+import { filterAndCapBullets } from '../../overview/service/overview-generator.js';
 import { evaluatePublishGate } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { logger } from '../../../core/logging/logger.js';
@@ -33,12 +34,20 @@ function toConfidenceLabel(raw: unknown): OverviewConfidenceLabel {
   return 'No concluyente';
 }
 
+/**
+ * Extract overview from packetJson, applying bullet cleanup/cap to ALL data
+ * (including legacy events whose bullets were persisted before cleanup existed).
+ * Caps: what_happened ≤ 5, context ≤ 3, in_dispute ≤ 2.
+ */
 function extractOverview(packet: any): FeedCardOverview | null {
   const ai = packet?.ai_overview;
   if (!ai) return null;
-  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
-  const ctx = Array.isArray(ai.context) ? ai.context : [];
-  const disp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
+  const rawWh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
+  const rawCtx = Array.isArray(ai.context) ? ai.context : [];
+  const rawDisp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
+  const wh = filterAndCapBullets(rawWh, 5);
+  const ctx = filterAndCapBullets(rawCtx, 3);
+  const disp = filterAndCapBullets(rawDisp, 2);
   if (wh.length === 0 && ctx.length === 0) return null;
   return {
     status: 'ready',

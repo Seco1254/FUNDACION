@@ -18,16 +18,22 @@ export interface NonNewsResult {
 
 // ── Headline patterns that indicate non-news content ──
 
-/** Exact-match keywords (case-insensitive, full headline match or near-full) */
+/**
+ * Institutional page keywords (case-insensitive).
+ * Matches the core phrase alone OR followed by a media-name separator
+ * (e.g. " - Razón Pública", " | El Tiempo", " – FLIP").
+ * The optional tail: zero or more spaces, a separator char, then anything.
+ */
+const MEDIA_SUFFIX = String.raw`(\s*[|\-–—:]\s*.*)?`;
 const INSTITUTIONAL_EXACT: RegExp[] = [
-  /^quiénes somos$/i,
-  /^nuestros servicios$/i,
-  /^contáctenos$/i,
-  /^cont[aá]ctanos$/i,
-  /^aviso legal$/i,
-  /^trabaja con nosotros$/i,
-  /^preguntas frecuentes$/i,
-  /^mapa del sitio$/i,
+  new RegExp(`^quiénes somos${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^nuestros servicios${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^contáctenos${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^cont[aá]ctanos${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^aviso legal${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^trabaja con nosotros${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^preguntas frecuentes${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^mapa del sitio${MEDIA_SUFFIX}$`, 'i'),
 ];
 
 /** Headline contains these patterns (substring match) */
@@ -41,11 +47,22 @@ const INSTITUTIONAL_CONTAINS: RegExp[] = [
   /nuestros (servicios|principios|valores)/i,
 ];
 
-/** Podcast patterns */
+/** Podcast / serial audio-content patterns */
 const PODCAST_PATTERNS: RegExp[] = [
+  // Existing: headline starts with podcast/pódcast
   /^p[oó]dcast\s*[|:–—]/i,
   /^podcast\b/i,
+  // "Listen on Spotify/Apple/podcast" CTA
   /\b(escucha|escúchalo)\s+(en|aquí)\b.*\b(spotify|apple|podcast)\b/i,
+  // Episode at start of headline: "Ep. 5 …", "Ep 12: …"
+  /^ep\.?\s*\d+\b/i,
+  // "Episodio 12" / "Episode 5" / "Capítulo 3" followed by separator (serial format)
+  /\b(episodio|episode)\s+\d+\s*[|:–—.]/i,
+  /\bcap[ií]tulo\s+\d+\s*[|:–—.]/i,
+  // "T2E5", "T1 E3" — season+episode format (always serial)
+  /\bT\d+\s*E\d+\b/i,
+  // "Temporada 2" / "Season 3" followed by separator
+  /\b(temporada|season)\s+\d+\s*[|:–—.]/i,
 ];
 
 /** Weekly/daily digest indices (pattern: "edición del DD de MES al DD de MES") */

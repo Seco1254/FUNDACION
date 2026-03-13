@@ -27,6 +27,33 @@ describe('classifyNonNews', () => {
     it('blocks terms and conditions', () => {
       expect(classifyNonNews('Términos y condiciones de uso').isNonNews).toBe(true);
     });
+
+    // P0.1: institutional pages with media-name suffixes
+    it('blocks "Quiénes somos - Razón Pública"', () => {
+      const r = classifyNonNews('Quiénes somos - Razón Pública');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('institutional_exact');
+    });
+
+    it('blocks "Quiénes somos | El Tiempo"', () => {
+      expect(classifyNonNews('Quiénes somos | El Tiempo').isNonNews).toBe(true);
+    });
+
+    it('blocks "Quiénes Somos – FLIP"', () => {
+      expect(classifyNonNews('Quiénes Somos – FLIP').isNonNews).toBe(true);
+    });
+
+    it('blocks "Contáctenos - La Silla Vacía"', () => {
+      expect(classifyNonNews('Contáctenos - La Silla Vacía').isNonNews).toBe(true);
+    });
+
+    it('blocks "Aviso legal | Semana"', () => {
+      expect(classifyNonNews('Aviso legal | Semana').isNonNews).toBe(true);
+    });
+
+    it('blocks "Mapa del sitio: El Espectador"', () => {
+      expect(classifyNonNews('Mapa del sitio: El Espectador').isNonNews).toBe(true);
+    });
   });
 
   describe('podcasts', () => {
@@ -42,6 +69,35 @@ describe('classifyNonNews', () => {
 
     it('blocks "Podcast: entrevista con..."', () => {
       expect(classifyNonNews('Podcast: entrevista con el ministro').isNonNews).toBe(true);
+    });
+
+    // P1: expanded serial/episode patterns
+    it('blocks "Ep. 5 — La crisis económica"', () => {
+      expect(classifyNonNews('Ep. 5 — La crisis económica').isNonNews).toBe(true);
+    });
+
+    it('blocks "Ep12 El otro lado"', () => {
+      expect(classifyNonNews('Ep12 El otro lado').isNonNews).toBe(true);
+    });
+
+    it('blocks "Episodio 3: Los actores del conflicto"', () => {
+      expect(classifyNonNews('Episodio 3: Los actores del conflicto').isNonNews).toBe(true);
+    });
+
+    it('blocks "Capítulo 8. El desenlace"', () => {
+      expect(classifyNonNews('Capítulo 8. El desenlace').isNonNews).toBe(true);
+    });
+
+    it('blocks "T2E5 Entrevista con el senador"', () => {
+      expect(classifyNonNews('T2E5 Entrevista con el senador').isNonNews).toBe(true);
+    });
+
+    it('blocks "Temporada 3: Las reformas"', () => {
+      expect(classifyNonNews('Temporada 3: Las reformas').isNonNews).toBe(true);
+    });
+
+    it('blocks "Episode 10 – Special report"', () => {
+      expect(classifyNonNews('Episode 10 – Special report').isNonNews).toBe(true);
     });
   });
 
@@ -93,6 +149,23 @@ describe('classifyNonNews', () => {
 
     it('allows empty/null headline', () => {
       expect(classifyNonNews('').isNonNews).toBe(false);
+    });
+
+    // Regression: real news with words that could false-positive
+    it('allows "Nuevo episodio de violencia en Cauca"', () => {
+      expect(classifyNonNews('Nuevo episodio de violencia en Cauca').isNonNews).toBe(false);
+    });
+
+    it('allows "Capítulo del acuerdo de paz avanza en el Congreso"', () => {
+      expect(classifyNonNews('Capítulo del acuerdo de paz avanza en el Congreso').isNonNews).toBe(false);
+    });
+
+    it('allows "El servicio de salud colapsa en tres departamentos"', () => {
+      expect(classifyNonNews('El servicio de salud colapsa en tres departamentos').isNonNews).toBe(false);
+    });
+
+    it('allows "Quiénes son los responsables del colapso vial"', () => {
+      expect(classifyNonNews('Quiénes son los responsables del colapso vial').isNonNews).toBe(false);
     });
   });
 });

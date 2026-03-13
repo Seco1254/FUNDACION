@@ -125,8 +125,8 @@ describe('FeedService', () => {
           headline: 'Headline ready',
           packetJson: {
             ai_overview: {
-              what_happened: ['La reforma fue aprobada.'],
-              context: ['Contexto político.'],
+              what_happened: ['La reforma tributaria fue aprobada en segundo debate por el Congreso.'],
+              context: ['El trámite legislativo se completó tras semanas de discusión política.'],
               in_dispute: [],
               confidence_label: 'Alta',
             },
@@ -141,7 +141,7 @@ describe('FeedService', () => {
       expect(feed.items).toHaveLength(1);
       const item = feed.items[0];
       expect(item.overview.status).toBe('ready');
-      expect(item.overview.what_happened).toEqual(['La reforma fue aprobada.']);
+      expect(item.overview.what_happened).toEqual(['La reforma tributaria fue aprobada en segundo debate por el Congreso.']);
       expect(item.overview.confidence_label).toBe('Alta');
     });
 
@@ -231,8 +231,8 @@ describe('FeedService', () => {
           headline: 'Test headline',
           packetJson: {
             ai_overview: {
-              what_happened: ['La reforma fue aprobada por el Congreso.'],
-              context: ['Trámite legislativo completado.'],
+              what_happened: ['La reforma tributaria fue aprobada en segundo debate por el Congreso colombiano.'],
+              context: ['El trámite legislativo se completó tras semanas de negociación política.'],
               in_dispute: [],
               confidence_label: 'Alta',
             },
@@ -245,7 +245,7 @@ describe('FeedService', () => {
       expect(feed2.items).toHaveLength(1);
       expect(feed2.items[0].event_id).toBe('evt-1');
       expect(feed2.items[0].overview.status).toBe('ready');
-      expect(feed2.items[0].overview.what_happened).toEqual(['La reforma fue aprobada por el Congreso.']);
+      expect(feed2.items[0].overview.what_happened).toEqual(['La reforma tributaria fue aprobada en segundo debate por el Congreso colombiano.']);
       expect(feed2.items[0].overview.confidence_label).toBe('Alta');
     });
   });
@@ -293,6 +293,97 @@ describe('FeedService', () => {
       const feed = await service.getFeed();
       expect(feed.items).toEqual([]);
       expect(feed.meta.empty_reason).toBe('no_events');
+    });
+  });
+
+  describe('legacy data cleanup (P0.2)', () => {
+    it('caps what_happened to 5 bullets from legacy data with 40+ bullets', () => {
+      const legacyBullets = Array.from({ length: 40 }, (_, i) =>
+        `Este es el bullet número ${i + 1} sobre la reforma tributaria.`,
+      );
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Reforma tributaria',
+          packetJson: {
+            ai_overview: {
+              what_happened: legacyBullets,
+              context: ['Contexto relevante sobre el trámite legislativo actual.'],
+              in_dispute: [],
+              confidence_label: 'Alta',
+            },
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      return service.getFeed().then((feed) => {
+        expect(feed.items).toHaveLength(1);
+        expect(feed.items[0].overview.what_happened.length).toBeLessThanOrEqual(5);
+        expect(feed.items[0].overview.context.length).toBeLessThanOrEqual(3);
+      });
+    });
+
+    it('filters noisy/short bullets from legacy data', () => {
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Evento legacy',
+          packetJson: {
+            ai_overview: {
+              what_happened: [
+                'La reforma fue aprobada en segundo debate por el Congreso colombiano.',
+                'xy',  // too short (< 30 chars)
+                'https://example.com/image.jpg',  // noise: bare URL
+                'Lea también noticias sobre economía en nuestra sección especial.',  // noise: navigation
+                'El presidente anunció cambios en política de seguridad nacional.',
+              ],
+              context: ['Compartir en redes sociales este contenido importante.'],  // noise: action button pattern
+              in_dispute: [],
+              confidence_label: 'Media',
+            },
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      return service.getFeed().then((feed) => {
+        const ov = feed.items[0].overview;
+        expect(ov.what_happened).toEqual([
+          'La reforma fue aprobada en segundo debate por el Congreso colombiano.',
+          'El presidente anunció cambios en política de seguridad nacional.',
+        ]);
+        expect(ov.context).toEqual([]); // noise bullet filtered out
+      });
+    });
+
+    it('truncates overly long legacy bullets to 500 chars', () => {
+      const longBullet = 'A'.repeat(600);
+      const row = makeMockRow({
+        versions: [{
+          id: 'ver-1',
+          headline: 'Evento largo',
+          packetJson: {
+            ai_overview: {
+              what_happened: [longBullet],
+              context: [],
+              in_dispute: [],
+              confidence_label: 'Baja',
+            },
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      return service.getFeed().then((feed) => {
+        const wh = feed.items[0].overview.what_happened;
+        expect(wh).toHaveLength(1);
+        expect(wh[0].length).toBeLessThanOrEqual(500);
+        expect(wh[0].endsWith('…')).toBe(true);
+      });
     });
   });
 
