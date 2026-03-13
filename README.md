@@ -165,12 +165,15 @@ so events appear in the feed within seconds. Override via `.env` or shell.
 
 ## API Endpoints
 
-| Method | Path               | Description         |
-|--------|--------------------|--------------------|
-| GET    | `/v1/health`       | Health check        |
-| GET    | `/v1/tabs`         | Navigation tabs     |
-| GET    | `/v1/feed`         | Event feed (cursor) |
-| GET    | `/v1/events/:id`   | Event detail        |
+| Method | Path               | Description                  |
+|--------|--------------------|------------------------------|
+| GET    | `/v1/health`       | Health check                 |
+| GET    | `/v1/tabs`         | Navigation tabs              |
+| GET    | `/v1/feed`         | Event feed (cursor+ranking)  |
+| GET    | `/v1/events/:id`   | Event detail                 |
+| GET    | `/v1/topics`       | Topics with event counts     |
+| GET    | `/v1/search?q=`    | Search events by headline    |
+| GET    | `/v1/metrics`      | Prometheus / JSON metrics    |
 
 ## Architecture
 
@@ -193,3 +196,65 @@ npm test
 # DB integration tests require DATABASE_URL set and Postgres running
 DATABASE_URL=postgresql://fundacion:fundacion@localhost:5433/fundacion_test npm test
 ```
+
+## Phase 1 — Backend Product Readiness Validation
+
+### Scraper interval (10 min)
+
+The scraper runs automatically every 10 minutes. Configured via:
+
+- **Code default**: `SCRAPE_INTERVAL_MS` defaults to `600000` (10 min) in `src/server.ts`
+- **`.env.example`**: `SCRAPE_INTERVAL_MS=600000`
+- **Override**: set `SCRAPE_INTERVAL_MS` in `.env` to any value in milliseconds
+
+To verify the effective interval:
+```bash
+# Check .env value
+grep SCRAPE_INTERVAL_MS .env
+
+# Check scheduler state at runtime (requires running server)
+curl -s http://localhost:3000/v1/debug/scheduler | node -e "
+  let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+    const j=JSON.parse(d);
+    const scrape=j.jobs?.find(j=>j.jobKey==='scrape:tick');
+    console.log('scrape:tick next_run:', scrape?.runAt ?? 'not scheduled');
+    console.log('tick_ms:', j.tick_ms);
+  });"
+```
+
+### End-to-end pipeline validation
+
+The `bin/smoke` script validates the complete pipeline: scrape → articles → events → publish → feed.
+
+```bash
+# Prerequisites: backend running (npm run dev) + Postgres
+npm run smoke              # full: reset DB → scrape → wait publish → validate feed
+npm run smoke -- --skip-reset  # skip DB reset, use existing data
+```
+
+**Expected PASS output:**
+```
+SMOKE TEST SUMMARY
+  Articles:
+    POLICY_OK:        > 0
+  Events:
+    PUBLISHED:        > 0
+  Feed items:         > 0
+  SCRAPE_INTERVAL_MS: 600000ms
+  /v1/topics:         OK
+  /v1/search:         OK
+  Smoke test PASSED — Phase 1 criteria met
+```
+
+### Phase 1 completion criteria checklist
+
+| Criterion | How to verify |
+|-----------|--------------|
+| Scraper runs every 10 min | `grep SCRAPE_INTERVAL_MS .env` → `600000` |
+| Pipeline produces events automatically | `npm run smoke` → PUBLISHED > 0 |
+| `/v1/feed` works | `curl localhost:3000/v1/feed` → items array |
+| `/v1/topics` exists | `curl localhost:3000/v1/topics` → items array |
+| `/v1/search` exists | `curl localhost:3000/v1/search?q=colombia` → items array |
+| Backend stable | Server stays up during smoke test |
+| `tsc` passes | `npx tsc --noEmit` → exit 0 |
+| `vitest` passes | `npx vitest run` → all tests pass |

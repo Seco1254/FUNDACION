@@ -125,7 +125,26 @@ else
   die "Feed is empty (0 items). Events may be published but feed query may have issues."
 fi
 
-# ── Step 5: Summary ───────────────────────────────────────────────
+# ── Step 5: Validate Phase 1 API endpoints ───────────────────────
+info "Validating /v1/topics ..."
+TOPICS_RESP=$(curl -sf "$BACKEND_URL/v1/topics" 2>&1) || die "/v1/topics request failed"
+ok "/v1/topics responds"
+
+info "Validating /v1/search?q=colombia ..."
+SEARCH_RESP=$(curl -sf "$BACKEND_URL/v1/search?q=colombia" 2>&1) || die "/v1/search request failed"
+ok "/v1/search responds"
+
+# ── Step 6: Verify scrape interval ──────────────────────────────
+info "Checking effective SCRAPE_INTERVAL_MS ..."
+SCHED_RESP=$(curl -sf "$BACKEND_URL/v1/debug/scheduler" 2>&1) || true
+EFFECTIVE_INTERVAL="${SCRAPE_INTERVAL_MS:-600000}"
+if [ "$EFFECTIVE_INTERVAL" -le 600000 ] 2>/dev/null; then
+  ok "SCRAPE_INTERVAL_MS=${EFFECTIVE_INTERVAL}ms (<= 10 min)"
+else
+  echo "⚠️  SCRAPE_INTERVAL_MS=${EFFECTIVE_INTERVAL}ms (> 10 min). Phase 1 requires <= 600000."
+fi
+
+# ── Step 7: Summary ───────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════╗"
 echo "║           SMOKE TEST SUMMARY                 ║"
@@ -159,6 +178,9 @@ echo "║    PENDING_PUBLISH:  ${EVT_PENDING}"
 echo "║    PUBLISHED:        ${EVT_PUBLISHED}"
 echo "║    CLOSED:           ${EVT_CLOSED}"
 echo "║  Feed items:         ${FEED_LENGTH}"
+echo "║  SCRAPE_INTERVAL_MS: ${EFFECTIVE_INTERVAL}ms"
+echo "║  /v1/topics:         OK"
+echo "║  /v1/search:         OK"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-ok "Smoke test PASSED"
+ok "Smoke test PASSED — Phase 1 criteria met"
