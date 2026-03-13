@@ -403,9 +403,9 @@ describe('decideLinkAction', () => {
     expect(result.action).toBe('CREATE');
   });
 
-  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.30', () => {
+  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.22', () => {
     expect(THETA_AUTO_LINK).toBe(0.45);
-    expect(THETA_MAYBE_LINK).toBe(0.30);
+    expect(THETA_MAYBE_LINK).toBe(0.22);
   });
 
   it('entity guard defaults: enabled with min_jaccard = 0.01', () => {
@@ -550,9 +550,9 @@ describe('v2.1: scoreCandidates with gates', () => {
 // ── v2.1: Two-step linking ──
 
 describe('v2.1: two-step linking', () => {
-  it('high score but only 1 strong signal → NOT auto (degrades to maybe)', async () => {
+  it('high score but zero entity overlap → NOT auto (gates degrade to maybe)', async () => {
     // High embedding sim (1.0), zero entity overlap, no topic
-    // → only embed signal passes → 1 < AUTO_REQUIRES_SIGNALS (2)
+    // → ENTITY_LOW_FOR_AUTO gate blocks auto-link → MAYBE_LINK
     const article = makeArticle({
       title: 'Alpha Bravo Charlie',
       snippet: 'Alpha Bravo Charlie Delta.',
@@ -601,6 +601,14 @@ describe('v2.1: two-step linking', () => {
     const result = await decideLinkAction(article, [candidate], null);
     expect(result.action).toBe('LINK');
     expect(result.linkType).toBe('AUTO_LINK');
+  });
+
+  it('v2.2: AUTO_REQUIRES_SIGNALS defaults to 1 (topic not available at link time)', async () => {
+    // Verify the config change: topicTop1 is never populated at linking time,
+    // so requiring 2/3 signals (embed + entity) was too strict.
+    // With AUTO_REQUIRES_SIGNALS=1, a single strong signal suffices.
+    const { AUTO_REQUIRES_SIGNALS } = await import('./config.js');
+    expect(AUTO_REQUIRES_SIGNALS).toBe(1);
   });
 
   it('decideLinkAction returns linkType field', async () => {

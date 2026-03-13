@@ -46,6 +46,39 @@ describe('hash-vector', () => {
   });
 
   it('exports MODEL_NAME', () => {
-    expect(MODEL_NAME).toBe('hash256-v0.1');
+    expect(MODEL_NAME).toBe('hash256-v0.2');
+  });
+
+  it('filters Spanish stopwords', () => {
+    // "el gobierno de la reforma" → only "gobierno" and "reforma" after stopwords
+    const vecWithStopwords = computeEmbedding('el gobierno de la reforma');
+    const vecWithout = computeEmbedding('gobierno reforma');
+    expect(vecWithStopwords).toEqual(vecWithout);
+  });
+
+  it('includes bigrams in vector', () => {
+    // "reforma tributaria" should produce different vector than "tributaria reforma"
+    const v1 = computeEmbedding('reforma tributaria');
+    const v2 = computeEmbedding('tributaria reforma');
+    expect(v1).not.toEqual(v2);
+  });
+
+  it('related articles have higher similarity than unrelated', () => {
+    // Two articles about the same topic (reforma tributaria) vs an unrelated one
+    const artA = computeEmbedding('Reforma tributaria aprobada en segundo debate por el Congreso colombiano');
+    const artB = computeEmbedding('El Congreso aprueba la reforma tributaria tras largo debate legislativo');
+    const artC = computeEmbedding('Selección Colombia gana partido eliminatorias mundial fútbol');
+
+    // Cosine similarity
+    const cosine = (a: number[], b: number[]) => {
+      let dot = 0, mA = 0, mB = 0;
+      for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; mA += a[i]*a[i]; mB += b[i]*b[i]; }
+      return dot / (Math.sqrt(mA) * Math.sqrt(mB));
+    };
+
+    const simAB = cosine(artA, artB); // related
+    const simAC = cosine(artA, artC); // unrelated
+    expect(simAB).toBeGreaterThan(simAC);
+    expect(simAB).toBeGreaterThan(0.3); // should have meaningful overlap
   });
 });

@@ -47,7 +47,7 @@ describe('EmbeddingService', () => {
     expect(articleRepo.updateEmbedding).toHaveBeenCalledOnce();
     const updateCall = articleRepo.updateEmbedding.mock.calls[0];
     expect(updateCall[0]).toBe('art-1');
-    expect(updateCall[1].embeddingModel).toBe('hash256-v0.1');
+    expect(updateCall[1].embeddingModel).toBe('hash256-v0.2');
     expect(updateCall[1].embeddingVec).toHaveLength(256);
     expect(updateCall[1].embeddingHash).toHaveLength(64);
 

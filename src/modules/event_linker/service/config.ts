@@ -21,7 +21,10 @@ export const TITLE_KEYWORD_JACCARD_MIN = parseFloat(process.env.EVENT_LINKER_TIT
 export const TITLE_ENTITY_JACCARD_MIN = parseFloat(process.env.EVENT_LINKER_TITLE_ENTITY_JACCARD_MIN ?? '0.01');
 
 // ── Two-step signals ──
-export const AUTO_REQUIRES_SIGNALS = parseInt(process.env.EVENT_LINKER_AUTO_REQUIRES_SIGNALS ?? '2', 10);
+// v2.2: lowered from 2 → 1 because topicTop1 is not populated at linking time,
+// making the topic signal always null. With only 2 possible signals (embed + entity),
+// requiring 2 was equivalent to requiring BOTH, which was too strict.
+export const AUTO_REQUIRES_SIGNALS = parseInt(process.env.EVENT_LINKER_AUTO_REQUIRES_SIGNALS ?? '1', 10);
 export const SIGNAL_MIN_EMBED = parseFloat(process.env.EVENT_LINKER_SIGNAL_MIN_EMBED ?? '0.45');
 export const SIGNAL_MIN_ENTITY = parseFloat(process.env.EVENT_LINKER_SIGNAL_MIN_ENTITY ?? '0.08');
 export const SIGNAL_MIN_TOPIC = parseFloat(process.env.EVENT_LINKER_SIGNAL_MIN_TOPIC ?? '0.25');

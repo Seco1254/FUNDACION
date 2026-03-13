@@ -40,7 +40,11 @@ import {
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
-export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.30');
+// v2.2: lowered from 0.30 → 0.22 to catch more same-event pairs in the maybe-link
+// zone. With improved embeddings (stopword removal + bigrams), the composite scores
+// for related articles shift up, making this safe. The heuristic fallback (uniqueMedia >= 1)
+// provides a second guard against false links in this range.
+export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.22');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Kill switch: never auto-link, only maybe/create
