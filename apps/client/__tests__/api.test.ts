@@ -12,10 +12,13 @@ describe('API client', () => {
   describe('getFeed', () => {
     it('parses feed response correctly', async () => {
       const mockResponse = {
-        items: [
-          { event_id: 'e1', state: 'PUBLISHED', headline: 'Test', t_last: null, published_at: null, cover_image_url: null },
-        ],
+        items: [{
+          event_id: 'e1', headline: 'Test', published_at: '2026-01-01T00:00:00Z', updated_at: null, cover_image_url: null,
+          overview: { status: 'pending', what_happened: [], context: [], in_dispute: [], confidence_label: 'Pendiente' },
+          topic: null, sources: [], source_count: 0, article_count: 0, evidence_level: 'low',
+        }],
         next_cursor: 'abc123',
+        meta: { has_more: true },
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -35,7 +38,7 @@ describe('API client', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ items: [], next_cursor: null }),
+        json: async () => ({ items: [], next_cursor: null, meta: { has_more: false } }),
         headers: new Headers(),
       });
 
@@ -50,7 +53,7 @@ describe('API client', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ items: [], next_cursor: null }),
+        json: async () => ({ items: [], next_cursor: null, meta: { has_more: false } }),
         headers: new Headers(),
       });
 

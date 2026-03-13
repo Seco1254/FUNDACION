@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { colors, spacing, font, radius } from '../lib/theme';
-import { PillTag } from './PillTag';
 import { relativeTime } from '../lib/cache';
 import type { FeedItem } from '../lib/types';
 
@@ -14,48 +13,67 @@ interface Props {
 
 const PREVIEW_MAX_BULLETS = 3;
 
+const EVIDENCE_LABELS: Record<string, { label: string; bg: string; text: string }> = {
+  high: { label: 'Alta evidencia', bg: colors.successLight, text: colors.success },
+  medium: { label: 'Evidencia media', bg: colors.accentLight, text: colors.accent },
+  low: { label: 'Evidencia baja', bg: colors.warningLight, text: colors.warning },
+};
+
 export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props) {
-  const updatedAt = relativeTime(item.t_last);
+  const updatedAt = relativeTime(item.updated_at);
   const [expanded, setExpanded] = useState(false);
-  const ov = item.ai_overview;
-  const hasOverview = ov && (ov.what_happened.length > 0 || ov.context.length > 0);
-  const hasDispute = ov && ov.in_dispute.length > 0;
-  // 'blocked' = processed but insufficient data; undefined = not yet processed (pending)
-  const isBlocked = !hasOverview && item.overview_status?.state === 'blocked';
+
+  const ov = item.overview;
+  const isReady = ov.status === 'ready';
+  const isPending = ov.status === 'pending';
+  const hasContent = ov.what_happened.length > 0 || ov.context.length > 0;
+  const hasDispute = ov.in_dispute.length > 0;
 
   // Collect preview bullets: what_happened first, then context
   const allBullets: string[] = [];
-  if (ov) {
+  if (isReady && hasContent) {
     allBullets.push(...ov.what_happened);
     allBullets.push(...ov.context);
   }
   const previewBullets = expanded ? allBullets : allBullets.slice(0, PREVIEW_MAX_BULLETS);
   const canExpand = allBullets.length > PREVIEW_MAX_BULLETS;
 
+  const evidenceInfo = EVIDENCE_LABELS[item.evidence_level];
+
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.card}>
       <View style={styles.topRow}>
-        <PillTag state={item.state} />
+        {/* Evidence level badge replaces old state PillTag */}
+        {evidenceInfo && (
+          <View style={[styles.chip, { backgroundColor: evidenceInfo.bg }]}>
+            <Text style={[styles.chipText, { color: evidenceInfo.text }]}>{evidenceInfo.label}</Text>
+          </View>
+        )}
         {hasDispute && (
           <View style={styles.chipDispute}>
             <Text style={styles.chipDisputeText}>En disputa</Text>
           </View>
         )}
-        {item.source_count != null && item.source_count > 0 && (
+        {item.source_count > 0 && (
           <View style={styles.chipSources}>
             <Text style={styles.chipSourcesText}>
               {item.source_count} fuente{item.source_count !== 1 ? 's' : ''}
             </Text>
           </View>
         )}
+        {item.topic && (
+          <View style={styles.chipTopic}>
+            <Text style={styles.chipTopicText}>{item.topic.label}</Text>
+          </View>
+        )}
       </View>
 
       <Text style={styles.headline} numberOfLines={3}>
-        {item.headline ?? 'Evento en desarrollo...'}
+        {item.headline}
       </Text>
 
       {/* AI Overview preview */}
-      {hasOverview ? (
+      {isReady && hasContent ? (
         <View style={styles.overviewBlock}>
           <Text style={styles.overviewLabel}>Resumen (IA)</Text>
           {previewBullets.map((bullet, i) => (
@@ -65,7 +83,7 @@ export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props
           ))}
           {hasDispute && !expanded && (
             <Text style={styles.disputeHint}>
-              {'⚠  '}{ov!.in_dispute[0]}
+              {'⚠  '}{ov.in_dispute[0]}
             </Text>
           )}
           {canExpand && (
@@ -78,33 +96,24 @@ export function EventCard({ item, onPress, onLongPress, onRetryOverview }: Props
               </Text>
             </Pressable>
           )}
-          {ov!.confidence_label && (
-            <Text style={styles.confidenceLabel}>{ov!.confidence_label}</Text>
+          {ov.confidence_label && (
+            <Text style={styles.confidenceLabel}>{ov.confidence_label}</Text>
           )}
         </View>
-      ) : isBlocked ? (
+      ) : ov.status === 'unavailable' ? (
         <View style={styles.overviewPlaceholder}>
-          <Text style={styles.placeholderText}>Datos insuficientes por ahora</Text>
-          <Text style={styles.placeholderHint}>Se necesitan más fuentes para generar un resumen.</Text>
+          <Text style={styles.placeholderTitle}>Resumen no disponible</Text>
+          <Text style={styles.placeholderSubtitle}>
+            No hay suficiente evidencia cruzada todavía.
+          </Text>
         </View>
       ) : (
         <View style={styles.overviewPlaceholder}>
-          {item.overview_status === 'unavailable' ? (
-            <>
-              <Text style={styles.placeholderTitle}>Resumen no disponible</Text>
-              <Text style={styles.placeholderSubtitle}>
-                No hay suficiente evidencia cruzada todavía.
-              </Text>
-            </>
-          ) : (
-            <>
-              <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
-              <Text style={styles.placeholderSubtitle}>
-                El análisis de fuentes está en proceso.
-              </Text>
-            </>
-          )}
-          {onRetryOverview && item.overview_status !== 'unavailable' && (
+          <Text style={styles.placeholderTitle}>Aún no hay resumen</Text>
+          <Text style={styles.placeholderSubtitle}>
+            El análisis de fuentes está en proceso.
+          </Text>
+          {onRetryOverview && (
             <Pressable
               onPress={(e) => { e.stopPropagation(); onRetryOverview(); }}
               style={styles.retryBtn}
@@ -150,6 +159,17 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     flexWrap: 'wrap',
   },
+  chip: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+  },
+  chipText: {
+    fontSize: font.xs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   chipDispute: {
     backgroundColor: colors.warningLight,
     paddingHorizontal: spacing.sm,
@@ -171,6 +191,17 @@ const styles = StyleSheet.create({
     fontSize: font.xs,
     fontWeight: '500',
     color: colors.accent,
+  },
+  chipTopic: {
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+  },
+  chipTopicText: {
+    fontSize: font.xs,
+    fontWeight: '500',
+    color: colors.textSecondary,
   },
   headline: {
     fontSize: font.xl,
@@ -247,11 +278,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: font.sm,
     fontWeight: '600',
-  },
-  placeholderHint: {
-    fontSize: font.xs,
-    color: colors.textMuted,
-    marginTop: 2,
   },
   footer: {
     flexDirection: 'row',

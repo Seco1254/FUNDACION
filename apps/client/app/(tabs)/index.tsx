@@ -78,7 +78,7 @@ export default function ForYouScreen() {
     loadFeed();
   }, [loadFeed]);
 
-  // Poll for overview on active item if missing
+  // Poll for overview on active item if pending
   useEffect(() => {
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
@@ -89,12 +89,8 @@ export default function ForYouScreen() {
     const activeItem = items[activeIndex];
     if (!activeItem) return;
 
-    const ov = activeItem.ai_overview;
-    const hasOverview = ov && (ov.what_happened.length > 0 || ov.context.length > 0);
-    if (hasOverview) return;
-
-    // Don't poll if backend explicitly says overview is unavailable (gate blocked)
-    if (activeItem.overview_status === 'unavailable') return;
+    // Only poll if overview is pending (pipeline hasn't run yet)
+    if (activeItem.overview.status !== 'pending') return;
 
     function poll() {
       if (pollCountRef.current >= OVERVIEW_POLL_MAX) return;
@@ -103,9 +99,9 @@ export default function ForYouScreen() {
         try {
           const data = await api.getFeed();
           const updated = data.items.find((i) => i.event_id === activeItem.event_id);
-          if (updated?.ai_overview) {
+          if (updated && updated.overview.status === 'ready') {
             setItems((prev) =>
-              prev.map((it) => it.event_id === updated.event_id ? { ...it, ai_overview: updated.ai_overview, overview_status: updated.overview_status } : it),
+              prev.map((it) => it.event_id === updated.event_id ? { ...it, overview: updated.overview } : it),
             );
             return; // stop polling
           }
@@ -175,6 +171,11 @@ export default function ForYouScreen() {
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60 }).current;
 
+  // Stable comma-joined ID list for navigation — ALL hooks declared above this line
+  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
+
+  // ── Render branches (after all hooks) ──
+
   if (status === 'loading') {
     return (
       <View style={styles.container}>
@@ -206,9 +207,6 @@ export default function ForYouScreen() {
     );
   }
 
-  // Stable comma-joined ID list for navigation — recomputed only when items change
-  const feedIds = useMemo(() => items.map((i) => i.event_id).join(','), [items]);
-
   return (
     <View style={styles.container}>
       {status === 'offline' && (
@@ -222,22 +220,19 @@ export default function ForYouScreen() {
         ref={flatListRef}
         data={items}
         keyExtractor={(item) => item.event_id}
-        renderItem={({ item, index }) => {
-          const feedIds = items.map((i) => i.event_id).join(',');
-          return (
-            <View style={styles.cardWrapper}>
-              <EventCard
-                item={item}
-                onPress={() => router.push({
-                  pathname: '/event/[eventId]',
-                  params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
-                })}
-                onLongPress={() => handleLongPress(item)}
-                onRetryOverview={handleRetryOverview}
-              />
-            </View>
-          );
-        }}
+        renderItem={({ item, index }) => (
+          <View style={styles.cardWrapper}>
+            <EventCard
+              item={item}
+              onPress={() => router.push({
+                pathname: '/event/[eventId]',
+                params: { eventId: item.event_id, feedEventIds: feedIds, feedIndex: String(index) },
+              })}
+              onLongPress={() => handleLongPress(item)}
+              onRetryOverview={handleRetryOverview}
+            />
+          </View>
+        )}
         snapToInterval={SNAP_INTERVAL}
         snapToAlignment="start"
         decelerationRate="fast"

@@ -22,7 +22,15 @@ jest.mock('../src/lib/storage', () => {
 
 describe('Cache', () => {
   it('stores and retrieves feed', async () => {
-    const feedData = { items: [{ event_id: 'e1', state: 'PUBLISHED' as const, headline: 'Test', t_last: null, published_at: null, cover_image_url: null }], next_cursor: null };
+    const feedData = {
+      items: [{
+        event_id: 'e1', headline: 'Test', published_at: '2026-01-01T00:00:00Z', updated_at: null, cover_image_url: null,
+        overview: { status: 'pending' as const, what_happened: [], context: [], in_dispute: [], confidence_label: 'Pendiente' as const },
+        topic: null, sources: [], source_count: 0, article_count: 0, evidence_level: 'low' as const,
+      }],
+      next_cursor: null,
+      meta: { has_more: false },
+    };
     await cache.setFeed(feedData);
     const cached = await cache.getFeed();
     expect(cached).not.toBeNull();

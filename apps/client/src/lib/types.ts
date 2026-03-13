@@ -2,44 +2,47 @@
 
 export type EventState = 'DETECTED' | 'PENDING_PUBLISH' | 'PUBLISHED' | 'UPDATING' | 'DORMANT' | 'CLOSED';
 
-export interface FeedItemOverview {
+export type OverviewConfidenceLabel = 'Alta' | 'Media' | 'Baja' | 'Pendiente' | 'No concluyente';
+
+export interface FeedCardOverview {
+  status: 'ready' | 'pending' | 'unavailable';
   what_happened: string[];
   context: string[];
   in_dispute: string[];
-  confidence_label: string;
+  confidence_label: OverviewConfidenceLabel;
 }
 
-export interface FeedItemSource {
-  source_id: string;
+export interface FeedCardTopic {
+  key: string;
+  label: string;
+}
+
+export interface FeedCardSource {
+  media_key: string;
   name: string;
-  domain: string;
-  article_count: number;
 }
 
 export interface FeedItem {
   event_id: string;
-  state: EventState;
-  headline: string | null;
-  t_last: string | null;
-  published_at: string | null;
+  headline: string;
+  published_at: string;
+  updated_at: string | null;
   cover_image_url: string | null;
-  ai_overview?: FeedItemOverview | null;
-  overview_status?: 'ready' | 'unavailable' | 'pending' | 'failed';
-  source_count?: number;
-  sources?: FeedItemSource[];
-  article_count?: number;
-  unique_sources_count?: number;
-  usable_articles_count?: number;
-  total_usable_text_len?: number;
-  key_facts_count?: number;
-  evidence_level?: 'high' | 'medium' | 'low' | 'none';
-  overview_mode?: string | null;
-  why_no_overview?: string | null;
+  overview: FeedCardOverview;
+  topic: FeedCardTopic | null;
+  sources: FeedCardSource[];
+  source_count: number;
+  article_count: number;
+  evidence_level: 'high' | 'medium' | 'low';
 }
 
 export interface FeedResponse {
   items: FeedItem[];
   next_cursor: string | null;
+  meta: {
+    has_more: boolean;
+    empty_reason?: 'no_events' | 'no_published';
+  };
 }
 
 // ── Tabs ──
