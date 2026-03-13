@@ -1,0 +1,63 @@
+{
+  "items": [
+    {
+      "event_id": "evt-fixture-001",
+      "headline": "Reforma tributaria aprobada en segundo debate",
+      "published_at": "2026-02-20T09:00:00.000Z",
+      "updated_at": "2026-02-20T10:00:00.000Z",
+      "overview": {
+        "status": "ready",
+        "what_happened": [
+          "La reforma tributaria fue aprobada en segundo debate en la Cámara de Representantes con 92 votos a favor.",
+          "El proyecto incluye cambios en el impuesto de renta para personas naturales."
+        ],
+        "context": [
+          "El trámite legislativo comenzó en julio de 2025."
+        ],
+        "in_dispute": [],
+        "confidence_label": "Alta"
+      },
+      "topic": {
+        "key": "ECONOMIA",
+        "label": "Economía"
+      },
+      "sources": [
+        { "media_key": "eltiempo", "name": "El Tiempo" },
+        { "media_key": "elespectador", "name": "El Espectador" }
+      ],
+      "source_count": 2,
+      "article_count": 3,
+      "evidence_level": "high",
+      "cover_image_url": null
+    },
+    {
+      "event_id": "evt-fixture-002",
+      "headline": "Protestas en Bogotá por aumento de transporte",
+      "published_at": "2026-02-19T14:00:00.000Z",
+      "updated_at": null,
+      "overview": {
+        "status": "pending",
+        "what_happened": [
+          "Protestas en Bogotá por aumento de transporte",
+          "Fuentes: Semana.",
+          "Resumen en proceso."
+        ],
+        "context": [],
+        "in_dispute": [],
+        "confidence_label": "Pendiente"
+      },
+      "topic": null,
+      "sources": [
+        { "media_key": "semana", "name": "Semana" }
+      ],
+      "source_count": 1,
+      "article_count": 1,
+      "evidence_level": "low",
+      "cover_image_url": null
+    }
+  ],
+  "next_cursor": null,
+  "meta": {
+    "has_more": false
+  }
+}

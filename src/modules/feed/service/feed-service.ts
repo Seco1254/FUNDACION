@@ -1,31 +1,73 @@
 import { FeedRepository } from '../repo/feed-repo.js';
-import { FeedItem, FeedItemOverview, FeedItemSource, FeedResponse, EmptyReason } from '../domain/types.js';
+import type { FeedCard, FeedCardOverview, FeedResponse } from '../../../contracts/product/feed-card.js';
+import type { FeedCardSource, FeedCardTopic, OverviewConfidenceLabel } from '../../../contracts/product/shared.js';
+import { PRODUCT_TOPIC_LABELS, PRODUCT_TOPIC_KEYS } from '../../../contracts/product/shared.js';
 import { RankingService } from '../../ranking/service/ranking-service.js';
 import { computeEvidenceLevel, buildWhyNoOverview } from './evidence-level.js';
 import { evaluatePublishGate } from '../../../core/llm/gates.js';
 import type { PublishGateResult } from '../../../core/llm/gates.js';
 import { logger } from '../../../core/logging/logger.js';
 
-function extractAiOverview(packet: any): FeedItemOverview | null {
+// Re-export EvidenceLevel for backward compat
+export type { EvidenceLevel } from './evidence-level.js';
+
+// ── Internal types (not exposed in API) ─────────────────────
+
+interface InternalGateInput {
+  unique_sources_count: number;
+  total_usable_text_len: number;
+  key_facts_count: number;
+  overview_status: string;
+  has_disclaimer: boolean;
+}
+
+// ── Overview extraction ─────────────────────────────────────
+
+const VALID_CONFIDENCE_LABELS = new Set<string>(['Alta', 'Media', 'Baja', 'Pendiente', 'No concluyente']);
+
+function toConfidenceLabel(raw: unknown): OverviewConfidenceLabel {
+  if (typeof raw === 'string' && VALID_CONFIDENCE_LABELS.has(raw)) {
+    return raw as OverviewConfidenceLabel;
+  }
+  return 'No concluyente';
+}
+
+function extractOverview(packet: any): FeedCardOverview | null {
   const ai = packet?.ai_overview;
   if (!ai) return null;
   const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
   const ctx = Array.isArray(ai.context) ? ai.context : [];
   const disp = Array.isArray(ai.in_dispute) ? ai.in_dispute : [];
-  const label = typeof ai.confidence_label === 'string' ? ai.confidence_label : 'No concluyente';
   if (wh.length === 0 && ctx.length === 0) return null;
-  return { what_happened: wh, context: ctx, in_dispute: disp, confidence_label: label };
+  return {
+    status: 'ready',
+    what_happened: wh,
+    context: ctx,
+    in_dispute: disp,
+    confidence_label: toConfidenceLabel(ai.confidence_label),
+  };
+}
+
+/**
+ * Derive overview status from packet data.
+ */
+function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
+  const ai = packet?.ai_overview;
+  if (!ai) return 'pending';
+  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
+  const ctx = Array.isArray(ai.context) ? ai.context : [];
+  if (wh.length > 0 || ctx.length > 0) return 'ready';
+  return 'unavailable';
 }
 
 /**
  * Deterministic fallback overview for items whose overview is not yet ready.
- * Uses headline + source names. No LLM — pure string construction.
  */
 export function buildFeedFallbackOverview(
   headline: string | null,
-  sources: FeedItemSource[],
+  sources: FeedCardSource[],
   overviewStatus: string,
-): FeedItemOverview {
+): FeedCardOverview {
   const bullets: string[] = [];
 
   if (headline) {
@@ -44,6 +86,7 @@ export function buildFeedFallbackOverview(
   bullets.push(statusLabel);
 
   return {
+    status: overviewStatus === 'pending' ? 'pending' : 'unavailable',
     what_happened: bullets,
     context: [],
     in_dispute: [],
@@ -51,164 +94,143 @@ export function buildFeedFallbackOverview(
   };
 }
 
-/**
- * Derive overview_status for the feed item so the client can distinguish states.
- * - 'ready': ai_overview is populated and usable
- * - 'unavailable': pipeline ran but produced no usable overview (gate FAIL, insufficient evidence)
- * - 'pending': pipeline hasn't run yet
- */
-function deriveOverviewStatus(packet: any): 'ready' | 'unavailable' | 'pending' {
-  const ai = packet?.ai_overview;
-  if (!ai) return 'pending';
-  const wh = Array.isArray(ai.what_happened) ? ai.what_happened : [];
-  const ctx = Array.isArray(ai.context) ? ai.context : [];
-  if (wh.length > 0 || ctx.length > 0) return 'ready';
-  return 'unavailable';
-}
+// ── Topic extraction ────────────────────────────────────────
 
-/**
- * Compute event-level observability fields from the included articles.
- */
-function enrichFeedItem(row: any, packet: any): Partial<FeedItem> {
-  const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
-  const articleCount = articles.length;
-
-  const mediaMap = new Map<string, { id: string; name: string; domain: string; count: number }>();
-  for (const a of articles) {
-    const key = a.media?.mediaKey ?? 'unknown';
-    const existing = mediaMap.get(key);
-    if (existing) {
-      existing.count++;
-    } else {
-      let domain = key;
-      try { domain = new URL(a.url).hostname; } catch { /* keep key */ }
-      mediaMap.set(key, {
-        id: a.media?.id ?? '',
-        name: a.media?.name ?? key,
-        domain,
-        count: 1,
-      });
+function extractTopic(row: any, packet: any): FeedCardTopic | null {
+  // Source of truth: topic_assignment table (included via Prisma)
+  const assignments = row.topicAssignments;
+  if (Array.isArray(assignments) && assignments.length > 0) {
+    const topKey = assignments[0].topicKey as string;
+    if (PRODUCT_TOPIC_KEYS.has(topKey)) {
+      return {
+        key: topKey as FeedCardTopic['key'],
+        label: PRODUCT_TOPIC_LABELS[topKey as keyof typeof PRODUCT_TOPIC_LABELS],
+      };
     }
   }
 
-  const sources: FeedItemSource[] = [...mediaMap.values()].map((v) => ({
-    source_id: v.id,
+  // Fallback: packetJson.topics.top_topics[0]
+  const topTopics = packet?.topics?.top_topics;
+  if (Array.isArray(topTopics) && topTopics.length > 0) {
+    const fallbackKey = (topTopics[0].key ?? topTopics[0].topic_key) as string;
+    if (fallbackKey && PRODUCT_TOPIC_KEYS.has(fallbackKey)) {
+      return {
+        key: fallbackKey as FeedCardTopic['key'],
+        label: PRODUCT_TOPIC_LABELS[fallbackKey as keyof typeof PRODUCT_TOPIC_LABELS],
+      };
+    }
+  }
+
+  return null;
+}
+
+// ── Source aggregation ──────────────────────────────────────
+
+function aggregateSources(row: any): { sources: FeedCardSource[]; sourceCount: number; articleCount: number; uniqueSourcesCount: number; usableArticlesCount: number; totalUsableTextLen: number } {
+  const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+  const articleCount = articles.length;
+
+  const mediaMap = new Map<string, { name: string; mediaKey: string }>();
+  for (const a of articles) {
+    const key = a.media?.mediaKey ?? 'unknown';
+    if (!mediaMap.has(key)) {
+      mediaMap.set(key, { name: a.media?.name ?? key, mediaKey: key });
+    }
+  }
+
+  const sources: FeedCardSource[] = [...mediaMap.values()].map((v) => ({
+    media_key: v.mediaKey,
     name: v.name,
-    domain: v.domain,
-    article_count: v.count,
   }));
 
-  const uniqueSourcesCount = mediaMap.size;
   const usableArticles = articles.filter((a: any) => a.usableForOverview);
-  const usableArticlesCount = usableArticles.length;
   const totalUsableTextLen = usableArticles.reduce(
     (sum: number, a: any) => sum + (a.textContentLen ?? 0), 0,
   );
 
-  const overviewStatus = deriveOverviewStatus(packet);
-  const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
-  const overviewMode: string | null = packet.overview_mode ?? null;
-
-  const failReasons = articles
-    .map((a: any) => a.extractionFailReason)
-    .filter(Boolean) as string[];
-
-  const keyFactsCount: number = packet.key_facts_count ?? 0;
-
-  const whyNoOverview = buildWhyNoOverview({
-    overviewStatus,
-    uniqueSourcesCount,
-    usableArticlesCount,
-    totalUsableTextLen,
-    articleFailReasons: failReasons,
-    keyFactsCount,
-  });
-
   return {
     sources,
-    article_count: articleCount,
-    unique_sources_count: uniqueSourcesCount,
-    usable_articles_count: usableArticlesCount,
-    total_usable_text_len: totalUsableTextLen,
-    key_facts_count: keyFactsCount,
-    evidence_level: evidenceLevel,
-    overview_mode: overviewMode,
-    why_no_overview: whyNoOverview,
+    sourceCount: mediaMap.size,
+    articleCount,
+    uniqueSourcesCount: mediaMap.size,
+    usableArticlesCount: usableArticles.length,
+    totalUsableTextLen,
   };
 }
 
+// ── Build FeedCard ──────────────────────────────────────────
+
 /**
- * Apply the publish gate to a feed item.
- * Returns the gate result and optionally mutates item to 'failed' status.
+ * Build a product FeedCard from a DB row, applying gate and fallback logic.
  */
-function applyPublishGate(item: FeedItem, packet: any): PublishGateResult {
+export function buildFeedItem(row: any): { item: FeedCard; eligible: boolean; gateReasons: string[] } {
+  const latestVersion = row.versions?.[0] ?? null;
+  const packet = (latestVersion?.packetJson as any) ?? {};
+  const teaser: string | null = packet.ai_teaser || null;
+
+  const headline: string = latestVersion?.headline ?? '';
+  const publishedAt: string = row.publishedAt?.toISOString() ?? '';
+
+  const { sources, sourceCount, articleCount, uniqueSourcesCount, usableArticlesCount, totalUsableTextLen } = aggregateSources(row);
+
+  const overviewStatus = deriveOverviewStatus(packet);
+  const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
+  const keyFactsCount: number = packet.key_facts_count ?? 0;
+
+  // Evaluate publish gate (uses internal metrics not exposed in API)
   const ai = packet?.ai_overview;
   const hasDisclaimer = typeof ai?.why === 'string'
     && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
 
-  const gateResult = evaluatePublishGate({
-    unique_sources_count: item.unique_sources_count ?? 0,
-    total_usable_text_len: item.total_usable_text_len ?? 0,
-    key_facts_count: item.key_facts_count ?? 0,
-    overview_status: item.overview_status ?? 'pending',
+  const gateInput: InternalGateInput = {
+    unique_sources_count: uniqueSourcesCount,
+    total_usable_text_len: totalUsableTextLen,
+    key_facts_count: keyFactsCount,
+    overview_status: overviewStatus,
     has_disclaimer: hasDisclaimer,
-  });
-
-  if (!gateResult.eligible) {
-    item.overview_status = 'failed';
-    item.why_no_overview = buildWhyNoOverview({
-      overviewStatus: 'failed',
-      uniqueSourcesCount: item.unique_sources_count ?? 0,
-      usableArticlesCount: item.usable_articles_count ?? 0,
-      totalUsableTextLen: item.total_usable_text_len ?? 0,
-      articleFailReasons: [],
-      keyFactsCount: item.key_facts_count ?? 0,
-      gateReasons: gateResult.reasons,
-    });
-  }
-
-  return gateResult;
-}
-
-/**
- * Build a FeedItem from a DB row, applying gate and fallback logic.
- */
-export function buildFeedItem(row: any): { item: FeedItem; eligible: boolean; gateReasons: string[] } {
-  const latestVersion = row.versions?.[0] ?? null;
-  const packet = (latestVersion?.packetJson as any) ?? {};
-  const teaser: string | null = packet.ai_teaser || null;
-  const item: FeedItem = {
-    event_id: row.id,
-    state: row.state,
-    headline: latestVersion?.headline ?? null,
-    t_last: row.tLast?.toISOString() ?? null,
-    published_at: row.publishedAt?.toISOString() ?? null,
-    cover_image_url: teaser,
-    ai_overview: extractAiOverview(packet),
-    overview_status: deriveOverviewStatus(packet),
-    ...enrichFeedItem(row, packet),
   };
-  const gate = applyPublishGate(item, packet);
+  const gate = evaluatePublishGate(gateInput);
 
-  // Fallback overview for non-ready items that pass the gate
-  if (gate.eligible && item.overview_status !== 'ready' && !item.ai_overview) {
-    item.ai_overview = buildFeedFallbackOverview(
-      item.headline,
-      item.sources ?? [],
-      item.overview_status ?? 'pending',
-    );
+  // Determine overview
+  let overview = extractOverview(packet);
+  const effectiveStatus = gate.eligible ? overviewStatus : 'unavailable';
+
+  if (!overview) {
+    overview = buildFeedFallbackOverview(headline, sources, effectiveStatus);
   }
+  if (!gate.eligible) {
+    overview = { ...overview, status: 'unavailable' };
+  }
+
+  // Extract topic
+  const topic = extractTopic(row, packet);
+
+  // Map evidence_level 'none' → 'low' (none is filtered by gate but just in case)
+  const publicEvidenceLevel: 'high' | 'medium' | 'low' = evidenceLevel === 'none' ? 'low' : evidenceLevel;
+
+  const item: FeedCard = {
+    event_id: row.id,
+    headline,
+    published_at: publishedAt,
+    updated_at: row.tLast?.toISOString() ?? null,
+    overview,
+    topic,
+    sources,
+    source_count: sourceCount,
+    article_count: articleCount,
+    evidence_level: publicEvidenceLevel,
+    cover_image_url: teaser,
+  };
 
   return { item, eligible: gate.eligible, gateReasons: gate.reasons };
 }
 
-/**
- * Log gate-filtered items for observability.
- */
+// ── Logging ─────────────────────────────────────────────────
+
 function logGatedItems(
   total: number,
-  eligibleItems: Array<{ item: FeedItem }>,
-  gatedItems: Array<{ item: FeedItem; gateReasons: string[] }>,
+  eligibleItems: Array<{ item: FeedCard }>,
+  gatedItems: Array<{ item: FeedCard; gateReasons: string[] }>,
 ): void {
   if (gatedItems.length > 0) {
     logger.info({
@@ -218,15 +240,16 @@ function logGatedItems(
       sample_reasons: gatedItems.slice(0, 5).map((r) => ({
         event_id: r.item.event_id,
         reasons: r.gateReasons,
-        overview_status: r.item.overview_status,
-        sources: r.item.unique_sources_count,
-        text_len: r.item.total_usable_text_len,
       })),
     }, 'feed_publish_gate_filtered');
   }
 }
 
+// ── FeedService ─────────────────────────────────────────────
+
 const PAGE_SIZE = 20;
+
+type EmptyReason = 'no_events' | 'no_published';
 
 export class FeedService {
   private rankingService: RankingService | null;
@@ -238,24 +261,24 @@ export class FeedService {
   }
 
   private async diagnoseEmpty(publishedRows: number, gatedAll: boolean): Promise<EmptyReason> {
-    if (gatedAll) return 'GATE_FILTERED_ALL';
+    if (gatedAll) return 'no_events';
     if (publishedRows === 0) {
       const stateCounts = await this.repo.countEventsByState();
       const total = Object.values(stateCounts).reduce((a, b) => a + b, 0);
-      if (total === 0) return 'DB_EMPTY';
-      if (!stateCounts['PUBLISHED'] || stateCounts['PUBLISHED'] === 0) return 'NO_PUBLISHED';
+      if (total === 0) return 'no_events';
+      if (!stateCounts['PUBLISHED'] || stateCounts['PUBLISHED'] === 0) return 'no_published';
     }
-    return 'NO_EVENTS';
+    return 'no_events';
   }
 
-  async getFeed(cursorStr?: string): Promise<FeedResponse> {
+  async getFeed(cursorStr?: string, topicFilter?: string): Promise<FeedResponse> {
     // When ranking is enabled and this is page 1 (no cursor), use ranked feed
-    if (this.rankingService && !cursorStr) {
+    if (this.rankingService && !cursorStr && !topicFilter) {
       return this.getRankedFeed();
     }
 
     // Fallback: chronological feed (also used for pagination after page 1)
-    return this.getChronologicalFeed(cursorStr);
+    return this.getChronologicalFeed(cursorStr, topicFilter);
   }
 
   private async getRankedFeed(): Promise<FeedResponse> {
@@ -265,7 +288,7 @@ export class FeedService {
 
     if (rows.length === 0) {
       const empty_reason = await this.diagnoseEmpty(0, false);
-      return { items: [], next_cursor: null, empty_reason };
+      return { items: [], next_cursor: null, meta: { has_more: false, empty_reason } };
     }
 
     const scored = await this.rankingService!.rankPublishedEvents(rows as any);
@@ -286,21 +309,21 @@ export class FeedService {
     // Cursor for page 2+: fall back to chronological after ranked page 1
     let next_cursor: string | null = null;
     if (eligible.length > PAGE_SIZE) {
-      const lastIdx = PAGE_SIZE - 1;
-      const lastRow = rankedRows[scored.findIndex((s) => s.eventId === eligible[lastIdx].item.event_id)] ?? rankedRows[lastIdx];
+      const lastItem = eligible[PAGE_SIZE - 1].item;
+      const lastRow = rankedRows.find((r: any) => r.id === lastItem.event_id);
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[lastIdx].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {
       const empty_reason = await this.diagnoseEmpty(rows.length, gated.length > 0 && eligible.length === 0);
-      return { items: [], next_cursor: null, empty_reason };
+      return { items: [], next_cursor: null, meta: { has_more: false, empty_reason } };
     }
 
-    return { items: feedItems, next_cursor };
+    return { items: feedItems, next_cursor, meta: { has_more: next_cursor !== null } };
   }
 
-  private async getChronologicalFeed(cursorStr?: string): Promise<FeedResponse> {
+  private async getChronologicalFeed(cursorStr?: string, topicFilter?: string): Promise<FeedResponse> {
     let cursor: { publishedAt: Date; eventId: string } | undefined;
 
     if (cursorStr) {
@@ -313,7 +336,7 @@ export class FeedService {
 
     // Over-fetch to compensate for gate-filtered items
     const OVER_FETCH = PAGE_SIZE * 3;
-    const rows = await this.repo.getFeed(cursor, OVER_FETCH);
+    const rows = await this.repo.getFeed(cursor, OVER_FETCH, topicFilter);
 
     const allItems = rows.map((row: any) => buildFeedItem(row));
     const eligible = allItems.filter((r) => r.eligible);
@@ -324,16 +347,17 @@ export class FeedService {
 
     let next_cursor: string | null = null;
     if (eligible.length > PAGE_SIZE) {
-      const lastRow = rows.find((r: any) => r.id === eligible[PAGE_SIZE - 1].item.event_id) ?? rows[rows.length - 1];
+      const lastItem = eligible[PAGE_SIZE - 1].item;
+      const lastRow = rows.find((r: any) => r.id === lastItem.event_id) ?? rows[rows.length - 1];
       const ts = lastRow?.publishedAt?.toISOString() ?? lastRow?.createdAt?.toISOString() ?? new Date().toISOString();
-      next_cursor = Buffer.from(`${ts}|${eligible[PAGE_SIZE - 1].item.event_id}`).toString('base64');
+      next_cursor = Buffer.from(`${ts}|${lastItem.event_id}`).toString('base64');
     }
 
     if (feedItems.length === 0) {
       const empty_reason = await this.diagnoseEmpty(rows.length, gated.length > 0 && eligible.length === 0);
-      return { items: [], next_cursor: null, empty_reason };
+      return { items: [], next_cursor: null, meta: { has_more: false, empty_reason } };
     }
 
-    return { items: feedItems, next_cursor };
+    return { items: feedItems, next_cursor, meta: { has_more: next_cursor !== null } };
   }
 }

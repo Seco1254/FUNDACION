@@ -14,6 +14,7 @@ function makeMockRow(overrides: Record<string, any> = {}) {
       headline: 'Test headline',
       packetJson: {},
     }],
+    topicAssignments: [],
     eventArticles: [{
       article: {
         id: 'art-1',
@@ -53,8 +54,8 @@ describe('buildFeedFallbackOverview', () => {
     const result = buildFeedFallbackOverview(
       'Reforma tributaria aprobada',
       [
-        { source_id: 'm1', name: 'El Tiempo', domain: 'eltiempo.com', article_count: 1 },
-        { source_id: 'm2', name: 'El Espectador', domain: 'elespectador.com', article_count: 1 },
+        { media_key: 'eltiempo', name: 'El Tiempo' },
+        { media_key: 'elespectador', name: 'El Espectador' },
       ],
       'pending',
     );
@@ -81,7 +82,6 @@ describe('buildFeedFallbackOverview', () => {
 describe('FeedService', () => {
   describe('controlled degradation', () => {
     it('event with overview pending appears in feed with fallback overview', async () => {
-      // Row with no ai_overview in packet → overview_status = 'pending'
       const row = makeMockRow();
       const repo = makeRepoReturning([row]);
       const service = new FeedService(repo);
@@ -91,13 +91,10 @@ describe('FeedService', () => {
       expect(feed.items).toHaveLength(1);
       const item = feed.items[0];
       expect(item.event_id).toBe('evt-1');
-      expect(item.overview_status).toBe('pending');
-      expect(item.why_no_overview).not.toBeNull();
-      expect(item.why_no_overview).toContain('status=pending');
+      expect(item.overview.status).toBe('pending');
       // Fallback overview should be populated
-      expect(item.ai_overview).not.toBeNull();
-      expect(item.ai_overview!.what_happened).toContain('Test headline');
-      expect(item.ai_overview!.confidence_label).toBe('Pendiente');
+      expect(item.overview.what_happened).toContain('Test headline');
+      expect(item.overview.confidence_label).toBe('Pendiente');
     });
 
     it('event with overview unavailable appears in feed with fallback overview', async () => {
@@ -106,7 +103,7 @@ describe('FeedService', () => {
           id: 'ver-1',
           headline: 'Headline',
           packetJson: {
-            ai_overview: { what_happened: [], context: [], in_dispute: [] }, // empty → unavailable
+            ai_overview: { what_happened: [], context: [], in_dispute: [] },
           },
         }],
       });
@@ -117,9 +114,8 @@ describe('FeedService', () => {
 
       expect(feed.items).toHaveLength(1);
       const item = feed.items[0];
-      expect(item.overview_status).toBe('unavailable');
-      expect(item.ai_overview).not.toBeNull();
-      expect(item.ai_overview!.what_happened).toContain('Evidencia en proceso de verificación.');
+      expect(item.overview.status).toBe('unavailable');
+      expect(item.overview.what_happened).toContain('Evidencia en proceso de verificación.');
     });
 
     it('event with overview ready appears with real overview (no fallback)', async () => {
@@ -144,13 +140,12 @@ describe('FeedService', () => {
 
       expect(feed.items).toHaveLength(1);
       const item = feed.items[0];
-      expect(item.overview_status).toBe('ready');
-      expect(item.ai_overview!.what_happened).toEqual(['La reforma fue aprobada.']);
-      expect(item.ai_overview!.confidence_label).toBe('Alta');
-      expect(item.why_no_overview).toBeNull();
+      expect(item.overview.status).toBe('ready');
+      expect(item.overview.what_happened).toEqual(['La reforma fue aprobada.']);
+      expect(item.overview.confidence_label).toBe('Alta');
     });
 
-    it('always includes sources[], evidence_level, why_no_overview for pending items', async () => {
+    it('always includes sources[], evidence_level for pending items', async () => {
       const row = makeMockRow();
       const repo = makeRepoReturning([row]);
       const service = new FeedService(repo);
@@ -159,10 +154,10 @@ describe('FeedService', () => {
       const item = feed.items[0];
 
       expect(item.sources).toHaveLength(2);
-      expect(item.sources![0].name).toBe('El Tiempo');
-      expect(item.sources![1].name).toBe('El Espectador');
+      expect(item.sources[0].name).toBe('El Tiempo');
+      expect(item.sources[1].name).toBe('El Espectador');
       expect(item.evidence_level).toBeDefined();
-      expect(item.unique_sources_count).toBe(2);
+      expect(item.source_count).toBe(2);
       expect(item.article_count).toBe(2);
     });
 
@@ -176,9 +171,48 @@ describe('FeedService', () => {
     });
   });
 
+  describe('topic extraction', () => {
+    it('extracts topic from topicAssignments', async () => {
+      const row = makeMockRow({
+        topicAssignments: [{ topicKey: 'ECONOMIA', weight: 0.8 }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      expect(feed.items[0].topic).toEqual({ key: 'ECONOMIA', label: 'Economía' });
+    });
+
+    it('falls back to packetJson topics when topicAssignments empty', async () => {
+      const row = makeMockRow({
+        topicAssignments: [],
+        versions: [{
+          id: 'ver-1',
+          headline: 'Test',
+          packetJson: {
+            topics: { top_topics: [{ key: 'SALUD', weight: 0.6 }] },
+          },
+        }],
+      });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      expect(feed.items[0].topic).toEqual({ key: 'SALUD', label: 'Salud' });
+    });
+
+    it('returns null topic when no assignment exists', async () => {
+      const row = makeMockRow({ topicAssignments: [] });
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      expect(feed.items[0].topic).toBeNull();
+    });
+  });
+
   describe('race condition: overview pending → ready', () => {
     it('same event transitions from pending to ready across feed calls', async () => {
-      // Call 1: overview pending
       const rowPending = makeMockRow();
       let currentRows = [rowPending];
       const repo = {
@@ -188,11 +222,9 @@ describe('FeedService', () => {
 
       const feed1 = await service.getFeed();
       expect(feed1.items).toHaveLength(1);
-      expect(feed1.items[0].overview_status).toBe('pending');
-      expect(feed1.items[0].ai_overview).not.toBeNull();
-      expect(feed1.items[0].ai_overview!.confidence_label).toBe('Pendiente');
+      expect(feed1.items[0].overview.status).toBe('pending');
+      expect(feed1.items[0].overview.confidence_label).toBe('Pendiente');
 
-      // Call 2: overview ready (simulate OverviewGenerated writing to packet)
       const rowReady = makeMockRow({
         versions: [{
           id: 'ver-1',
@@ -211,34 +243,29 @@ describe('FeedService', () => {
 
       const feed2 = await service.getFeed();
       expect(feed2.items).toHaveLength(1);
-      expect(feed2.items[0].event_id).toBe('evt-1'); // same event
-      expect(feed2.items[0].overview_status).toBe('ready');
-      expect(feed2.items[0].ai_overview!.what_happened).toEqual(['La reforma fue aprobada por el Congreso.']);
-      expect(feed2.items[0].ai_overview!.confidence_label).toBe('Alta');
-      expect(feed2.items[0].why_no_overview).toBeNull();
+      expect(feed2.items[0].event_id).toBe('evt-1');
+      expect(feed2.items[0].overview.status).toBe('ready');
+      expect(feed2.items[0].overview.what_happened).toEqual(['La reforma fue aprobada por el Congreso.']);
+      expect(feed2.items[0].overview.confidence_label).toBe('Alta');
     });
   });
 
   describe('gate filtering', () => {
-    it('event with overview_status failed is filtered out', async () => {
+    it('event with no articles is filtered out by gate', async () => {
       const row = makeMockRow({
         versions: [{
           id: 'ver-1',
           headline: 'Failed',
           packetJson: {
             ai_overview: { what_happened: ['x'], context: ['y'], in_dispute: [] },
-            // We can't set overview_status directly; "failed" is set by the gate
           },
         }],
-        // No usable text → gate should filter (TEXT_TOO_SHORT)
         eventArticles: [],
       });
       const repo = makeRepoReturning([row]);
       const service = new FeedService(repo);
 
       const feed = await service.getFeed();
-
-      // With no articles → no sources, no text → TEXT_TOO_SHORT + NO_SOURCES → filtered
       expect(feed.items).toHaveLength(0);
     });
 
@@ -248,25 +275,89 @@ describe('FeedService', () => {
       const feed = await service.getFeed();
       expect(feed.items).toEqual([]);
       expect(feed.next_cursor).toBeNull();
-      expect(feed.empty_reason).toBe('NO_PUBLISHED');
+      expect(feed.meta.empty_reason).toBe('no_published');
     });
 
-    it('returns DB_EMPTY when no events at all', async () => {
+    it('returns no_events when no events at all', async () => {
       const repo = makeRepoReturning([], {});
       const service = new FeedService(repo);
       const feed = await service.getFeed();
       expect(feed.items).toEqual([]);
-      expect(feed.empty_reason).toBe('DB_EMPTY');
+      expect(feed.meta.empty_reason).toBe('no_events');
     });
 
-    it('returns GATE_FILTERED_ALL when all published events are gated', async () => {
-      // Row with no articles → filtered by gate
+    it('returns no_events when all published events are gated', async () => {
       const row = makeMockRow({ eventArticles: [] });
       const repo = makeRepoReturning([row]);
       const service = new FeedService(repo);
       const feed = await service.getFeed();
       expect(feed.items).toEqual([]);
-      expect(feed.empty_reason).toBe('GATE_FILTERED_ALL');
+      expect(feed.meta.empty_reason).toBe('no_events');
+    });
+  });
+
+  describe('response shape (FeedCard contract)', () => {
+    it('uses updated_at instead of t_last', async () => {
+      const row = makeMockRow();
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      const item = feed.items[0];
+      expect(item.updated_at).toBe('2026-02-20T10:00:00.000Z');
+      expect((item as any).t_last).toBeUndefined();
+    });
+
+    it('uses overview instead of ai_overview', async () => {
+      const row = makeMockRow();
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      const item = feed.items[0];
+      expect(item.overview).toBeDefined();
+      expect(item.overview.status).toBeDefined();
+      expect((item as any).ai_overview).toBeUndefined();
+      expect((item as any).overview_status).toBeUndefined();
+    });
+
+    it('does not expose internal fields', async () => {
+      const row = makeMockRow();
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      const item = feed.items[0] as any;
+      expect(item.state).toBeUndefined();
+      expect(item.unique_sources_count).toBeUndefined();
+      expect(item.usable_articles_count).toBeUndefined();
+      expect(item.total_usable_text_len).toBeUndefined();
+      expect(item.key_facts_count).toBeUndefined();
+      expect(item.overview_mode).toBeUndefined();
+      expect(item.why_no_overview).toBeUndefined();
+    });
+
+    it('has meta with has_more', async () => {
+      const row = makeMockRow();
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      expect(feed.meta).toBeDefined();
+      expect(feed.meta.has_more).toBe(false);
+    });
+
+    it('sources use media_key instead of source_id', async () => {
+      const row = makeMockRow();
+      const repo = makeRepoReturning([row]);
+      const service = new FeedService(repo);
+
+      const feed = await service.getFeed();
+      const source = feed.items[0].sources[0];
+      expect(source.media_key).toBe('eltiempo');
+      expect(source.name).toBe('El Tiempo');
+      expect((source as any).source_id).toBeUndefined();
+      expect((source as any).domain).toBeUndefined();
     });
   });
 });

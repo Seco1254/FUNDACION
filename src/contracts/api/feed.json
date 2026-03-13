@@ -2,48 +2,93 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "FeedResponse",
   "type": "object",
-  "required": ["items", "next_cursor"],
+  "required": ["items", "next_cursor", "meta"],
+  "additionalProperties": false,
   "properties": {
     "items": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["event_id", "state", "headline", "t_last", "published_at", "cover_image_url"],
-        "properties": {
-          "event_id": { "type": "string" },
-          "state": { "type": "string", "enum": ["DETECTED", "PENDING_PUBLISH", "PUBLISHED", "UPDATING", "DORMANT", "CLOSED"] },
-          "headline": { "type": ["string", "null"] },
-          "t_last": { "type": ["string", "null"] },
-          "published_at": { "type": ["string", "null"] },
-          "cover_image_url": { "type": ["string", "null"] },
-          "ai_overview": {},
-          "overview_status": { "type": "string", "enum": ["ready", "unavailable", "pending", "failed"] },
-          "overview_mode": { "type": ["string", "null"] },
-          "sources": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["source_id", "name", "domain", "article_count"],
-              "properties": {
-                "source_id": { "type": "string" },
-                "name": { "type": "string" },
-                "domain": { "type": "string" },
-                "article_count": { "type": "integer" }
-              }
-            }
-          },
-          "article_count": { "type": "integer" },
-          "unique_sources_count": { "type": "integer" },
-          "usable_articles_count": { "type": "integer" },
-          "total_usable_text_len": { "type": "integer" },
-          "key_facts_count": { "type": "integer" },
-          "evidence_level": { "type": "string", "enum": ["high", "medium", "low", "none"] },
-          "why_no_overview": { "type": ["string", "null"] }
-        }
-      }
+      "items": { "$ref": "#/definitions/FeedCard" }
     },
     "next_cursor": { "type": ["string", "null"] },
-    "empty_reason": { "type": "string", "enum": ["NO_EVENTS", "NO_PUBLISHED", "GATE_FILTERED_ALL", "DB_EMPTY"] }
+    "meta": {
+      "type": "object",
+      "required": ["has_more"],
+      "properties": {
+        "has_more": { "type": "boolean" },
+        "empty_reason": { "type": "string", "enum": ["no_events", "no_published"] }
+      },
+      "additionalProperties": false
+    }
   },
-  "additionalProperties": false
+  "definitions": {
+    "ProductTopicKey": {
+      "type": "string",
+      "enum": [
+        "SEGURIDAD", "ECONOMIA", "JUSTICIA", "SALUD", "EDUCACION",
+        "CORRUPCION", "PROTESTA", "POLITICA", "RELACIONES_INT",
+        "AMBIENTE", "TECNOLOGIA", "INFRAESTRUCTURA"
+      ]
+    },
+    "OverviewConfidenceLabel": {
+      "type": "string",
+      "enum": ["Alta", "Media", "Baja", "Pendiente", "No concluyente"]
+    },
+    "FeedCardSource": {
+      "type": "object",
+      "required": ["media_key", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "media_key": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "FeedCardTopic": {
+      "type": "object",
+      "required": ["key", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "$ref": "#/definitions/ProductTopicKey" },
+        "label": { "type": "string" }
+      }
+    },
+    "FeedCardOverview": {
+      "type": "object",
+      "required": ["status", "what_happened", "context", "in_dispute", "confidence_label"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["ready", "pending", "unavailable"] },
+        "what_happened": { "type": "array", "items": { "type": "string" } },
+        "context": { "type": "array", "items": { "type": "string" } },
+        "in_dispute": { "type": "array", "items": { "type": "string" } },
+        "confidence_label": { "$ref": "#/definitions/OverviewConfidenceLabel" }
+      }
+    },
+    "FeedCard": {
+      "type": "object",
+      "required": [
+        "event_id", "headline", "published_at", "updated_at",
+        "overview", "topic", "sources", "source_count",
+        "article_count", "evidence_level", "cover_image_url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": { "type": "string" },
+        "headline": { "type": "string" },
+        "published_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" },
+        "overview": { "$ref": "#/definitions/FeedCardOverview" },
+        "topic": {
+          "oneOf": [
+            { "$ref": "#/definitions/FeedCardTopic" },
+            { "type": "null" }
+          ]
+        },
+        "sources": { "type": "array", "items": { "$ref": "#/definitions/FeedCardSource" }, "minItems": 1 },
+        "source_count": { "type": "integer", "minimum": 1 },
+        "article_count": { "type": "integer", "minimum": 1 },
+        "evidence_level": { "type": "string", "enum": ["high", "medium", "low"] },
+        "cover_image_url": { "type": ["string", "null"] }
+      }
+    }
+  }
 }

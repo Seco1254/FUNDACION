@@ -44,8 +44,22 @@ export class EventRepository {
     }) as Promise<EventEntity>;
   }
 
-  async findPublishedFeed(cursor?: { publishedAt: Date; eventId: string }, pageSize: number = 20) {
-    const where: any = { state: 'PUBLISHED' as any, canonicalEventId: null };
+  async findPublishedFeed(
+    cursor?: { publishedAt: Date; eventId: string },
+    pageSize: number = 20,
+    topicFilter?: string,
+  ) {
+    const where: any = {
+      state: 'PUBLISHED' as any,
+      canonicalEventId: null,
+      publishedAt: { not: null },
+      versions: { some: { headline: { not: null } } },
+    };
+
+    if (topicFilter) {
+      where.topicAssignments = { some: { topicKey: topicFilter } };
+    }
+
     if (cursor) {
       where.AND = [
         {
@@ -65,6 +79,11 @@ export class EventRepository {
         versions: {
           orderBy: { versionIndex: 'desc' },
           take: 1,
+        },
+        topicAssignments: {
+          orderBy: { weight: 'desc' },
+          take: 1,
+          select: { topicKey: true, weight: true },
         },
         eventArticles: {
           include: {
@@ -182,23 +201,51 @@ export class EventRepository {
     return row?.publishAt ?? null;
   }
 
-  async searchPublished(query: string, limit: number = 20) {
-    return this.prisma.event.findMany({
-      where: {
-        state: 'PUBLISHED' as any,
-        canonicalEventId: null,
-        versions: {
-          some: {
-            headline: { contains: query, mode: 'insensitive' },
-          },
+  async searchPublished(
+    query: string,
+    limit: number = 20,
+    cursor?: { publishedAt: Date; eventId: string },
+    topicFilter?: string,
+  ) {
+    const where: any = {
+      state: 'PUBLISHED' as any,
+      canonicalEventId: null,
+      publishedAt: { not: null },
+      versions: {
+        some: {
+          headline: { not: null, contains: query, mode: 'insensitive' },
         },
       },
+    };
+
+    if (topicFilter) {
+      where.topicAssignments = { some: { topicKey: topicFilter } };
+    }
+
+    if (cursor) {
+      where.AND = [
+        {
+          OR: [
+            { publishedAt: { lt: cursor.publishedAt } },
+            { publishedAt: cursor.publishedAt, id: { lt: cursor.eventId } },
+          ],
+        },
+      ];
+    }
+
+    return this.prisma.event.findMany({
+      where,
       orderBy: [{ publishedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
-      take: limit,
+      take: limit + 1,
       include: {
         versions: {
           orderBy: { versionIndex: 'desc' },
           take: 1,
+        },
+        topicAssignments: {
+          orderBy: { weight: 'desc' },
+          take: 1,
+          select: { topicKey: true, weight: true },
         },
         eventArticles: {
           include: {

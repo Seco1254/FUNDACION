@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SearchResponse",
+  "type": "object",
+  "required": ["items", "query", "next_cursor", "meta"],
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/SearchResultItem" }
+    },
+    "query": { "type": "string", "minLength": 2 },
+    "next_cursor": { "type": ["string", "null"] },
+    "meta": {
+      "type": "object",
+      "required": ["has_more"],
+      "additionalProperties": false,
+      "properties": {
+        "has_more": { "type": "boolean" }
+      }
+    }
+  },
+  "definitions": {
+    "ProductTopicKey": {
+      "type": "string",
+      "enum": [
+        "SEGURIDAD", "ECONOMIA", "JUSTICIA", "SALUD", "EDUCACION",
+        "CORRUPCION", "PROTESTA", "POLITICA", "RELACIONES_INT",
+        "AMBIENTE", "TECNOLOGIA", "INFRAESTRUCTURA"
+      ]
+    },
+    "OverviewConfidenceLabel": {
+      "type": "string",
+      "enum": ["Alta", "Media", "Baja", "Pendiente", "No concluyente"]
+    },
+    "SearchResultItem": {
+      "type": "object",
+      "required": [
+        "event_id", "headline", "published_at", "updated_at",
+        "summary", "confidence_label", "topic", "sources",
+        "source_count", "article_count", "evidence_level",
+        "cover_image_url", "match_headline"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": { "type": "string" },
+        "headline": { "type": "string" },
+        "published_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" },
+        "summary": { "type": ["string", "null"] },
+        "confidence_label": { "$ref": "#/definitions/OverviewConfidenceLabel" },
+        "topic": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["key", "label"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "$ref": "#/definitions/ProductTopicKey" },
+                "label": { "type": "string" }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["media_key", "name"],
+            "additionalProperties": false,
+            "properties": {
+              "media_key": { "type": "string" },
+              "name": { "type": "string" }
+            }
+          }
+        },
+        "source_count": { "type": "integer" },
+        "article_count": { "type": "integer" },
+        "evidence_level": { "type": "string", "enum": ["high", "medium", "low"] },
+        "cover_image_url": { "type": ["string", "null"] },
+        "match_headline": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

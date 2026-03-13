@@ -1,0 +1,16 @@
+{
+  "items": [
+    { "key": "SEGURIDAD", "label": "Seguridad", "event_count": 45 },
+    { "key": "ECONOMIA", "label": "Economía", "event_count": 32 },
+    { "key": "JUSTICIA", "label": "Justicia", "event_count": 28 },
+    { "key": "POLITICA", "label": "Política", "event_count": 22 },
+    { "key": "SALUD", "label": "Salud", "event_count": 15 },
+    { "key": "CORRUPCION", "label": "Corrupción", "event_count": 12 },
+    { "key": "AMBIENTE", "label": "Ambiente", "event_count": 8 },
+    { "key": "PROTESTA", "label": "Protesta", "event_count": 7 },
+    { "key": "EDUCACION", "label": "Educación", "event_count": 5 },
+    { "key": "INFRAESTRUCTURA", "label": "Infraestructura", "event_count": 4 },
+    { "key": "RELACIONES_INT", "label": "Relaciones Internacionales", "event_count": 3 },
+    { "key": "TECNOLOGIA", "label": "Tecnología", "event_count": 2 }
+  ]
+}

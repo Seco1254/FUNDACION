@@ -3,6 +3,7 @@ import { FeedService } from '../../modules/feed/service/feed-service.js';
 import { Cache } from '../../core/cache/cache.js';
 import { SingleFlight } from '../../core/cache/singleflight.js';
 import { handleEtag } from '../../core/http/etag.js';
+import { PRODUCT_TOPIC_KEYS } from '../../contracts/product/shared.js';
 
 /**
  * Validates a base64-encoded cursor string.
@@ -26,10 +27,11 @@ function isValidCursor(cursorStr: string): boolean {
 
 export function feedRoutes(feedService: FeedService, cache?: Cache, singleFlight?: SingleFlight) {
   return async function (app: FastifyInstance) {
-    app.get<{ Querystring: { tab?: string; cursor?: string } }>(
+    app.get<{ Querystring: { tab?: string; cursor?: string; topic?: string } }>(
       '/v1/feed',
       async (request, reply) => {
         const cursor = request.query.cursor;
+        const topic = request.query.topic;
 
         // Cursor validation
         if (cursor !== undefined && cursor !== '') {
@@ -41,7 +43,18 @@ export function feedRoutes(feedService: FeedService, cache?: Cache, singleFlight
           }
         }
 
-        const cacheKey = `feed:${request.query.tab ?? 'global'}:${cursor ?? ''}`;
+        // Topic validation
+        if (topic !== undefined && topic !== '') {
+          if (!PRODUCT_TOPIC_KEYS.has(topic)) {
+            return reply.status(400).send({
+              error: 'Invalid topic',
+              message: `Topic "${topic}" is not a valid product topic key.`,
+            });
+          }
+        }
+
+        const topicFilter = topic && PRODUCT_TOPIC_KEYS.has(topic) ? topic : undefined;
+        const cacheKey = `feed:${topicFilter ?? request.query.tab ?? 'global'}:${cursor ?? ''}`;
 
         // Try cache
         if (cache) {
@@ -56,7 +69,7 @@ export function feedRoutes(feedService: FeedService, cache?: Cache, singleFlight
         }
 
         // SingleFlight dedup
-        const fetchFn = () => feedService.getFeed(cursor);
+        const fetchFn = () => feedService.getFeed(cursor, topicFilter);
         const body = singleFlight
           ? await singleFlight.do(cacheKey, fetchFn)
           : await fetchFn();

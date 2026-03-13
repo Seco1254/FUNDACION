@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "event_id": "evt-search-001",
+      "headline": "Colombia firma acuerdo comercial con Japón",
+      "published_at": "2026-02-18T12:00:00.000Z",
+      "updated_at": "2026-02-18T15:00:00.000Z",
+      "summary": "Colombia y Japón firmaron un acuerdo de libre comercio que entrará en vigor en 2027.",
+      "confidence_label": "Alta",
+      "topic": {
+        "key": "ECONOMIA",
+        "label": "Economía"
+      },
+      "sources": [
+        { "media_key": "eltiempo", "name": "El Tiempo" },
+        { "media_key": "portafolio", "name": "Portafolio" }
+      ],
+      "source_count": 2,
+      "article_count": 4,
+      "evidence_level": "high",
+      "cover_image_url": null,
+      "match_headline": "<mark>Colombia</mark> firma acuerdo comercial con Japón"
+    }
+  ],
+  "query": "colombia",
+  "next_cursor": null,
+  "meta": {
+    "has_more": false
+  }
+}
