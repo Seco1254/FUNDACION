@@ -103,10 +103,10 @@ describe('gates', () => {
       expect(result.reasons).toHaveLength(0);
     });
 
-    it('passes single-source gate with sufficient text (no disclaimer required)', () => {
+    it('passes single-source gate with sufficient text (>= 1500)', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
-        total_usable_text_len: 900,
+        total_usable_text_len: 1600,
         key_facts_count: 7,
         overview_status: 'ready',
         has_disclaimer: false,
@@ -114,6 +114,18 @@ describe('gates', () => {
       expect(result.eligible).toBe(true);
       expect(result.gate_name).toBe('single');
       expect(result.reasons).toHaveLength(0);
+    });
+
+    it('blocks single-source with only 900 chars (below 1500 threshold)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 1,
+        total_usable_text_len: 900,
+        key_facts_count: 7,
+        overview_status: 'ready',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons).toContain('TEXT_TOO_SHORT');
     });
 
     it('passes multi-source with pending overview (evidence-based gate)', () => {
@@ -140,10 +152,10 @@ describe('gates', () => {
       expect(result.gate_name).toBe('multi');
     });
 
-    it('passes single-source with pending overview when text is sufficient', () => {
+    it('passes single-source with pending overview when text >= 1500', () => {
       const result = evaluatePublishGate({
         unique_sources_count: 1,
-        total_usable_text_len: 900,
+        total_usable_text_len: 1500,
         key_facts_count: 0,
         overview_status: 'pending',
         has_disclaimer: false,
@@ -200,6 +212,70 @@ describe('gates', () => {
       expect(result.eligible).toBe(false);
       expect(result.reasons).toContain('NO_SOURCES');
       expect(result.reasons).toContain('TEXT_TOO_SHORT');
+    });
+
+    // ── Non-news headline blocking ──
+
+    it('blocks non-news headline: podcast', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 5000,
+        key_facts_count: 10,
+        overview_status: 'ready',
+        has_disclaimer: false,
+        headline: 'PÓDCAST | Entrevista con el presidente',
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons[0]).toMatch(/^NON_NEWS:/);
+    });
+
+    it('blocks non-news headline: institutional', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 5000,
+        key_facts_count: 10,
+        overview_status: 'ready',
+        has_disclaimer: false,
+        headline: 'Política de protección y tratamiento de datos personales',
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons[0]).toMatch(/^NON_NEWS:/);
+    });
+
+    it('blocks non-news headline: weekly digest', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 3,
+        total_usable_text_len: 10000,
+        key_facts_count: 20,
+        overview_status: 'ready',
+        has_disclaimer: false,
+        headline: 'EDICIÓN DEL 16 DE FEBRERO AL 22 DE FEBRERO DEL 2026',
+      });
+      expect(result.eligible).toBe(false);
+      expect(result.reasons[0]).toMatch(/^NON_NEWS:/);
+    });
+
+    it('allows real news headline through gate', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 2000,
+        key_facts_count: 5,
+        overview_status: 'ready',
+        has_disclaimer: false,
+        headline: 'Reforma tributaria aprobada en segundo debate',
+      });
+      expect(result.eligible).toBe(true);
+    });
+
+    it('works without headline (backward compat)', () => {
+      const result = evaluatePublishGate({
+        unique_sources_count: 2,
+        total_usable_text_len: 2000,
+        key_facts_count: 5,
+        overview_status: 'ready',
+        has_disclaimer: false,
+      });
+      expect(result.eligible).toBe(true);
     });
   });
 });

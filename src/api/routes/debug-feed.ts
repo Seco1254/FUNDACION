@@ -104,6 +104,7 @@ export function debugFeedRoutes(
           key_facts_count: keyFactsCount,
           overview_status: overviewStatus,
           has_disclaimer: hasDisclaimer,
+          headline: latestVersion?.headline ?? undefined,
         });
 
         const failReasons = articles

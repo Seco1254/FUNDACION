@@ -3,6 +3,8 @@
  * Runs BEFORE persisting ai_overview to packet_json.
  */
 
+import { classifyNonNews } from '../../modules/quality/detectors/non-news.js';
+
 export interface EvidenceValidation {
   valid: boolean;
   reasons: string[];
@@ -76,7 +78,7 @@ export function buildInsufficientOverview(reasons: string[]): Record<string, unk
 const PUBLISH_GATE_ENABLED = process.env.PUBLISH_GATE_ENABLED !== '0';
 const GATE_MULTI_SOURCES = parseInt(process.env.GATE_MULTI_SOURCES ?? '2', 10);
 const GATE_MULTI_TEXT = parseInt(process.env.GATE_MULTI_TEXT ?? '1200', 10);
-const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '800', 10);
+const GATE_SINGLE_TEXT = parseInt(process.env.GATE_SINGLE_TEXT ?? '1500', 10);
 const GATE_KEY_FACTS_MIN = parseInt(process.env.GATE_KEY_FACTS_MIN ?? '0', 10);
 
 export interface PublishGateInput {
@@ -85,6 +87,8 @@ export interface PublishGateInput {
   key_facts_count: number;
   overview_status: string;
   has_disclaimer: boolean;
+  /** Headline for non-news classification. Optional for backward compat. */
+  headline?: string;
 }
 
 export interface PublishGateResult {
@@ -96,15 +100,16 @@ export interface PublishGateResult {
 /**
  * Hard publish gate: determines if an event is eligible to appear in /v1/feed.
  *
- * Checks RAW EVIDENCE capability (sources, text), not pipeline completion.
- * Events with sufficient evidence pass even if overview hasn't been generated yet
- * (overview_status 'pending'). Only blocks when status is explicitly 'failed'
- * (pipeline ran and determined evidence is insufficient).
+ * Checks:
+ * 1. Non-news content classifier (headline-based) — hard block
+ * 2. RAW EVIDENCE capability (sources, text)
+ * 3. Pipeline status (blocks 'failed')
  *
  * Gate Multi: sources>=2 AND text>=1200
- * Gate Single: sources>=1 AND text>=800
+ * Gate Single: sources>=1 AND text>=1500 (raised from 800 for feed quality)
  * Both:       key_facts >= GATE_KEY_FACTS_MIN (default 0)
  *             NOT overview_status='failed'
+ *             NOT non-news headline
  */
 export function evaluatePublishGate(input: PublishGateInput): PublishGateResult {
   // Kill switch: PUBLISH_GATE_ENABLED=0 bypasses the gate entirely
@@ -113,6 +118,15 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
   }
 
   const reasons: string[] = [];
+
+  // ── Non-news headline classification (hard block) ──
+  if (input.headline) {
+    const nonNews = classifyNonNews(input.headline);
+    if (nonNews.isNonNews) {
+      reasons.push(`NON_NEWS:${nonNews.reason}`);
+      return { eligible: false, gate_name: null, reasons };
+    }
+  }
 
   // Only block when the pipeline explicitly failed — NOT when it's still pending
   if (input.overview_status === 'failed') {
@@ -136,7 +150,7 @@ export function evaluatePublishGate(input: PublishGateInput): PublishGateResult 
     return { eligible: false, gate_name: null, reasons };
   }
 
-  // Gate Single: single-source event (no disclaimer requirement for feed eligibility)
+  // Gate Single: single-source event
   if (input.unique_sources_count >= 1) {
     if (reasons.length === 0) {
       return { eligible: true, gate_name: 'single', reasons: [] };

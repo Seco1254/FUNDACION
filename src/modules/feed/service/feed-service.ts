@@ -19,6 +19,7 @@ interface InternalGateInput {
   key_facts_count: number;
   overview_status: string;
   has_disclaimer: boolean;
+  headline?: string;
 }
 
 // ── Overview extraction ─────────────────────────────────────
@@ -188,6 +189,7 @@ export function buildFeedItem(row: any): { item: FeedCard; eligible: boolean; ga
     key_facts_count: keyFactsCount,
     overview_status: overviewStatus,
     has_disclaimer: hasDisclaimer,
+    headline,
   };
   const gate = evaluatePublishGate(gateInput);
 

@@ -22,6 +22,64 @@ import { sanitizeText } from '../../text_sanitizer/sanitize.js';
 
 const TEXT_MIN_LEN = parseInt(process.env.ARTICLE_TEXT_MIN_LEN ?? '800', 10);
 
+// ── Bullet quality filter ────────────────────────────────────
+
+/** Patterns that indicate a bullet is noise/boilerplate, not editorial content. */
+const NOISE_BULLET_PATTERNS = [
+  /^https?:\/\//i,                           // bare URL
+  /^(foto|imagen|video|audio|infograf[ií]a)\s*:/i,  // media captions
+  /^(lea también|vea también|le puede interesar|más en)\b/i, // navigation
+  /\b(suscr[ií]b[ae]|newsletter|registr[ao])\b/i,  // subscription CTA
+  /\b(cookies?|pol[ií]tica de privacidad)\b/i,     // legal
+  /^[\d\s.,:;/\-–—]+$/,                      // only numbers/punctuation
+  /^\s*[•\-–—]\s*$/,                         // empty bullet marker
+  /^(compartir|enviar|imprimir|guardar)\b/i,  // action buttons
+  /^(publicado|actualizado|modificado)\s+(el|en)\b/i, // metadata timestamps
+];
+
+const MIN_BULLET_LEN = 30;
+const MAX_BULLET_LEN = 500;
+
+/**
+ * Filter noisy/short/fragment bullets and cap to a maximum count.
+ * Truncates overly long bullets to MAX_BULLET_LEN.
+ */
+export function filterAndCapBullets(bullets: string[], maxCount: number): string[] {
+  const result: string[] = [];
+  const seenNorm = new Set<string>();
+
+  for (const raw of bullets) {
+    if (result.length >= maxCount) break;
+
+    const trimmed = raw.trim();
+    if (trimmed.length < MIN_BULLET_LEN) continue;
+
+    // Deduplicate by normalized text
+    const norm = trimmed.toLowerCase();
+    if (seenNorm.has(norm)) continue;
+    seenNorm.add(norm);
+
+    // Skip noise patterns
+    let isNoise = false;
+    for (const pattern of NOISE_BULLET_PATTERNS) {
+      if (pattern.test(trimmed)) {
+        isNoise = true;
+        break;
+      }
+    }
+    if (isNoise) continue;
+
+    // Truncate overly long bullets
+    const capped = trimmed.length > MAX_BULLET_LEN
+      ? trimmed.slice(0, MAX_BULLET_LEN - 1) + '…'
+      : trimmed;
+
+    result.push(capped);
+  }
+
+  return result;
+}
+
 export interface OverviewBullet {
   claim_id: string;
   text: string;
@@ -401,15 +459,20 @@ export class OverviewGenerator {
 
   /**
    * Derive ai_overview from heuristic sections so the feed never stays on null.
+   * Caps bullets and filters noisy/short/fragment text.
    */
   private buildHeuristicAiOverview(overview: OverviewResult): Record<string, unknown> {
     const quePaso = overview.sections.find((s) => s.key === 'que_paso');
     const contexto = overview.sections.find((s) => s.key === 'contexto');
     const enDisputa = overview.sections.find((s) => s.key === 'en_disputa');
 
-    const whatHappened = (quePaso?.bullets ?? []).map((b) => b.text);
-    const context = (contexto?.bullets ?? []).map((b) => b.text);
-    const inDispute = (enDisputa?.bullets ?? []).map((b) => b.text);
+    const rawWhatHappened = (quePaso?.bullets ?? []).map((b) => b.text);
+    const rawContext = (contexto?.bullets ?? []).map((b) => b.text);
+    const rawInDispute = (enDisputa?.bullets ?? []).map((b) => b.text);
+
+    const whatHappened = filterAndCapBullets(rawWhatHappened, 5);
+    const context = filterAndCapBullets(rawContext, 3);
+    const inDispute = filterAndCapBullets(rawInDispute, 2);
 
     // If gate FAIL and no bullets, provide a minimal "unavailable" message
     if (whatHappened.length === 0 && context.length === 0) {
@@ -464,10 +527,19 @@ export class OverviewGenerator {
       const sentences = text.split(/(?<=[.;:])\s+/).filter((s) => s.length >= 40 && s.length <= 300);
 
       for (const sentence of sentences) {
-        const norm = sentence.toLowerCase().trim();
+        const trimmed = sentence.trim();
+        const norm = trimmed.toLowerCase();
         if (seen.has(norm)) continue;
+
+        // Skip noisy sentences using the shared filter
+        let isNoise = false;
+        for (const pattern of NOISE_BULLET_PATTERNS) {
+          if (pattern.test(trimmed)) { isNoise = true; break; }
+        }
+        if (isNoise) continue;
+
         seen.add(norm);
-        factsExtracted.push(sentence);
+        factsExtracted.push(trimmed);
       }
     }
 
