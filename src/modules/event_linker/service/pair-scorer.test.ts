@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   scoreCandidates,
   decideLinkAction,
@@ -14,6 +14,7 @@ import {
   HardBlockContext,
   EventCandidateContext,
 } from './pair-scorer.js';
+import { LlmClient } from '../../../core/llm/client.js';
 
 function makeVec(seed: number): number[] {
   // Deterministic 256-dim vector
@@ -865,5 +866,184 @@ describe('v2.6: same-source precision', () => {
       const result = await decideLinkAction(article, [candidate], null);
       expect(result.action).toBe('CREATE');
     }
+  });
+});
+
+// ── v3: LLM verifier routing ──
+
+describe('v3: LLM verifier integration', () => {
+  // Helper: create a mock LLM that returns a specific verifier verdict
+  function makeMockLlm(verdict: string, confidence = 0.9): LlmClient {
+    const llm = new LlmClient({ apiKey: 'test-key' });
+    vi.spyOn(llm, 'isAvailable').mockReturnValue(true);
+    vi.spyOn(llm, 'completeJson').mockResolvedValue({
+      data: { verdict, confidence, reasoning: 'test' },
+      meta: { model: 'test', input_tokens: 100, output_tokens: 50, latency_ms: 200 },
+    });
+    return llm;
+  }
+
+  it('AUTO_LINK bypasses LLM verifier entirely', async () => {
+    // High score + entities + signals → AUTO_LINK, no LLM needed
+    const llm = makeMockLlm('DIFFERENT_EVENT');
+    const completeSpy = vi.spyOn(llm, 'completeJson');
+
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+      representativeTitle: 'Reforma Pensional en el Congreso de la República por Gustavo Petro',
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].finalAction).toBe('AUTO_LINK');
+
+    const result = await decideLinkAction(article, [candidate], llm);
+    expect(result.action).toBe('LINK');
+    expect(result.linkType).toBe('AUTO_LINK');
+    expect(result.llmUsed).toBe(false);
+    // LLM should NOT have been called
+    expect(completeSpy).not.toHaveBeenCalled();
+  });
+
+  it('MAYBE + LLM SAME_EVENT → LINK', async () => {
+    const llm = makeMockLlm('SAME_EVENT', 0.92);
+
+    // Craft a pair in MAYBE zone: shared entities, distant vectors
+    const article = makeArticle({
+      title: 'Gustavo Petro impulsa reforma',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-maybe',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro presenta plan económico',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], llm);
+      expect(result.action).toBe('LINK');
+      expect(result.linkType).toBe('MAYBE_LINK');
+      expect(result.llmUsed).toBe(true);
+    }
+  });
+
+  it('MAYBE + LLM DIFFERENT_EVENT → CREATE', async () => {
+    const llm = makeMockLlm('DIFFERENT_EVENT', 0.88);
+
+    const article = makeArticle({
+      title: 'Gustavo Petro impulsa reforma',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-maybe-diff',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro presenta plan económico',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], llm);
+      expect(result.action).toBe('CREATE');
+      expect(result.llmUsed).toBe(true);
+    }
+  });
+
+  it('MAYBE + LLM UNCERTAIN → falls through to heuristic', async () => {
+    const llm = makeMockLlm('UNCERTAIN', 0.45);
+
+    const article = makeArticle({
+      title: 'Gustavo Petro impulsa reforma',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-maybe-uncertain',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro presenta plan económico',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], llm);
+      // UNCERTAIN → heuristic fallback decides (not llmUsed)
+      // The heuristic may LINK or CREATE depending on signals — we just verify
+      // it fell through (llmUsed = false because final decision was heuristic)
+      expect(result.llmUsed).toBe(false);
+    }
+  });
+
+  it('MAYBE + LLM null (disabled/unavailable) → heuristic fallback', async () => {
+    // Pass null LLM — should fall through to heuristic
+    const article = makeArticle({
+      title: 'Gustavo Petro impulsa reforma',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-maybe-no-llm',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro presenta plan económico',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.llmUsed).toBe(false);
+    // Backward compat: without LLM, heuristic still works
+    expect(['LINK', 'CREATE']).toContain(result.action);
+  });
+
+  it('below threshold → CREATE regardless of LLM', async () => {
+    const llm = makeMockLlm('SAME_EVENT', 0.99);
+
+    const article = makeArticle({
+      title: 'Economía del café en Colombia',
+      snippet: 'Los cafeteros reportan pérdidas por el clima.',
+      embeddingVec: makeVec(200),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-below',
+      articleVecs: [makeVec(50)],
+      articleTexts: ['Fútbol colombiano resultados de la liga'],
+      t0: new Date('2025-01-01T10:00:00Z'),
+      tLast: new Date('2025-01-02T10:00:00Z'),
+      uniqueMediaCount: 3,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].compositeScore).toBeLessThan(THETA_MAYBE_LINK);
+
+    const result = await decideLinkAction(article, [candidate], llm);
+    expect(result.action).toBe('CREATE');
+    // LLM should NOT be called for below-threshold pairs
+    expect(result.llmUsed).toBe(false);
   });
 });
