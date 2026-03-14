@@ -25,6 +25,7 @@ import { metrics } from '../../../core/metrics/metrics.js';
 import {
   shouldBlockAutoLink,
   checkTitleContradictionPair,
+  extractTitleKeywords,
   GateContext,
 } from './hard-negative-gates.js';
 import {
@@ -40,11 +41,10 @@ import {
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
-// v2.2: lowered from 0.30 → 0.22 to catch more same-event pairs in the maybe-link
-// zone. With improved embeddings (stopword removal + bigrams), the composite scores
-// for related articles shift up, making this safe. The heuristic fallback (uniqueMedia >= 1)
-// provides a second guard against false links in this range.
-export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.22');
+// v2.3: raised from 0.22 → 0.32 to reduce over-merge in the maybe-link zone.
+// Audit showed 42% over-merge rate with 0.22. The heuristic fallback now also
+// requires a minimum signal (entityOverlap >= 0.03 OR embeddingSim >= 0.40).
+export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.32');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Kill switch: never auto-link, only maybe/create
@@ -449,9 +449,41 @@ export async function decideLinkAction(
       }
     }
 
-    // Heuristic fallback: link if event has >= 1 article
+    // v2.3: Hardened heuristic fallback — requires uniqueMedia >= 1 AND
+    // at least one meaningful signal (entity overlap or embedding similarity).
+    // This prevents over-merge of unrelated articles that happen to share
+    // political vocabulary or domain but cover different events.
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
-    if (uniqueMedia >= 1) {
+    const hasMinSignal = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
+
+    // v2.3 P1: Headline divergence guard — even with a passing signal,
+    // block if the headlines share zero meaningful keywords. This catches
+    // same-domain articles (e.g. both about Colombian politics) that cover
+    // entirely different events but inflate entity overlap via generic
+    // entities like "Congreso", "Petro", "Colombia".
+    let headlineDivergent = false;
+    if (hasMinSignal && topCandidate?.representativeTitle) {
+      const artKw = extractTitleKeywords(article.title);
+      const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
+      if (artKw.size > 0 && evtKw.size > 0) {
+        let intersect = 0;
+        for (const kw of artKw) {
+          if (evtKw.has(kw)) intersect++;
+        }
+        if (intersect === 0) {
+          headlineDivergent = true;
+          metrics.incCounter('linking.headline_divergence_block_total');
+          logger.info({
+            article_id: article.id,
+            event_id: top.eventId,
+            article_keywords: [...artKw].slice(0, 5),
+            event_keywords: [...evtKw].slice(0, 5),
+          }, 'headline_divergence_blocked_maybe_link');
+        }
+      }
+    }
+
+    if (uniqueMedia >= 1 && hasMinSignal && !headlineDivergent) {
       metrics.incCounter('linking.heuristic_link_total');
       return {
         bestMatch: { eventId: top.eventId, score: top.compositeScore },

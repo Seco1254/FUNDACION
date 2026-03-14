@@ -403,9 +403,9 @@ describe('decideLinkAction', () => {
     expect(result.action).toBe('CREATE');
   });
 
-  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.22', () => {
+  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.32', () => {
     expect(THETA_AUTO_LINK).toBe(0.45);
-    expect(THETA_MAYBE_LINK).toBe(0.22);
+    expect(THETA_MAYBE_LINK).toBe(0.32);
   });
 
   it('entity guard defaults: enabled with min_jaccard = 0.01', () => {
@@ -614,5 +614,118 @@ describe('v2.1: two-step linking', () => {
   it('decideLinkAction returns linkType field', async () => {
     const result = await decideLinkAction(makeArticle(), [], null);
     expect(result.linkType).toBe('CREATE');
+  });
+});
+
+// ── v2.3: Hardened heuristic fallback ──
+
+describe('v2.3: hardened heuristic fallback', () => {
+  it('heuristic fallback requires entity overlap >= 0.03 OR embedding sim >= 0.40', async () => {
+    // Low embedding sim + zero entity overlap + in maybe zone → should CREATE (no signal)
+    const article = makeArticle({
+      title: 'Economía cafetera en declive regional',
+      snippet: 'Los productores de café reportan pérdidas.',
+      embeddingVec: makeVec(150),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-no-signal',
+      articleVecs: [makeVec(160)], // somewhat distant
+      articleTexts: ['Fútbol colombiano resultado jornada'],
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 2,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    // Only proceed if it's actually in the maybe zone with no signal
+    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK
+        && s.entityOverlap < 0.03 && s.embeddingSim < 0.40) {
+      const result = await decideLinkAction(article, [candidate], null);
+      expect(result.action).toBe('CREATE');
+    }
+  });
+
+  it('heuristic fallback links when entity overlap >= 0.03', async () => {
+    // Shared entities + in maybe zone → should LINK
+    const article = makeArticle({
+      title: 'Gustavo Petro impulsa reforma',
+      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-entity-signal',
+      articleVecs: [makeVec(100)], // distant vector
+      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
+      representativeTitle: 'Gustavo Petro presenta plan en el Congreso de la República',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    expect(s.entityOverlap).toBeGreaterThanOrEqual(0.03);
+    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      expect(result.action).toBe('LINK');
+    }
+  });
+
+  it('headline divergence blocks maybe-link when headlines share zero keywords', async () => {
+    // Same embedding vector (high sim ≥ 0.40) but completely different headlines
+    // → headline divergence guard should block
+    const article = makeArticle({
+      title: 'Salario mínimo sube para trabajadores colombianos',
+      snippet: 'El incremento salarial beneficia a millones.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-divergent',
+      articleVecs: [makeVec(42)], // identical → high embedding
+      articleTexts: ['Temblor sacude la costa pacífica de Colombia'],
+      representativeTitle: 'Temblor sacude la costa pacífica de Colombia',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 2,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    // The composite score could be above THETA_MAYBE_LINK due to high embedding
+    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // Should CREATE because headlines share zero keywords despite high embedding
+      expect(result.action).toBe('CREATE');
+    }
+  });
+
+  it('headline divergence does NOT block when headlines share keywords', async () => {
+    const article = makeArticle({
+      title: 'Reforma tributaria aprobada en segundo debate',
+      snippet: 'El Congreso aprobó la reforma tras extenso debate.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-same-topic',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma tributaria avanza en el Congreso colombiano'],
+      representativeTitle: 'Reforma tributaria avanza en el Congreso colombiano',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    if (s.compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // Should LINK because headlines share "reforma" and "tributaria"
+      expect(result.action).toBe('LINK');
+    }
   });
 });

@@ -47,6 +47,26 @@ const INSTITUTIONAL_CONTAINS: RegExp[] = [
   /nuestros (servicios|principios|valores)/i,
 ];
 
+/** Navigation, e-commerce, listing, and archive pages — not articles */
+const NAVIGATION_PATTERNS: RegExp[] = [
+  // E-commerce / cart pages
+  /^carrito\b/i,
+  /^(mi )?carrito de compras/i,
+  // Product listing / archive pages
+  /^productos?\s*(archivo|archivados?)?$/i,
+  /^archivo de productos/i,
+  // Art/gallery listing pages (not individual art news)
+  /^obras de arte$/i,
+  /^galer[ií]a de (obras|arte|fotos|im[aá]genes)$/i,
+  // Generic archive/category index pages
+  /^archivo$/i,
+  /^categor[ií]a:/i,
+  /^etiqueta:/i,
+  /^tag:/i,
+  /^p[aá]gina no encontrada/i,
+  /^error 404\b/i,
+];
+
 /** Podcast / serial audio-content patterns */
 const PODCAST_PATTERNS: RegExp[] = [
   // Existing: headline starts with podcast/pódcast
@@ -115,19 +135,23 @@ export function classifyNonNews(headline: string): NonNewsResult {
   const instSub = matchesAny(h, INSTITUTIONAL_CONTAINS);
   if (instSub) return { isNonNews: true, reason: 'institutional_contains' };
 
-  // 3. Podcast
+  // 3. Navigation / e-commerce / archive pages
+  const nav = matchesAny(h, NAVIGATION_PATTERNS);
+  if (nav) return { isNonNews: true, reason: 'navigation_page' };
+
+  // 4. Podcast
   const pod = matchesAny(h, PODCAST_PATTERNS);
   if (pod) return { isNonNews: true, reason: 'podcast' };
 
-  // 4. Digest/index
+  // 5. Digest/index
   const dig = matchesAny(h, DIGEST_PATTERNS);
   if (dig) return { isNonNews: true, reason: 'digest_index' };
 
-  // 5. Soft content
+  // 6. Soft content
   const soft = matchesAny(h, SOFT_CONTENT_PATTERNS);
   if (soft) return { isNonNews: true, reason: 'soft_content' };
 
-  // 6. ALL-CAPS headlines with no lowercase letters (often digest headers, index pages)
+  // 7. ALL-CAPS headlines with no lowercase letters (often digest headers, index pages)
   // But only if short (< 80 chars) — long all-caps could be real breaking news
   if (h.length < 80 && h === h.toUpperCase() && /^[A-ZÁÉÍÓÚÑÜ\s|:–—,.\d]+$/.test(h)) {
     // Check if it looks like an index/edition header

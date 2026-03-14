@@ -126,6 +126,50 @@ describe('classifyNonNews', () => {
     });
   });
 
+  describe('navigation / e-commerce / archive pages', () => {
+    it('blocks "Carrito"', () => {
+      const r = classifyNonNews('Carrito');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('navigation_page');
+    });
+
+    it('blocks "Carrito de compras"', () => {
+      expect(classifyNonNews('Carrito de compras').isNonNews).toBe(true);
+    });
+
+    it('blocks "Mi carrito de compras"', () => {
+      expect(classifyNonNews('Mi carrito de compras').isNonNews).toBe(true);
+    });
+
+    it('blocks "Productos archivo"', () => {
+      expect(classifyNonNews('Productos archivo').isNonNews).toBe(true);
+    });
+
+    it('blocks "Productos"', () => {
+      expect(classifyNonNews('Productos').isNonNews).toBe(true);
+    });
+
+    it('blocks "Obras de arte"', () => {
+      expect(classifyNonNews('Obras de arte').isNonNews).toBe(true);
+    });
+
+    it('blocks "Archivo"', () => {
+      expect(classifyNonNews('Archivo').isNonNews).toBe(true);
+    });
+
+    it('blocks "Categoría: Política"', () => {
+      expect(classifyNonNews('Categoría: Política').isNonNews).toBe(true);
+    });
+
+    it('blocks "Página no encontrada"', () => {
+      expect(classifyNonNews('Página no encontrada').isNonNews).toBe(true);
+    });
+
+    it('blocks "Error 404 - No encontrado"', () => {
+      expect(classifyNonNews('Error 404 - No encontrado').isNonNews).toBe(true);
+    });
+  });
+
   describe('real news passes through', () => {
     it('allows "Reforma tributaria aprobada en segundo debate"', () => {
       expect(classifyNonNews('Reforma tributaria aprobada en segundo debate').isNonNews).toBe(false);
@@ -166,6 +210,19 @@ describe('classifyNonNews', () => {
 
     it('allows "Quiénes son los responsables del colapso vial"', () => {
       expect(classifyNonNews('Quiénes son los responsables del colapso vial').isNonNews).toBe(false);
+    });
+
+    // Regression: headlines with navigation-like words in news context
+    it('allows "Productos colombianos conquistan mercado europeo"', () => {
+      expect(classifyNonNews('Productos colombianos conquistan mercado europeo').isNonNews).toBe(false);
+    });
+
+    it('allows "Archivo de la verdad revela nuevos testimonios"', () => {
+      expect(classifyNonNews('Archivo de la verdad revela nuevos testimonios').isNonNews).toBe(false);
+    });
+
+    it('allows "Obras de arte robadas recuperadas por la policía"', () => {
+      expect(classifyNonNews('Obras de arte robadas recuperadas por la policía').isNonNews).toBe(false);
     });
   });
 });
