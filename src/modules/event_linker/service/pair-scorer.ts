@@ -28,6 +28,7 @@ import {
   extractTitleKeywords,
   GateContext,
 } from './hard-negative-gates.js';
+import { verifyMaybeLink, VerifyResult } from './llm-verifier.js';
 import {
   HARD_NEGATIVE_ENABLED,
   TWO_STEP_ENABLED,
@@ -431,46 +432,58 @@ export async function decideLinkAction(
 
   // ── Step 2: Maybe-link zone ──
   if (top.finalAction === 'MAYBE_LINK' || (top.compositeScore >= THETA_MAYBE_LINK && top.finalAction !== 'CREATE')) {
-    // Try LLM first if available
-    if (llm) {
-      const top3 = eligible.slice(0, 3);
-      const llmResult = await llmPairScore(article, candidates, top3, llm);
-      if (llmResult) {
-        if (llmResult.hardBlock) {
-          metrics.incCounter('linking.llm_hard_block_total');
+
+    // v3: Try LLM verifier for definitive answer before heuristic fallback.
+    // Returns SAME_EVENT → LINK, DIFFERENT_EVENT → CREATE, UNCERTAIN/null → heuristic.
+    if (llm && topCandidate) {
+      const eventText = topCandidate.articleTexts.slice(0, 2).join(' ');
+      const verifyResult = await verifyMaybeLink({
+        articleTitle: article.title,
+        articleText: article.snippet,
+        articleSource: article.mediaId,
+        eventTitle: topCandidate.representativeTitle ?? topCandidate.articleTexts[0] ?? '',
+        eventText,
+        eventSources: topCandidate.mediaIds ? [...topCandidate.mediaIds] : undefined,
+      }, llm);
+
+      if (verifyResult) {
+        if (verifyResult.verdict === 'SAME_EVENT') {
+          metrics.incCounter('linking.llm_link_total');
+          return {
+            bestMatch: { eventId: top.eventId, score: top.compositeScore },
+            scores,
+            action: 'LINK',
+            linkType: 'MAYBE_LINK',
+            llmUsed: true,
+          };
+        }
+        if (verifyResult.verdict === 'DIFFERENT_EVENT') {
+          metrics.incCounter('linking.llm_create_total');
           metrics.incCounter('linking.create_total');
           return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: true };
         }
-        metrics.incCounter('linking.llm_link_total');
-        return {
-          bestMatch: { eventId: llmResult.eventId, score: llmResult.score },
-          scores,
-          action: 'LINK',
-          linkType: 'MAYBE_LINK',
-          llmUsed: true,
-        };
+        // UNCERTAIN → fall through to heuristic
+        logger.info({
+          article_id: article.id,
+          event_id: top.eventId,
+          confidence: verifyResult.confidence,
+        }, 'llm_verify_uncertain_fallback_to_heuristic');
       }
     }
 
     // v2.6: Source-aware heuristic fallback — OR signals + keyword gate for cross-source,
     // hardened divergence guard (≥2 keywords, entity bypass at 0.06) for same-source.
+    // Used when: LLM unavailable, LLM disabled, LLM returns UNCERTAIN, or LLM errors.
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
 
-    // Determine if this is cross-source (article from a different media than event)
     const isCrossSource = article.mediaId
       && topCandidate?.mediaIds
       && topCandidate.mediaIds.size > 0
       && !topCandidate.mediaIds.has(article.mediaId);
 
-    // v2.6 P0.1: Signal requirements — OR for both same-source and cross-source.
-    // v2.5 used AND for cross-source which killed ALL multi-source linking.
-    // The keyword gate alone is sufficient to block cross-source false positives.
     const hasMinSignalBase = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
 
-    // v2.5 P0.1 (kept): Cross-source headline keyword gate — require at least 1 shared
-    // meaningful keyword between headlines. This catches false positives like
-    // Irán/carbón, elecciones/narco that pass signal thresholds but cover
-    // entirely different events.
+    // Cross-source keyword gate
     let crossSourceKeywordOk = true;
     if (isCrossSource && topCandidate?.representativeTitle) {
       const artKw = extractTitleKeywords(article.title);
@@ -493,18 +506,11 @@ export async function decideLinkAction(
       }
     }
 
-    // Resolve hasMinSignal: base OR + keyword gate for cross-source
     const hasMinSignal = isCrossSource
       ? (hasMinSignalBase && crossSourceKeywordOk)
       : hasMinSignalBase;
 
-    // v2.6 P1: Same-source headline divergence guard — hardened with ≥2 keyword requirement.
-    // Same media covering different events → headlines diverge → block.
-    // v2.6 P1.2: Entity overlap bypass lowered from 0.10 → 0.06 (2x above 0.03 noise
-    // floor). 0.10 was too strict — missed TransMilenio/Externado-style cases where
-    // entity overlap is ~0.06-0.09 with different editorial angles.
-    // Below 0.06: require ≥ 2 shared keywords (not just 1). Single shared keywords
-    // like "colombia" or "petro" are too generic and cause 35% same-source over-merge.
+    // Same-source headline divergence guard (≥2 keywords, entity bypass at 0.06)
     let headlineDivergent = false;
     if (!isCrossSource && hasMinSignal && topCandidate?.representativeTitle) {
       if (top.entityOverlap < 0.06) {
@@ -557,77 +563,4 @@ export async function decideLinkAction(
   return { bestMatch: null, scores, action: 'CREATE', linkType: 'CREATE', llmUsed: false };
 }
 
-/**
- * LLM pair scoring — returns spec-exact response shape.
- */
-async function llmPairScore(
-  article: ArticleForPairing,
-  candidates: EventCandidate[],
-  top3: CandidateScore[],
-  llm: LlmClient,
-): Promise<{ eventId: string; score: number; hardBlock: boolean; reasonCodes: string[] } | null> {
-  try {
-    const candidateDescs = top3.map((s, i) => {
-      const cand = candidates.find((c) => c.id === s.eventId);
-      const sample = cand?.articleTexts.slice(0, 2).join(' | ') ?? '';
-      return `Candidate ${i + 1} (${s.eventId}): score=${s.compositeScore.toFixed(3)}, sample="${sample.slice(0, 200)}"`;
-    }).join('\n');
-
-    const prompt = `You are an event-linking classifier for Colombian news. Determine if this article belongs to one of the candidate events.
-
-Article: "${article.title}" — "${article.snippet.slice(0, 300)}"
-
-Candidates:
-${candidateDescs}
-
-Respond with JSON: { "same_event": <0.0-1.0>, "hard_block": <true|false>, "reason_codes": [<strings>], "best_candidate_id": "<event_id or null>" }
-
-Rules:
-- same_event: confidence that article covers the same real-world event (0=different, 1=identical)
-- hard_block: true if the article CANNOT belong to any candidate (different action, city, or dates differ >7d)
-- reason_codes: e.g. ["action_incompatible"], ["city_mismatch"], ["date_gap"], or []
-- best_candidate_id: the event_id of the best match, or null if no match`;
-
-    const response = await llm.completeJson<{
-      same_event: number;
-      hard_block: boolean;
-      reason_codes: string[];
-      best_candidate_id: string | null;
-    }>([{ role: 'user', content: prompt }]);
-
-    const data = response.data;
-
-    logger.info({
-      article_id: article.id,
-      same_event: data.same_event,
-      hard_block: data.hard_block,
-      reason_codes: data.reason_codes,
-      best_candidate_id: data.best_candidate_id,
-      latency_ms: response.meta.latency_ms,
-    }, 'llm_pair_score_result');
-
-    if (data.hard_block) {
-      return {
-        eventId: '',
-        score: data.same_event,
-        hardBlock: true,
-        reasonCodes: data.reason_codes,
-      };
-    }
-
-    if (data.best_candidate_id && data.same_event >= 0.6) {
-      return {
-        eventId: data.best_candidate_id,
-        score: data.same_event,
-        hardBlock: false,
-        reasonCodes: data.reason_codes,
-      };
-    }
-
-    return null;
-  } catch (err) {
-    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'llm_pair_score_failed');
-    metrics.incCounter('linking.llm_error_total');
-    return null;
-  }
-}
+// Legacy llmPairScore removed in v3 — replaced by llm-verifier.ts module.

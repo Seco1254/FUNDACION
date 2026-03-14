@@ -1,5 +1,5 @@
 /**
- * Event Linker v2.1 configuration — all new env vars for gates, two-step, and split detector.
+ * Event Linker configuration — gates, two-step, split detector, and LLM verifier.
  */
 
 // ── Feature flags ──
@@ -35,3 +35,11 @@ export const SPLIT_CHECK_COOLDOWN_MIN = parseInt(process.env.EVENT_LINKER_SPLIT_
 export const SPLIT_K = parseInt(process.env.EVENT_LINKER_SPLIT_K ?? '2', 10);
 export const SPLIT_MIN_SEPARATION = parseFloat(process.env.EVENT_LINKER_SPLIT_MIN_SEPARATION ?? '0.18');
 export const SPLIT_MAX_WITHIN_COHESION = parseFloat(process.env.EVENT_LINKER_SPLIT_MAX_WITHIN_COHESION ?? '0.22');
+
+// ── v3: LLM Verifier for MAYBE_LINK zone ──
+// When enabled and LLM is available, MAYBE_LINK decisions are verified by LLM.
+// Falls back to heuristic when LLM is disabled, unavailable, or returns UNCERTAIN.
+export const LLM_VERIFY_ENABLED = process.env.EVENT_LINKER_LLM_VERIFY_ENABLED !== '0';
+export const LLM_VERIFY_MAX_CHARS = parseInt(process.env.EVENT_LINKER_LLM_VERIFY_MAX_CHARS ?? '500', 10);
+export const LLM_VERIFY_TIMEOUT_MS = parseInt(process.env.EVENT_LINKER_LLM_VERIFY_TIMEOUT_MS ?? '15000', 10);
+export const LLM_VERIFY_MODEL = process.env.EVENT_LINKER_LLM_VERIFY_MODEL ?? '';
