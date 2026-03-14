@@ -617,62 +617,138 @@ describe('v2.1: two-step linking', () => {
   });
 });
 
-// ── v2.4: Source-aware heuristic fallback ──
+// ── v2.5: Source-aware precision ──
 
-describe('v2.4: source-aware heuristic fallback', () => {
-  it('heuristic fallback requires entity overlap >= 0.03 OR embedding sim >= 0.40', async () => {
-    // Low embedding sim + zero entity overlap + in maybe zone → should CREATE (no signal)
+describe('v2.5: cross-source hardening', () => {
+  it('cross-source false positive: different topics + zero shared headline keywords → CREATE', async () => {
+    // Irán/carbón scenario: unrelated topics from different media.
+    // Use 5 candidate vecs (only 1 matches article) to dilute embedding cosine
+    // to ~0.45, placing composite in MAYBE zone. Snippets share exactly 1 entity
+    // (Colombia) for entityOverlap ~0.05. Headlines share zero keywords.
     const article = makeArticle({
-      title: 'Economía cafetera en declive regional',
-      snippet: 'Los productores de café reportan pérdidas.',
-      embeddingVec: makeVec(150),
+      title: 'Sanciones contra Irán por programa nuclear',
+      snippet: 'Irán rechaza sanciones. Washington critica. Berlín apoya. París condena. Tokio observa. Londres reacciona. Roma evalúa. Seúl protesta. Ottawa medita. Colombia se pronuncia.',
+      embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
     });
     const candidate = makeCandidate({
-      id: 'evt-no-signal',
-      articleVecs: [makeVec(160)], // somewhat distant
-      articleTexts: ['Fútbol colombiano resultado jornada'],
+      id: 'evt-unrelated-cross',
+      // 6 vecs: article vec diluted → cosine ≈ 0.41 → composite in MAYBE zone
+      articleVecs: [makeVec(42), makeVec(43), makeVec(44), makeVec(45), makeVec(46), makeVec(47)],
+      articleTexts: ['Boyacá reporta daños. Cesar investiga. Santander alerta. Antioquia cierra. Arauca suspende. Meta evalúa. Casanare protesta. Cauca analiza. Nariño responde. Colombia actúa.'],
+      representativeTitle: 'Minería ilegal de carbón afecta zona rural',
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 2,
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']), // different media → cross-source
     });
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
-    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK
-        && s.entityOverlap < 0.03 && s.embeddingSim < 0.40) {
-      const result = await decideLinkAction(article, [candidate], null);
-      expect(result.action).toBe('CREATE');
-    }
+    // Verify composite is in MAYBE zone, not AUTO
+    expect(s.compositeScore).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
+    expect(s.compositeScore).toBeLessThan(THETA_AUTO_LINK);
+
+    const result = await decideLinkAction(article, [candidate], null);
+    // Cross-source + zero shared headline keywords → blocked by keyword gate
+    expect(result.action).toBe('CREATE');
   });
 
-  it('heuristic fallback links when entity overlap >= 0.03', async () => {
+  it('cross-source legitimate: shared keyword + both signals → LINK', async () => {
+    // Same event (reforma) covered by two outlets — shared keyword "reforma"
     const article = makeArticle({
-      title: 'Gustavo Petro impulsa reforma',
-      snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
+      title: 'Reforma tributaria aprobada por el Congreso de la República',
+      snippet: 'La Reforma Tributaria fue aprobada por el Congreso de la República.',
       embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
     });
     const candidate = makeCandidate({
-      id: 'evt-entity-signal',
-      articleVecs: [makeVec(100)],
-      articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
-      representativeTitle: 'Gustavo Petro presenta plan en el Congreso de la República',
+      id: 'evt-legit-cross',
+      articleVecs: [makeVec(42)], // identical → high embedding
+      articleTexts: ['Reforma tributaria avanza en el Congreso de la República'],
+      representativeTitle: 'Congreso aprueba la reforma tributaria',
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
       uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']),
     });
 
     const scores = scoreCandidates(article, [candidate]);
-    expect(scores[0].entityOverlap).toBeGreaterThanOrEqual(0.03);
-    if (scores[0].compositeScore >= THETA_MAYBE_LINK && scores[0].compositeScore < THETA_AUTO_LINK) {
+    const s = scores[0];
+    expect(s.entityOverlap).toBeGreaterThanOrEqual(0.03);
+    if (s.compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // Cross-source + shared keyword "reforma"/"tributaria" + both signals → LINK
+      expect(result.action).toBe('LINK');
+    }
+  });
+
+  it('cross-source blocked by AND: only embedding passes, entity < 0.03 → CREATE', async () => {
+    // High embedding but zero entities → cross-source AND requirement fails
+    const article = makeArticle({
+      title: 'Alpha Bravo Charlie foxtrot',
+      snippet: 'Alpha Bravo Charlie Delta foxtrot.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-cross-only-embed',
+      articleVecs: [makeVec(42)], // identical → high embedding
+      articleTexts: ['Xray Yankee Zulu foxtrot'],
+      representativeTitle: 'Xray Yankee Zulu foxtrot',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].entityOverlap).toBe(0);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // Cross-source requires BOTH signals (AND) — entity is 0 → CREATE
+      expect(result.action).toBe('CREATE');
+    }
+  });
+});
+
+describe('v2.5: same-source entity overlap bypass', () => {
+  it('same-source high entity overlap (>= 0.10) bypasses headline divergence → LINK', async () => {
+    // TransMilenio/Externado case: same source, different headlines but
+    // high entity overlap from shared specific entities
+    const article = makeArticle({
+      title: 'TransMilenio suspende servicio en estación Externado',
+      snippet: 'TransMilenio de Bogotá suspende temporalmente la estación Externado por obras.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'mediaA',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-high-entity',
+      articleVecs: [makeVec(100)], // different vector
+      // Shared entities: TransMilenio, Bogotá, Externado
+      articleTexts: ['TransMilenio informa cierre temporal de Externado en Bogotá por mantenimiento'],
+      representativeTitle: 'Cierres en TransMilenio afectan la estación Externado',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['mediaA']), // same source
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    // If entity overlap >= 0.10 and in maybe zone, should LINK despite divergent headlines
+    if (s.entityOverlap >= 0.10 && s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
       expect(result.action).toBe('LINK');
     }
   });
 
-  it('same-source: headline divergence blocks when headlines share zero keywords', async () => {
-    // Same media (mediaA) + divergent headlines → block
+  it('same-source low entity overlap + divergent headlines still blocked → CREATE', async () => {
+    // Same media, different headlines, low entity overlap → divergence guard fires
     const article = makeArticle({
       title: 'Salario mínimo sube para trabajadores colombianos',
       snippet: 'El incremento salarial beneficia a millones.',
@@ -682,54 +758,25 @@ describe('v2.4: source-aware heuristic fallback', () => {
     });
     const candidate = makeCandidate({
       id: 'evt-same-source-divergent',
-      articleVecs: [makeVec(42)], // identical → high embedding
+      articleVecs: [makeVec(42)],
       articleTexts: ['Temblor sacude la costa pacífica de Colombia'],
       representativeTitle: 'Temblor sacude la costa pacífica de Colombia',
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
       uniqueMediaCount: 1,
-      mediaIds: new Set(['mediaA']), // same media → same-source
+      mediaIds: new Set(['mediaA']),
     });
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
-    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
+    if (s.entityOverlap < 0.10 && s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
-      // Same source + zero keyword overlap → block
+      // Low entity + zero keyword overlap → blocked
       expect(result.action).toBe('CREATE');
     }
   });
 
-  it('cross-source: headline divergence does NOT block (different media, different headlines are natural)', async () => {
-    // Different media covering same event → headlines differ naturally → should LINK
-    const article = makeArticle({
-      title: 'Salario mínimo sube para trabajadores colombianos',
-      snippet: 'El incremento salarial beneficia a millones.',
-      embeddingVec: makeVec(42),
-      publishedAt: new Date('2025-01-15T10:00:00Z'),
-      mediaId: 'el-tiempo',
-    });
-    const candidate = makeCandidate({
-      id: 'evt-cross-source',
-      articleVecs: [makeVec(42)], // identical → high embedding (embeddingSim >= 0.40 → hasMinSignal)
-      articleTexts: ['Gobierno decreta aumento del mínimo vigente'],
-      representativeTitle: 'Gobierno decreta aumento del mínimo vigente',
-      t0: new Date('2025-01-14T08:00:00Z'),
-      tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 1,
-      mediaIds: new Set(['semana']), // different media → cross-source
-    });
-
-    const scores = scoreCandidates(article, [candidate]);
-    const s = scores[0];
-    if (s.compositeScore >= THETA_MAYBE_LINK) {
-      const result = await decideLinkAction(article, [candidate], null);
-      // Cross-source → headline divergence skipped → LINK
-      expect(result.action).toBe('LINK');
-    }
-  });
-
-  it('same-source: headline overlap allows linking', async () => {
+  it('same-source: headline keyword overlap allows linking normally', async () => {
     const article = makeArticle({
       title: 'Reforma tributaria aprobada en segundo debate',
       snippet: 'El Congreso aprobó la reforma tras extenso debate.',
@@ -751,12 +798,11 @@ describe('v2.4: source-aware heuristic fallback', () => {
     const scores = scoreCandidates(article, [candidate]);
     if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
-      // Same source + shared keywords → LINK
       expect(result.action).toBe('LINK');
     }
   });
 
-  it('regression: over-merge blocked — unrelated articles with no signal still CREATE', async () => {
+  it('regression: unrelated articles with no signal still CREATE', async () => {
     const article = makeArticle({
       title: 'Economía del café en Colombia',
       snippet: 'Los cafeteros reportan pérdidas por el clima.',
@@ -776,14 +822,12 @@ describe('v2.4: source-aware heuristic fallback', () => {
     expect(result.action).toBe('CREATE');
   });
 
-  it('no mediaId provided → headline divergence still applies (backward compat)', async () => {
-    // When mediaId is not provided, isCrossSource = false → guard applies
+  it('no mediaId → treated as same-source (conservative) → divergence blocks', async () => {
     const article = makeArticle({
       title: 'Salario mínimo sube para trabajadores colombianos',
       snippet: 'El incremento salarial beneficia a millones.',
       embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
-      // no mediaId
     });
     const candidate = makeCandidate({
       id: 'evt-no-media',
@@ -793,14 +837,12 @@ describe('v2.4: source-aware heuristic fallback', () => {
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
       uniqueMediaCount: 2,
-      // no mediaIds
     });
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
     if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
-      // No mediaId → treated as same-source (conservative) → divergence blocks
       expect(result.action).toBe('CREATE');
     }
   });

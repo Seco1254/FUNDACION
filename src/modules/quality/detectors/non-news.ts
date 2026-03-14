@@ -47,19 +47,21 @@ const INSTITUTIONAL_CONTAINS: RegExp[] = [
   /nuestros (servicios|principios|valores)/i,
 ];
 
-/** Navigation, e-commerce, listing, and archive pages — not articles */
+/** Navigation, e-commerce, listing, and archive pages — not articles.
+ * v2.5: patterns with $ anchor now include MEDIA_SUFFIX to catch
+ * "Obras de arte - Razón Pública", "Productos archivo - Razón Pública", etc. */
 const NAVIGATION_PATTERNS: RegExp[] = [
   // E-commerce / cart pages
   /^carrito\b/i,
   /^(mi )?carrito de compras/i,
-  // Product listing / archive pages
-  /^productos?\s*(archivo|archivados?)?$/i,
+  // Product listing / archive pages (with optional media suffix)
+  new RegExp(`^productos?\\s*(archivo|archivados?)?${MEDIA_SUFFIX}$`, 'i'),
   /^archivo de productos/i,
   // Art/gallery listing pages (not individual art news)
-  /^obras de arte$/i,
-  /^galer[ií]a de (obras|arte|fotos|im[aá]genes)$/i,
+  new RegExp(`^obras de arte${MEDIA_SUFFIX}$`, 'i'),
+  new RegExp(`^galer[ií]a de (obras|arte|fotos|im[aá]genes)${MEDIA_SUFFIX}$`, 'i'),
   // Generic archive/category index pages
-  /^archivo$/i,
+  new RegExp(`^archivo${MEDIA_SUFFIX}$`, 'i'),
   /^categor[ií]a:/i,
   /^etiqueta:/i,
   /^tag:/i,

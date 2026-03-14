@@ -453,14 +453,8 @@ export async function decideLinkAction(
       }
     }
 
-    // v2.4: Source-aware heuristic fallback.
-    // Requires uniqueMedia >= 1 AND at least one meaningful signal.
-    // Headline divergence guard only applies to SAME-SOURCE linking.
-    // Cross-source linking (different media) skips headline divergence because
-    // different media naturally use different headlines for the same event —
-    // blocking on headline keywords destroyed all multi-source events.
+    // v2.5: Source-aware heuristic fallback with separated rules.
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
-    const hasMinSignal = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
 
     // Determine if this is cross-source (article from a different media than event)
     const isCrossSource = article.mediaId
@@ -468,11 +462,19 @@ export async function decideLinkAction(
       && topCandidate.mediaIds.size > 0
       && !topCandidate.mediaIds.has(article.mediaId);
 
-    // Headline divergence guard — ONLY for same-source linking.
-    // Same media covering different events → headlines will diverge → block.
-    // Different media covering same event → headlines diverge naturally → allow.
-    let headlineDivergent = false;
-    if (!isCrossSource && hasMinSignal && topCandidate?.representativeTitle) {
+    // v2.5 P0.1: Source-aware signal requirements.
+    // Same-source: either signal suffices (OR) — same media naturally shares vocabulary.
+    // Cross-source: require BOTH entity AND embedding signals (AND) — prevents merging
+    // unrelated articles that only share generic political vocabulary across outlets.
+    const hasMinSignalSameSource = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
+    const hasMinSignalCrossSource = top.entityOverlap >= 0.03 && top.embeddingSim >= 0.35;
+
+    // v2.5 P0.1: Cross-source headline keyword gate — require at least 1 shared
+    // meaningful keyword between headlines. This catches false positives like
+    // Irán/carbón, elecciones/narco that pass both signal thresholds but cover
+    // entirely different events.
+    let crossSourceKeywordOk = true;
+    if (isCrossSource && topCandidate?.representativeTitle) {
       const artKw = extractTitleKeywords(article.title);
       const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
       if (artKw.size > 0 && evtKw.size > 0) {
@@ -481,15 +483,54 @@ export async function decideLinkAction(
           if (evtKw.has(kw)) intersect++;
         }
         if (intersect === 0) {
-          headlineDivergent = true;
-          metrics.incCounter('linking.headline_divergence_block_total');
+          crossSourceKeywordOk = false;
+          metrics.incCounter('linking.cross_source_keyword_block_total');
           logger.info({
             article_id: article.id,
             event_id: top.eventId,
             article_keywords: [...artKw].slice(0, 5),
             event_keywords: [...evtKw].slice(0, 5),
-          }, 'headline_divergence_blocked_same_source');
+          }, 'cross_source_keyword_blocked');
         }
+      }
+    }
+
+    // Resolve hasMinSignal based on source type
+    const hasMinSignal = isCrossSource
+      ? (hasMinSignalCrossSource && crossSourceKeywordOk)
+      : hasMinSignalSameSource;
+
+    // v2.5 P1: Same-source headline divergence guard with entity overlap bypass.
+    // Same media covering different events → headlines diverge → block.
+    // BUT: if entityOverlap >= 0.10, skip the guard — high entity overlap means
+    // same entities discussed even with different headlines (TransMilenio/Externado case).
+    let headlineDivergent = false;
+    if (!isCrossSource && hasMinSignal && topCandidate?.representativeTitle) {
+      if (top.entityOverlap < 0.10) {
+        const artKw = extractTitleKeywords(article.title);
+        const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
+        if (artKw.size > 0 && evtKw.size > 0) {
+          let intersect = 0;
+          for (const kw of artKw) {
+            if (evtKw.has(kw)) intersect++;
+          }
+          if (intersect === 0) {
+            headlineDivergent = true;
+            metrics.incCounter('linking.headline_divergence_block_total');
+            logger.info({
+              article_id: article.id,
+              event_id: top.eventId,
+              article_keywords: [...artKw].slice(0, 5),
+              event_keywords: [...evtKw].slice(0, 5),
+            }, 'headline_divergence_blocked_same_source');
+          }
+        }
+      } else {
+        logger.info({
+          article_id: article.id,
+          event_id: top.eventId,
+          entity_overlap: top.entityOverlap,
+        }, 'headline_divergence_skipped_high_entity');
       }
     }
 

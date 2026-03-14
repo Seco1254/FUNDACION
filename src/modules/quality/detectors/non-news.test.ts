@@ -212,6 +212,25 @@ describe('classifyNonNews', () => {
     it('blocks "Error 404 - No encontrado"', () => {
       expect(classifyNonNews('Error 404 - No encontrado').isNonNews).toBe(true);
     });
+
+    // v2.5: MEDIA_SUFFIX in navigation patterns
+    it('blocks "Obras de arte - Razón Pública"', () => {
+      const r = classifyNonNews('Obras de arte - Razón Pública');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('navigation_page');
+    });
+
+    it('blocks "Productos archivo - Razón Pública"', () => {
+      const r = classifyNonNews('Productos archivo - Razón Pública');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('navigation_page');
+    });
+
+    it('blocks "Archivo | El Tiempo"', () => {
+      const r = classifyNonNews('Archivo | El Tiempo');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('navigation_page');
+    });
   });
 
   describe('real news passes through', () => {
