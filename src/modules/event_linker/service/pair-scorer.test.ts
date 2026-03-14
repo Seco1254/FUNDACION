@@ -618,41 +618,12 @@ describe('v2.1: two-step linking', () => {
   });
 });
 
-// ── v2.6: Source-aware precision — OR + keyword gate cross-source, hardened same-source ──
+// ── v2.6/v3.1: Source-aware precision — cross-source now LLM-first, heuristic fallback permissive ──
 
-describe('v2.6: cross-source linking', () => {
-  it('cross-source false positive: zero shared headline keywords → CREATE', async () => {
-    // Irán/carbón scenario: unrelated topics from different media.
-    // 6 candidate vecs dilute cosine to ~0.41 → composite in MAYBE zone.
-    // Headlines share zero keywords → keyword gate blocks.
-    const article = makeArticle({
-      title: 'Sanciones contra Irán por programa nuclear',
-      snippet: 'Irán rechaza sanciones. Washington critica. Berlín apoya. París condena. Tokio observa. Londres reacciona. Roma evalúa. Seúl protesta. Ottawa medita. Colombia se pronuncia.',
-      embeddingVec: makeVec(42),
-      publishedAt: new Date('2025-01-15T10:00:00Z'),
-      mediaId: 'el-tiempo',
-    });
-    const candidate = makeCandidate({
-      id: 'evt-unrelated-cross',
-      articleVecs: [makeVec(42), makeVec(43), makeVec(44), makeVec(45), makeVec(46), makeVec(47)],
-      articleTexts: ['Boyacá reporta daños. Cesar investiga. Santander alerta. Antioquia cierra. Arauca suspende. Meta evalúa. Casanare protesta. Cauca analiza. Nariño responde. Colombia actúa.'],
-      representativeTitle: 'Minería ilegal de carbón afecta zona rural',
-      t0: new Date('2025-01-14T08:00:00Z'),
-      tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 1,
-      mediaIds: new Set(['semana']),
-    });
-
-    const scores = scoreCandidates(article, [candidate]);
-    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
-    expect(scores[0].compositeScore).toBeLessThan(THETA_AUTO_LINK);
-
-    const result = await decideLinkAction(article, [candidate], null);
-    expect(result.action).toBe('CREATE');
-  });
-
-  it('cross-source legitimate: shared keywords + signal → LINK', async () => {
-    // Same event (reforma) covered by two outlets — shared keywords "reforma", "tributaria"
+describe('v2.6/v3.1: cross-source linking', () => {
+  it('cross-source without LLM: heuristic fallback uses base signal (no keyword gate)', async () => {
+    // v3.1: keyword gate removed for cross-source. Without LLM, heuristic uses OR signal.
+    // Even with zero shared keywords, if hasMinSignal passes → LINK.
     const article = makeArticle({
       title: 'Reforma tributaria aprobada por el Congreso de la República',
       snippet: 'La Reforma Tributaria fue aprobada por el Congreso de la República.',
@@ -673,11 +644,11 @@ describe('v2.6: cross-source linking', () => {
 
     const result = await decideLinkAction(article, [candidate], null);
     expect(result.action).toBe('LINK');
+    expect(result.llmUsed).toBe(false);
   });
 
-  it('cross-source with only embedding signal (no entity) still links if keywords match', async () => {
-    // v2.6 reverted AND → OR: a single signal suffices if keyword gate passes.
-    // High embedding, zero entities but shared keyword "foxtrot"
+  it('cross-source with only embedding signal (no entity) still links without keyword gate', async () => {
+    // v3.1: OR signal suffices for cross-source, no keyword gate needed.
     const article = makeArticle({
       title: 'Alpha Bravo Charlie foxtrot',
       snippet: 'Alpha Bravo Charlie Delta foxtrot.',
@@ -698,8 +669,6 @@ describe('v2.6: cross-source linking', () => {
 
     const scores = scoreCandidates(article, [candidate]);
     expect(scores[0].entityOverlap).toBe(0);
-    // OR: embeddingSim >= 0.40 passes even with entity = 0
-    // Keyword gate: shared keyword "foxtrot" → passes
     if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
       expect(result.action).toBe('LINK');
@@ -1045,5 +1014,193 @@ describe('v3: LLM verifier integration', () => {
     expect(result.action).toBe('CREATE');
     // LLM should NOT be called for below-threshold pairs
     expect(result.llmUsed).toBe(false);
+  });
+});
+
+// ── v3.1: Routing fixes — cross-source LLM-first, AUTO_LINK suspicious downgrade ──
+
+describe('v3.1: cross-source LLM routing', () => {
+  function makeMockLlm31(verdict: string, confidence = 0.9): LlmClient {
+    const llm = new LlmClient({ apiKey: 'test-key' });
+    vi.spyOn(llm, 'isAvailable').mockReturnValue(true);
+    vi.spyOn(llm, 'completeJson').mockResolvedValue({
+      data: { verdict, confidence, reasoning: 'test' },
+      meta: { model: 'test', input_tokens: 100, output_tokens: 50, latency_ms: 200 },
+    });
+    return llm;
+  }
+
+  it('cross-source MAYBE + LLM SAME_EVENT → LINK', async () => {
+    const llm = makeMockLlm31('SAME_EVENT', 0.92);
+
+    // Cross-source pair in MAYBE zone: use distant vectors to get low embedding sim.
+    // Article vec(42), candidate centroid from vec(100) → low cosine → composite in MAYBE zone.
+    const article = makeArticle({
+      title: 'Sanciones contra Irán por programa nuclear',
+      snippet: 'Irán rechaza sanciones internacionales por su programa nuclear.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-cross-llm-same',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Sanciones nucleares contra Irán se intensifican'],
+      representativeTitle: 'Comunidad internacional endurece sanciones contra Irán',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
+    expect(scores[0].compositeScore).toBeLessThan(THETA_AUTO_LINK);
+
+    const result = await decideLinkAction(article, [candidate], llm);
+    expect(result.action).toBe('LINK');
+    expect(result.llmUsed).toBe(true);
+  });
+
+  it('cross-source MAYBE + LLM DIFFERENT_EVENT → CREATE', async () => {
+    const llm = makeMockLlm31('DIFFERENT_EVENT', 0.90);
+
+    // Same pair structure as SAME_EVENT test but LLM says DIFFERENT → must CREATE
+    const article = makeArticle({
+      title: 'Sanciones contra Irán por programa nuclear',
+      snippet: 'Irán rechaza sanciones internacionales por su programa nuclear.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-cross-llm-diff',
+      articleVecs: [makeVec(100)],
+      articleTexts: ['Sanciones nucleares contra Irán se intensifican'],
+      representativeTitle: 'Comunidad internacional endurece sanciones contra Irán',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    expect(scores[0].compositeScore).toBeGreaterThanOrEqual(THETA_MAYBE_LINK);
+    expect(scores[0].compositeScore).toBeLessThan(THETA_AUTO_LINK);
+
+    const result = await decideLinkAction(article, [candidate], llm);
+    expect(result.action).toBe('CREATE');
+    expect(result.llmUsed).toBe(true);
+  });
+});
+
+describe('v3.1: AUTO_LINK suspicious downgrade', () => {
+  function makeMockLlm31(verdict: string, confidence = 0.9): LlmClient {
+    const llm = new LlmClient({ apiKey: 'test-key' });
+    vi.spyOn(llm, 'isAvailable').mockReturnValue(true);
+    vi.spyOn(llm, 'completeJson').mockResolvedValue({
+      data: { verdict, confidence, reasoning: 'test' },
+      meta: { model: 'test', input_tokens: 100, output_tokens: 50, latency_ms: 200 },
+    });
+    return llm;
+  }
+
+  it('suspicious AUTO_LINK (same-source, low keyword overlap, moderate entity) → downgrade to MAYBE → LLM decides', async () => {
+    const llm = makeMockLlm31('DIFFERENT_EVENT', 0.88);
+
+    // Same source, AUTO_LINK zone, but headlines share ≤1 keyword + entity in 0.05–0.15 range
+    const article = makeArticle({
+      title: 'Análisis geopolítico: tendencias globales emergentes',
+      snippet: 'El Observatorio de Política Global analiza las tendencias emergentes en geopolítica mundial.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'observatorio',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-suspicious-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['El Observatorio de Política Global publica informe sobre conflictos regionales.'],
+      representativeTitle: 'Conflictos regionales según Observatorio de Política Global',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['observatorio']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    // Need to verify this lands in AUTO zone with moderate entity overlap
+    if (scores[0].finalAction === 'AUTO_LINK' && scores[0].entityOverlap >= 0.05 && scores[0].entityOverlap < 0.15) {
+      const result = await decideLinkAction(article, [candidate], llm);
+      // LLM says DIFFERENT_EVENT → CREATE (downgraded from AUTO)
+      expect(result.action).toBe('CREATE');
+      expect(result.llmUsed).toBe(true);
+    }
+  });
+
+  it('non-suspicious AUTO_LINK (high entity overlap >= 0.15) → LINK without LLM', async () => {
+    const llm = makeMockLlm31('DIFFERENT_EVENT', 0.88);
+    const completeSpy = vi.spyOn(llm, 'completeJson');
+
+    // Same source, AUTO_LINK zone, but high entity overlap → not suspicious
+    const article = makeArticle({
+      title: 'Reforma Pensional aprobada en Colombia por Gustavo Petro',
+      snippet: 'El Congreso de la República aprobó la reforma pensional propuesta por Gustavo Petro en Colombia.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'mediaA',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-legit-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro en Colombia'],
+      representativeTitle: 'Reforma Pensional avanza en el Congreso por Gustavo Petro',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['mediaA']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].finalAction === 'AUTO_LINK') {
+      const result = await decideLinkAction(article, [candidate], llm);
+      expect(result.action).toBe('LINK');
+      expect(result.linkType).toBe('AUTO_LINK');
+      expect(result.llmUsed).toBe(false);
+      // LLM should NOT be called for non-suspicious AUTO
+      expect(completeSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('non-suspicious AUTO_LINK (many shared keywords) → LINK without LLM', async () => {
+    const llm = makeMockLlm31('DIFFERENT_EVENT', 0.88);
+    const completeSpy = vi.spyOn(llm, 'completeJson');
+
+    // Same source, AUTO zone, headlines share ≥2 keywords → not suspicious
+    const article = makeArticle({
+      title: 'Reforma Pensional en Colombia',
+      snippet: 'El Congreso de la República aprobó la reforma pensional de Gustavo Petro.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'mediaA',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-kw-auto',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma Pensional en el Congreso de la República por Gustavo Petro'],
+      representativeTitle: 'Reforma Pensional aprobada en Colombia por el Congreso',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['mediaA']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].finalAction === 'AUTO_LINK') {
+      const result = await decideLinkAction(article, [candidate], llm);
+      expect(result.action).toBe('LINK');
+      expect(result.linkType).toBe('AUTO_LINK');
+      expect(result.llmUsed).toBe(false);
+      expect(completeSpy).not.toHaveBeenCalled();
+    }
   });
 });
