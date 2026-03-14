@@ -95,6 +95,21 @@ const DIGEST_PATTERNS: RegExp[] = [
   /^\d+ noticias (para|del|de) (hoy|esta semana)/i,
 ];
 
+/** Author profiles and author index pages */
+const AUTHOR_PROFILE_PATTERNS: RegExp[] = [
+  // "Nombre Apellido: Noticias, Fotos y Videos ..."
+  /:\s*noticias,?\s*(fotos|v[ií]deos)/i,
+  // "Autor: Nombre Apellido" / "Perfil de autor"
+  /^autor:\s/i,
+  /^perfil de (autor|columnista)/i,
+  // "Columnistas" / "Nuestros columnistas"
+  /^(nuestros?\s+)?columnistas$/i,
+  // "Equipo editorial" / "Equipo de redacción"
+  /^equipo (editorial|de redacci[oó]n)/i,
+  // "Índice de autores"
+  /^[ií]ndice de autores/i,
+];
+
 /** Opinion/review/lifestyle that isn't hard news */
 const SOFT_CONTENT_PATTERNS: RegExp[] = [
   /^neur[oó]tica an[oó]nima/i,
@@ -147,11 +162,15 @@ export function classifyNonNews(headline: string): NonNewsResult {
   const dig = matchesAny(h, DIGEST_PATTERNS);
   if (dig) return { isNonNews: true, reason: 'digest_index' };
 
-  // 6. Soft content
+  // 6. Author profiles
+  const author = matchesAny(h, AUTHOR_PROFILE_PATTERNS);
+  if (author) return { isNonNews: true, reason: 'author_profile' };
+
+  // 7. Soft content
   const soft = matchesAny(h, SOFT_CONTENT_PATTERNS);
   if (soft) return { isNonNews: true, reason: 'soft_content' };
 
-  // 7. ALL-CAPS headlines with no lowercase letters (often digest headers, index pages)
+  // 8. ALL-CAPS headlines with no lowercase letters (often digest headers, index pages)
   // But only if short (< 80 chars) — long all-caps could be real breaking news
   if (h.length < 80 && h === h.toUpperCase() && /^[A-ZÁÉÍÓÚÑÜ\s|:–—,.\d]+$/.test(h)) {
     // Check if it looks like an index/edition header

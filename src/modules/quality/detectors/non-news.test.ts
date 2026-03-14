@@ -126,6 +126,50 @@ describe('classifyNonNews', () => {
     });
   });
 
+  describe('author profiles', () => {
+    it('blocks "Juan Pérez: Noticias, Fotos y Videos de Colombia"', () => {
+      const r = classifyNonNews('Juan Pérez: Noticias, Fotos y Videos de Colombia');
+      expect(r.isNonNews).toBe(true);
+      expect(r.reason).toBe('author_profile');
+    });
+
+    it('blocks "María López: Noticias, Fotos y Vídeos"', () => {
+      expect(classifyNonNews('María López: Noticias, Fotos y Vídeos').isNonNews).toBe(true);
+    });
+
+    it('blocks "Autor: Carlos García"', () => {
+      expect(classifyNonNews('Autor: Carlos García').isNonNews).toBe(true);
+    });
+
+    it('blocks "Perfil de autor"', () => {
+      expect(classifyNonNews('Perfil de autor').isNonNews).toBe(true);
+    });
+
+    it('blocks "Perfil de columnista"', () => {
+      expect(classifyNonNews('Perfil de columnista').isNonNews).toBe(true);
+    });
+
+    it('blocks "Columnistas"', () => {
+      expect(classifyNonNews('Columnistas').isNonNews).toBe(true);
+    });
+
+    it('blocks "Nuestros columnistas"', () => {
+      expect(classifyNonNews('Nuestros columnistas').isNonNews).toBe(true);
+    });
+
+    it('blocks "Equipo editorial"', () => {
+      expect(classifyNonNews('Equipo editorial').isNonNews).toBe(true);
+    });
+
+    it('blocks "Índice de autores"', () => {
+      expect(classifyNonNews('Índice de autores').isNonNews).toBe(true);
+    });
+
+    it('allows "Autor de masacre condenado a 40 años"', () => {
+      expect(classifyNonNews('Autor de masacre condenado a 40 años').isNonNews).toBe(false);
+    });
+  });
+
   describe('navigation / e-commerce / archive pages', () => {
     it('blocks "Carrito"', () => {
       const r = classifyNonNews('Carrito');

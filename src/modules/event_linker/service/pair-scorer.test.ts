@@ -403,9 +403,9 @@ describe('decideLinkAction', () => {
     expect(result.action).toBe('CREATE');
   });
 
-  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.32', () => {
+  it('thresholds default: THETA_AUTO_LINK = 0.45, THETA_MAYBE_LINK = 0.28', () => {
     expect(THETA_AUTO_LINK).toBe(0.45);
-    expect(THETA_MAYBE_LINK).toBe(0.32);
+    expect(THETA_MAYBE_LINK).toBe(0.28);
   });
 
   it('entity guard defaults: enabled with min_jaccard = 0.01', () => {
@@ -617,9 +617,9 @@ describe('v2.1: two-step linking', () => {
   });
 });
 
-// ── v2.3: Hardened heuristic fallback ──
+// ── v2.4: Source-aware heuristic fallback ──
 
-describe('v2.3: hardened heuristic fallback', () => {
+describe('v2.4: source-aware heuristic fallback', () => {
   it('heuristic fallback requires entity overlap >= 0.03 OR embedding sim >= 0.40', async () => {
     // Low embedding sim + zero entity overlap + in maybe zone → should CREATE (no signal)
     const article = makeArticle({
@@ -639,7 +639,6 @@ describe('v2.3: hardened heuristic fallback', () => {
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
-    // Only proceed if it's actually in the maybe zone with no signal
     if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK
         && s.entityOverlap < 0.03 && s.embeddingSim < 0.40) {
       const result = await decideLinkAction(article, [candidate], null);
@@ -648,7 +647,6 @@ describe('v2.3: hardened heuristic fallback', () => {
   });
 
   it('heuristic fallback links when entity overlap >= 0.03', async () => {
-    // Shared entities + in maybe zone → should LINK
     const article = makeArticle({
       title: 'Gustavo Petro impulsa reforma',
       snippet: 'Gustavo Petro firmó decreto en el Congreso de la República.',
@@ -657,7 +655,7 @@ describe('v2.3: hardened heuristic fallback', () => {
     });
     const candidate = makeCandidate({
       id: 'evt-entity-signal',
-      articleVecs: [makeVec(100)], // distant vector
+      articleVecs: [makeVec(100)],
       articleTexts: ['Gustavo Petro presenta plan en el Congreso de la República'],
       representativeTitle: 'Gustavo Petro presenta plan en el Congreso de la República',
       t0: new Date('2025-01-14T08:00:00Z'),
@@ -666,66 +664,144 @@ describe('v2.3: hardened heuristic fallback', () => {
     });
 
     const scores = scoreCandidates(article, [candidate]);
-    const s = scores[0];
-    expect(s.entityOverlap).toBeGreaterThanOrEqual(0.03);
-    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
+    expect(scores[0].entityOverlap).toBeGreaterThanOrEqual(0.03);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK && scores[0].compositeScore < THETA_AUTO_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
       expect(result.action).toBe('LINK');
     }
   });
 
-  it('headline divergence blocks maybe-link when headlines share zero keywords', async () => {
-    // Same embedding vector (high sim ≥ 0.40) but completely different headlines
-    // → headline divergence guard should block
+  it('same-source: headline divergence blocks when headlines share zero keywords', async () => {
+    // Same media (mediaA) + divergent headlines → block
     const article = makeArticle({
       title: 'Salario mínimo sube para trabajadores colombianos',
       snippet: 'El incremento salarial beneficia a millones.',
       embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'mediaA',
     });
     const candidate = makeCandidate({
-      id: 'evt-divergent',
+      id: 'evt-same-source-divergent',
       articleVecs: [makeVec(42)], // identical → high embedding
       articleTexts: ['Temblor sacude la costa pacífica de Colombia'],
       representativeTitle: 'Temblor sacude la costa pacífica de Colombia',
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
-      uniqueMediaCount: 2,
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['mediaA']), // same media → same-source
     });
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
-    // The composite score could be above THETA_MAYBE_LINK due to high embedding
     if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
-      // Should CREATE because headlines share zero keywords despite high embedding
+      // Same source + zero keyword overlap → block
       expect(result.action).toBe('CREATE');
     }
   });
 
-  it('headline divergence does NOT block when headlines share keywords', async () => {
+  it('cross-source: headline divergence does NOT block (different media, different headlines are natural)', async () => {
+    // Different media covering same event → headlines differ naturally → should LINK
     const article = makeArticle({
-      title: 'Reforma tributaria aprobada en segundo debate',
-      snippet: 'El Congreso aprobó la reforma tras extenso debate.',
+      title: 'Salario mínimo sube para trabajadores colombianos',
+      snippet: 'El incremento salarial beneficia a millones.',
       embeddingVec: makeVec(42),
       publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'el-tiempo',
     });
     const candidate = makeCandidate({
-      id: 'evt-same-topic',
-      articleVecs: [makeVec(42)],
-      articleTexts: ['Reforma tributaria avanza en el Congreso colombiano'],
-      representativeTitle: 'Reforma tributaria avanza en el Congreso colombiano',
+      id: 'evt-cross-source',
+      articleVecs: [makeVec(42)], // identical → high embedding (embeddingSim >= 0.40 → hasMinSignal)
+      articleTexts: ['Gobierno decreta aumento del mínimo vigente'],
+      representativeTitle: 'Gobierno decreta aumento del mínimo vigente',
       t0: new Date('2025-01-14T08:00:00Z'),
       tLast: new Date('2025-01-15T09:00:00Z'),
       uniqueMediaCount: 1,
+      mediaIds: new Set(['semana']), // different media → cross-source
     });
 
     const scores = scoreCandidates(article, [candidate]);
     const s = scores[0];
     if (s.compositeScore >= THETA_MAYBE_LINK) {
       const result = await decideLinkAction(article, [candidate], null);
-      // Should LINK because headlines share "reforma" and "tributaria"
+      // Cross-source → headline divergence skipped → LINK
       expect(result.action).toBe('LINK');
+    }
+  });
+
+  it('same-source: headline overlap allows linking', async () => {
+    const article = makeArticle({
+      title: 'Reforma tributaria aprobada en segundo debate',
+      snippet: 'El Congreso aprobó la reforma tras extenso debate.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      mediaId: 'mediaA',
+    });
+    const candidate = makeCandidate({
+      id: 'evt-same-source-ok',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Reforma tributaria avanza en el Congreso colombiano'],
+      representativeTitle: 'Reforma tributaria avanza en el Congreso colombiano',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 1,
+      mediaIds: new Set(['mediaA']),
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    if (scores[0].compositeScore >= THETA_MAYBE_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // Same source + shared keywords → LINK
+      expect(result.action).toBe('LINK');
+    }
+  });
+
+  it('regression: over-merge blocked — unrelated articles with no signal still CREATE', async () => {
+    const article = makeArticle({
+      title: 'Economía del café en Colombia',
+      snippet: 'Los cafeteros reportan pérdidas por el clima.',
+      embeddingVec: makeVec(200),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+    });
+    const candidate = makeCandidate({
+      id: 'evt-unrelated',
+      articleVecs: [makeVec(50)],
+      articleTexts: ['Fútbol colombiano: resultados de la liga'],
+      t0: new Date('2025-01-01T10:00:00Z'),
+      tLast: new Date('2025-01-02T10:00:00Z'),
+      uniqueMediaCount: 3,
+    });
+
+    const result = await decideLinkAction(article, [candidate], null);
+    expect(result.action).toBe('CREATE');
+  });
+
+  it('no mediaId provided → headline divergence still applies (backward compat)', async () => {
+    // When mediaId is not provided, isCrossSource = false → guard applies
+    const article = makeArticle({
+      title: 'Salario mínimo sube para trabajadores colombianos',
+      snippet: 'El incremento salarial beneficia a millones.',
+      embeddingVec: makeVec(42),
+      publishedAt: new Date('2025-01-15T10:00:00Z'),
+      // no mediaId
+    });
+    const candidate = makeCandidate({
+      id: 'evt-no-media',
+      articleVecs: [makeVec(42)],
+      articleTexts: ['Temblor sacude la costa pacífica de Colombia'],
+      representativeTitle: 'Temblor sacude la costa pacífica de Colombia',
+      t0: new Date('2025-01-14T08:00:00Z'),
+      tLast: new Date('2025-01-15T09:00:00Z'),
+      uniqueMediaCount: 2,
+      // no mediaIds
+    });
+
+    const scores = scoreCandidates(article, [candidate]);
+    const s = scores[0];
+    if (s.compositeScore >= THETA_MAYBE_LINK && s.compositeScore < THETA_AUTO_LINK) {
+      const result = await decideLinkAction(article, [candidate], null);
+      // No mediaId → treated as same-source (conservative) → divergence blocks
+      expect(result.action).toBe('CREATE');
     }
   });
 });
