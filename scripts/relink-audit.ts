@@ -1,6 +1,10 @@
 /**
  * Relink audit script — deletes all events/links and re-runs the linker
  * with current thresholds to measure the effect of recent fixes.
+ *
+ * Supports LLM verifier:
+ *   LLM_AUDIT=1 npx tsx scripts/relink-audit.ts   → runs with LLM enabled
+ *   npx tsx scripts/relink-audit.ts                → runs without LLM (heuristic only)
  */
 import '../src/env.js';
 import { prisma } from '../src/db/client.js';
@@ -8,8 +12,8 @@ import { EventBus } from '../src/core/event_bus/dispatcher.js';
 import { ArticleRepository } from '../src/modules/articles/repo/article-repo.js';
 import { EventRepository } from '../src/modules/events/repo/event-repo.js';
 import { RealClock } from '../src/core/time/clock.js';
+import { LlmClient } from '../src/core/llm/client.js';
 import { EventLinkerV2 } from '../src/modules/event_linker/service/event-linker-v2.js';
-import { EmbeddingService } from '../src/modules/embedding/service/embedding-service.js';
 import { ulid } from 'ulid';
 
 async function main() {
@@ -23,6 +27,21 @@ async function main() {
   };
 
   eventBus.setAuditLogWriter(auditWriter);
+
+  // LLM setup: only when LLM_AUDIT=1
+  const useLlm = process.env.LLM_AUDIT === '1';
+  let llm: LlmClient | null = null;
+  if (useLlm) {
+    const client = new LlmClient({ maxTokens: 256, timeoutMs: 15000 });
+    if (client.isAvailable()) {
+      llm = client;
+      console.log('LLM verifier ENABLED for this audit run.');
+    } else {
+      console.log('WARNING: LLM_AUDIT=1 but no API key available. Running without LLM.');
+    }
+  } else {
+    console.log('LLM verifier DISABLED (set LLM_AUDIT=1 to enable).');
+  }
 
   // 1. Delete all existing events and links
   console.log('--- Cleaning existing events and links ---');
@@ -41,8 +60,8 @@ async function main() {
   });
   console.log(`Found ${articles.length} articles with embeddings.`);
 
-  // 3. Set up linker
-  const linker = new EventLinkerV2(articleRepo, eventRepo, eventBus, auditWriter, clock);
+  // 3. Set up linker (with or without LLM)
+  const linker = new EventLinkerV2(articleRepo, eventRepo, eventBus, auditWriter, clock, llm);
   const handler = linker.handler();
 
   // 4. Process each article through the linker
