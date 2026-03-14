@@ -41,9 +41,8 @@ import {
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
-// v2.4: recalibrated from 0.32 → 0.28. 0.32 was too high and killed cross-source
-// linking. 0.28 recovers multi-source events while staying above the original 0.22
-// that caused 42% over-merge. Combined with source-aware headline divergence guard.
+// v2.4: recalibrated from 0.32 → 0.28. 0.32 killed cross-source linking, 0.22 caused
+// 42% over-merge. 0.28 balances both. Source of truth: this default + .env.example.
 export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.28');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -453,7 +452,8 @@ export async function decideLinkAction(
       }
     }
 
-    // v2.5: Source-aware heuristic fallback with separated rules.
+    // v2.6: Source-aware heuristic fallback — OR signals + keyword gate for cross-source,
+    // hardened divergence guard (≥2 keywords, entity bypass at 0.06) for same-source.
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
 
     // Determine if this is cross-source (article from a different media than event)
@@ -462,16 +462,14 @@ export async function decideLinkAction(
       && topCandidate.mediaIds.size > 0
       && !topCandidate.mediaIds.has(article.mediaId);
 
-    // v2.5 P0.1: Source-aware signal requirements.
-    // Same-source: either signal suffices (OR) — same media naturally shares vocabulary.
-    // Cross-source: require BOTH entity AND embedding signals (AND) — prevents merging
-    // unrelated articles that only share generic political vocabulary across outlets.
-    const hasMinSignalSameSource = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
-    const hasMinSignalCrossSource = top.entityOverlap >= 0.03 && top.embeddingSim >= 0.35;
+    // v2.6 P0.1: Signal requirements — OR for both same-source and cross-source.
+    // v2.5 used AND for cross-source which killed ALL multi-source linking.
+    // The keyword gate alone is sufficient to block cross-source false positives.
+    const hasMinSignalBase = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
 
-    // v2.5 P0.1: Cross-source headline keyword gate — require at least 1 shared
+    // v2.5 P0.1 (kept): Cross-source headline keyword gate — require at least 1 shared
     // meaningful keyword between headlines. This catches false positives like
-    // Irán/carbón, elecciones/narco that pass both signal thresholds but cover
+    // Irán/carbón, elecciones/narco that pass signal thresholds but cover
     // entirely different events.
     let crossSourceKeywordOk = true;
     if (isCrossSource && topCandidate?.representativeTitle) {
@@ -495,18 +493,21 @@ export async function decideLinkAction(
       }
     }
 
-    // Resolve hasMinSignal based on source type
+    // Resolve hasMinSignal: base OR + keyword gate for cross-source
     const hasMinSignal = isCrossSource
-      ? (hasMinSignalCrossSource && crossSourceKeywordOk)
-      : hasMinSignalSameSource;
+      ? (hasMinSignalBase && crossSourceKeywordOk)
+      : hasMinSignalBase;
 
-    // v2.5 P1: Same-source headline divergence guard with entity overlap bypass.
+    // v2.6 P1: Same-source headline divergence guard — hardened with ≥2 keyword requirement.
     // Same media covering different events → headlines diverge → block.
-    // BUT: if entityOverlap >= 0.10, skip the guard — high entity overlap means
-    // same entities discussed even with different headlines (TransMilenio/Externado case).
+    // v2.6 P1.2: Entity overlap bypass lowered from 0.10 → 0.06 (2x above 0.03 noise
+    // floor). 0.10 was too strict — missed TransMilenio/Externado-style cases where
+    // entity overlap is ~0.06-0.09 with different editorial angles.
+    // Below 0.06: require ≥ 2 shared keywords (not just 1). Single shared keywords
+    // like "colombia" or "petro" are too generic and cause 35% same-source over-merge.
     let headlineDivergent = false;
     if (!isCrossSource && hasMinSignal && topCandidate?.representativeTitle) {
-      if (top.entityOverlap < 0.10) {
+      if (top.entityOverlap < 0.06) {
         const artKw = extractTitleKeywords(article.title);
         const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
         if (artKw.size > 0 && evtKw.size > 0) {
@@ -514,12 +515,13 @@ export async function decideLinkAction(
           for (const kw of artKw) {
             if (evtKw.has(kw)) intersect++;
           }
-          if (intersect === 0) {
+          if (intersect < 2) {
             headlineDivergent = true;
             metrics.incCounter('linking.headline_divergence_block_total');
             logger.info({
               article_id: article.id,
               event_id: top.eventId,
+              shared_keywords: intersect,
               article_keywords: [...artKw].slice(0, 5),
               event_keywords: [...evtKw].slice(0, 5),
             }, 'headline_divergence_blocked_same_source');
