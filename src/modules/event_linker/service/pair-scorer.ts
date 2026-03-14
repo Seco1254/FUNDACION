@@ -392,14 +392,52 @@ export async function decideLinkAction(
 
   // ── Step 1: Check for auto-link eligibility ──
   if (top.finalAction === 'AUTO_LINK') {
-    metrics.incCounter('linking.auto_link_total');
-    return {
-      bestMatch: { eventId: top.eventId, score: top.compositeScore },
-      scores,
-      action: 'LINK',
-      linkType: 'AUTO_LINK',
-      llmUsed: false,
-    };
+    // v3.1: Detect suspicious AUTO_LINK and downgrade to MAYBE_LINK for LLM verification.
+    // Targets: same-source, low headline specificity (few distinctive keywords),
+    // moderate entity overlap suggesting shared domain vocabulary rather than same event.
+    const isSameSource = article.mediaId
+      && topCandidate?.mediaIds
+      && topCandidate.mediaIds.has(article.mediaId);
+
+    let suspiciousAutoLink = false;
+    if (isSameSource && topCandidate?.representativeTitle) {
+      const artKw = extractTitleKeywords(article.title);
+      const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
+      if (artKw.size > 0 && evtKw.size > 0) {
+        let intersect = 0;
+        for (const kw of artKw) {
+          if (evtKw.has(kw)) intersect++;
+        }
+        // Suspicious when: headlines share ≤1 keyword AND entity overlap is moderate (0.05–0.15).
+        // High entity overlap (≥0.15) = genuinely related; low (<0.05) = gates would have blocked.
+        // The 0.05–0.15 range is where niche/thematic media share domain vocabulary.
+        if (intersect <= 1 && top.entityOverlap >= 0.05 && top.entityOverlap < 0.15) {
+          suspiciousAutoLink = true;
+          metrics.incCounter('linking.auto_link_suspicious_downgrade_total');
+          logger.info({
+            article_id: article.id,
+            event_id: top.eventId,
+            shared_keywords: intersect,
+            entity_overlap: top.entityOverlap,
+            composite: +top.compositeScore.toFixed(4),
+            article_title: article.title.slice(0, 80),
+            event_title: topCandidate.representativeTitle.slice(0, 80),
+          }, 'auto_link_suspicious_downgrade_to_maybe');
+        }
+      }
+    }
+
+    if (!suspiciousAutoLink) {
+      metrics.incCounter('linking.auto_link_total');
+      return {
+        bestMatch: { eventId: top.eventId, score: top.compositeScore },
+        scores,
+        action: 'LINK',
+        linkType: 'AUTO_LINK',
+        llmUsed: false,
+      };
+    }
+    // suspiciousAutoLink = true → fall through to MAYBE_LINK zone for LLM verification
   }
 
   // Track gate downgrades
@@ -471,9 +509,10 @@ export async function decideLinkAction(
       }
     }
 
-    // v2.6: Source-aware heuristic fallback — OR signals + keyword gate for cross-source,
-    // hardened divergence guard (≥2 keywords, entity bypass at 0.06) for same-source.
-    // Used when: LLM unavailable, LLM disabled, LLM returns UNCERTAIN, or LLM errors.
+    // v3.1: Source-aware heuristic fallback — used when LLM unavailable/UNCERTAIN/error.
+    // Cross-source: keyword gate removed (v3.1) — LLM handles cross-source decisions;
+    //   when LLM unavailable, base signal alone is used (OR: entity>=0.03 || embed>=0.40).
+    // Same-source: hardened divergence guard (≥2 keywords, entity bypass at 0.06).
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
 
     const isCrossSource = article.mediaId
@@ -481,34 +520,19 @@ export async function decideLinkAction(
       && topCandidate.mediaIds.size > 0
       && !topCandidate.mediaIds.has(article.mediaId);
 
-    const hasMinSignalBase = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
+    const hasMinSignal = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
 
-    // Cross-source keyword gate
-    let crossSourceKeywordOk = true;
-    if (isCrossSource && topCandidate?.representativeTitle) {
-      const artKw = extractTitleKeywords(article.title);
-      const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
-      if (artKw.size > 0 && evtKw.size > 0) {
-        let intersect = 0;
-        for (const kw of artKw) {
-          if (evtKw.has(kw)) intersect++;
-        }
-        if (intersect === 0) {
-          crossSourceKeywordOk = false;
-          metrics.incCounter('linking.cross_source_keyword_block_total');
-          logger.info({
-            article_id: article.id,
-            event_id: top.eventId,
-            article_keywords: [...artKw].slice(0, 5),
-            event_keywords: [...evtKw].slice(0, 5),
-          }, 'cross_source_keyword_blocked');
-        }
-      }
+    // v3.1: Log cross-source heuristic fallback (LLM was unavailable/uncertain for this pair)
+    if (isCrossSource) {
+      metrics.incCounter('linking.cross_source_heuristic_fallback_total');
+      logger.info({
+        article_id: article.id,
+        event_id: top.eventId,
+        entity_overlap: top.entityOverlap,
+        embedding_sim: +top.embeddingSim.toFixed(4),
+        has_min_signal: hasMinSignal,
+      }, 'cross_source_heuristic_fallback');
     }
-
-    const hasMinSignal = isCrossSource
-      ? (hasMinSignalBase && crossSourceKeywordOk)
-      : hasMinSignalBase;
 
     // Same-source headline divergence guard (≥2 keywords, entity bypass at 0.06)
     let headlineDivergent = false;
