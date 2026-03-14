@@ -29,6 +29,7 @@ import { checkMegaEvent, MAX_ARTICLES_PER_EVENT } from './mega-event-guard.js';
 import { THETA_AUTO_LINK, THETA_MAYBE_LINK } from './pair-scorer.js';
 import { SplitDetector } from './split-detector.js';
 import { SPLIT_DETECTOR_ENABLED, SPLIT_MIN_ARTICLES } from './config.js';
+import { classifyNonNews } from '../../quality/detectors/non-news.js';
 
 const CANDIDATE_WINDOW_HOURS = parseInt(process.env.EVENT_LINKER_CANDIDATE_WINDOW_HOURS ?? '72', 10);
 const FALLBACK_WINDOW_DAYS = parseInt(process.env.EVENT_LINKER_FALLBACK_WINDOW_DAYS ?? '7', 10);
@@ -56,6 +57,20 @@ export class EventLinkerV2 {
       const article = await this.articleRepo.findById(article_id);
       if (!article || !article.embeddingVec) {
         logger.error({ article_id }, 'article_missing_embedding_v2');
+        return;
+      }
+
+      // v2.4: Skip non-news articles (legacy or otherwise) — they should not
+      // participate in event linking. This catches articles already in DB that
+      // were ingested before non-news filtering was added.
+      const nonNewsCheck = classifyNonNews(article.title);
+      if (nonNewsCheck.isNonNews) {
+        logger.info({
+          article_id,
+          title: article.title.slice(0, 80),
+          reason: nonNewsCheck.reason,
+        }, 'linker_skip_non_news');
+        metrics.incCounter('linking.non_news_skip_total');
         return;
       }
 
@@ -121,6 +136,7 @@ export class EventLinkerV2 {
           articleCount: articles.length,
           uniqueMediaCount: uniqueMediaIds.size,
           representativeTitle: repTitle,
+          mediaIds: uniqueMediaIds,
         });
       }
 
@@ -131,6 +147,7 @@ export class EventLinkerV2 {
         snippet: article.snippet,
         embeddingVec: articleVec,
         publishedAt: article.publishedAt,
+        mediaId: article.mediaId,
       };
 
       const startMs = Date.now();

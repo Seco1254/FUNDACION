@@ -41,10 +41,10 @@ import {
 } from './config.js';
 
 export const THETA_AUTO_LINK = parseFloat(process.env.THETA_AUTO_LINK ?? '0.45');
-// v2.3: raised from 0.22 → 0.32 to reduce over-merge in the maybe-link zone.
-// Audit showed 42% over-merge rate with 0.22. The heuristic fallback now also
-// requires a minimum signal (entityOverlap >= 0.03 OR embeddingSim >= 0.40).
-export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.32');
+// v2.4: recalibrated from 0.32 → 0.28. 0.32 was too high and killed cross-source
+// linking. 0.28 recovers multi-source events while staying above the original 0.22
+// that caused 42% over-merge. Combined with source-aware headline divergence guard.
+export const THETA_MAYBE_LINK = parseFloat(process.env.THETA_MAYBE_LINK ?? '0.28');
 const DATE_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Kill switch: never auto-link, only maybe/create
@@ -208,6 +208,8 @@ export interface ArticleForPairing {
   hardBlockContext?: HardBlockContext;
   /** v2.1: topic assigned to this article (top1) */
   topicTop1?: string | null;
+  /** v2.4: media source id for cross-source vs same-source logic */
+  mediaId?: string;
 }
 
 export interface EventCandidate {
@@ -223,6 +225,8 @@ export interface EventCandidate {
   representativeTitle?: string;
   /** v2.1: topic assigned to this event (top1) */
   topicTop1?: string | null;
+  /** v2.4: set of media ids already in this event */
+  mediaIds?: Set<string>;
 }
 
 /**
@@ -449,20 +453,26 @@ export async function decideLinkAction(
       }
     }
 
-    // v2.3: Hardened heuristic fallback — requires uniqueMedia >= 1 AND
-    // at least one meaningful signal (entity overlap or embedding similarity).
-    // This prevents over-merge of unrelated articles that happen to share
-    // political vocabulary or domain but cover different events.
+    // v2.4: Source-aware heuristic fallback.
+    // Requires uniqueMedia >= 1 AND at least one meaningful signal.
+    // Headline divergence guard only applies to SAME-SOURCE linking.
+    // Cross-source linking (different media) skips headline divergence because
+    // different media naturally use different headlines for the same event —
+    // blocking on headline keywords destroyed all multi-source events.
     const uniqueMedia = topCandidate?.uniqueMediaCount ?? 0;
     const hasMinSignal = top.entityOverlap >= 0.03 || top.embeddingSim >= 0.40;
 
-    // v2.3 P1: Headline divergence guard — even with a passing signal,
-    // block if the headlines share zero meaningful keywords. This catches
-    // same-domain articles (e.g. both about Colombian politics) that cover
-    // entirely different events but inflate entity overlap via generic
-    // entities like "Congreso", "Petro", "Colombia".
+    // Determine if this is cross-source (article from a different media than event)
+    const isCrossSource = article.mediaId
+      && topCandidate?.mediaIds
+      && topCandidate.mediaIds.size > 0
+      && !topCandidate.mediaIds.has(article.mediaId);
+
+    // Headline divergence guard — ONLY for same-source linking.
+    // Same media covering different events → headlines will diverge → block.
+    // Different media covering same event → headlines diverge naturally → allow.
     let headlineDivergent = false;
-    if (hasMinSignal && topCandidate?.representativeTitle) {
+    if (!isCrossSource && hasMinSignal && topCandidate?.representativeTitle) {
       const artKw = extractTitleKeywords(article.title);
       const evtKw = extractTitleKeywords(topCandidate.representativeTitle);
       if (artKw.size > 0 && evtKw.size > 0) {
@@ -478,9 +488,13 @@ export async function decideLinkAction(
             event_id: top.eventId,
             article_keywords: [...artKw].slice(0, 5),
             event_keywords: [...evtKw].slice(0, 5),
-          }, 'headline_divergence_blocked_maybe_link');
+          }, 'headline_divergence_blocked_same_source');
         }
       }
+    }
+
+    if (isCrossSource && hasMinSignal) {
+      metrics.incCounter('linking.cross_source_link_total');
     }
 
     if (uniqueMedia >= 1 && hasMinSignal && !headlineDivergent) {
