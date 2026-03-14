@@ -19,7 +19,14 @@ scrapers.set('oec', new OecScraper());
 scrapers.set('ascolbi', new AscolbiScraper());
 scrapers.set('aciur', new AciurScraper());
 
+// RSS-only sources: no HTML scraper needed — discovery happens via RSS feeds.
+// StubScraper ensures getScraperForMedia returns a valid scraper for these keys
+// (listPageUrls=[] means ScrapeOrchestrator skips them).
 const stubScraper = new StubScraper();
+scrapers.set('servindi', stubScraper);
+scrapers.set('prensa_rural', stubScraper);
+scrapers.set('el_turbion', stubScraper);
+scrapers.set('la_cola_de_rata', stubScraper);
 
 export function getScraperForMedia(mediaKey: string): MediaScraper {
   return scrapers.get(mediaKey) ?? stubScraper;

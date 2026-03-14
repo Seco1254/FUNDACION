@@ -67,11 +67,13 @@ import { runDevSeed } from './scripts/dev-seed.js';
 import { scrapeLock } from './modules/ingestion/service/scrape-lock.js';
 import { withTimeout } from './core/async/with-timeout.js';
 import { RankingService } from './modules/ranking/service/ranking-service.js';
+import { RssDiscoveryJob } from './modules/ingestion/rss/rss-discovery-job.js';
 
 const SCHEDULER_TICK_MS = parseInt(process.env.SCHEDULER_TICK_MS ?? '5000', 10);
 const SCRAPE_INTERVAL_MS = parseInt(process.env.SCRAPE_INTERVAL_MS ?? String(10 * 60 * 1000), 10);
 const CLOSE_CHECK_INTERVAL_MS = parseInt(process.env.CLOSE_CHECK_INTERVAL_MS ?? String(6 * 60 * 60 * 1000), 10);
 const REFRESH_INTERVAL_MS = parseInt(process.env.REFRESH_INTERVAL_MS ?? String(30 * 60 * 1000), 10);
+const RSS_INTERVAL_MS = parseInt(process.env.RSS_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
 
 export function buildApp() {
   const app = Fastify({
@@ -127,6 +129,9 @@ export function buildApp() {
     mediaRepo, articleRepo, eventBus, auditService, productionFetchHtml, getScraperForMedia,
   );
 
+  // RSS discovery job
+  const rssDiscoveryJob = new RssDiscoveryJob(articleRepo, eventBus);
+
   // Phase 2: Embedding → EventLinker → Lifecycle → Versioning
   const clock = new RealClock();
   const versionRepo = new VersionRepository(prisma);
@@ -153,6 +158,8 @@ export function buildApp() {
     } else if (job.jobKey.startsWith('refresh:')) {
       const eventId = job.payload.eventId as string;
       await lifecycleManager.executeRefresh(eventId);
+    } else if (job.jobKey === 'rss:discovery') {
+      await rssDiscoveryJob.run();
     } else if (job.jobKey === 'lifecycle:close') {
       await lifecycleManager.runCloseCheck();
     } else if (job.jobKey === 'lifecycle:scheduleRefreshes') {
@@ -227,11 +234,16 @@ export function buildApp() {
       const executed = await scheduler.runDueJobs();
       if (executed > 0) {
         logger.info({ executed, pending: scheduler.list().length }, 'scheduler_tick');
-        // Re-register the recurring scrape job if it was just consumed by this tick.
+        // Re-register recurring jobs if they were just consumed by this tick.
         if (!scheduler.list().some((j) => j.jobKey === 'scrape:tick')) {
           const next = new Date(Date.now() + SCRAPE_INTERVAL_MS);
           scheduler.register('scrape:tick', next, {});
           logger.info({ next_scrape: next.toISOString() }, 'scheduler_scrape_rescheduled');
+        }
+        if (!scheduler.list().some((j) => j.jobKey === 'rss:discovery')) {
+          const next = new Date(Date.now() + RSS_INTERVAL_MS);
+          scheduler.register('rss:discovery', next, {});
+          logger.info({ next_rss: next.toISOString() }, 'scheduler_rss_rescheduled');
         }
       } else if (tickCount % LOG_TICK_HEARTBEAT_EVERY === 0) {
         logger.info({ pending: scheduler.list().length, tick: tickCount }, 'scheduler_heartbeat');
@@ -331,6 +343,7 @@ async function start() {
   // Register the initial periodic jobs. The buildApp() tick loop handles re-registration.
   const startNow = clock.now();
   scheduler.register('scrape:tick', addMs(startNow, SCRAPE_INTERVAL_MS), {});
+  scheduler.register('rss:discovery', addMs(startNow, RSS_INTERVAL_MS), {});
   scheduler.register('lifecycle:close', addMs(startNow, CLOSE_CHECK_INTERVAL_MS), {});
   scheduler.register('lifecycle:scheduleRefreshes', addMs(startNow, REFRESH_INTERVAL_MS), {});
 }
