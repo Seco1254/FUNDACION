@@ -50,6 +50,11 @@ const COLOMBIAN_KEYWORDS: string[] = [
   // Key conflict/peace terms
   'Acuerdo de Paz', 'proceso de paz', 'restitución de tierras',
   'desplazamiento forzado', 'falsos positivos', 'líderes sociales',
+  // Rural / agricultural sector
+  'campesinos', 'campesino', 'reforma agraria',
+  'MinAgricultura', 'Ministerio de Agricultura',
+  'ICA', 'SENA', 'ANT', 'Agencia Nacional de Tierras',
+  'ADR', 'Agencia de Desarrollo Rural', 'Fedegán', 'SAC',
 ];
 
 // ── Latin American signals (Tier 2 → 'regional') ───────────────────

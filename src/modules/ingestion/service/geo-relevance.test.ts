@@ -107,6 +107,44 @@ describe('classifyGeoRelevance', () => {
     });
   });
 
+  describe('rural/agricultural terms', () => {
+    it('detects "campesinos" as local', () => {
+      const result = classifyGeoRelevance(
+        'Productores campesinos exigen apoyo del gobierno',
+        'Las organizaciones agrarias presentaron sus demandas.',
+      );
+      expect(result.tier).toBe('local');
+      expect(result.matchedKeywords).toContain('campesinos');
+    });
+
+    it('detects "reforma agraria" as local', () => {
+      const result = classifyGeoRelevance(
+        'Avances en la reforma agraria',
+        'El gobierno presentó nuevos lineamientos.',
+      );
+      expect(result.tier).toBe('local');
+      expect(result.matchedKeywords).toContain('reforma agraria');
+    });
+
+    it('detects "SENA" as local', () => {
+      const result = classifyGeoRelevance(
+        'SENA abre nuevas convocatorias',
+        'Programas de formación técnica disponibles.',
+      );
+      expect(result.tier).toBe('local');
+      expect(result.matchedKeywords).toContain('SENA');
+    });
+
+    it('detects "Agencia Nacional de Tierras" as local', () => {
+      const result = classifyGeoRelevance(
+        'Agencia Nacional de Tierras adjudica predios',
+        'Familias campesinas reciben tierras.',
+      );
+      expect(result.tier).toBe('local');
+      expect(result.matchedKeywords).toContain('Agencia Nacional de Tierras');
+    });
+  });
+
   describe('priority: local > regional > international', () => {
     it('prefers local over regional when both present', () => {
       const result = classifyGeoRelevance(

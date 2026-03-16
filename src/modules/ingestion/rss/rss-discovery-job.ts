@@ -17,6 +17,7 @@ import { RssFeedEntry, getEnabledFeeds } from './feeds.js';
 import { fetchRssFeed } from './rss-fetcher.js';
 import { parseRssXml } from './rss-parser.js';
 import { normalizeRssItem, isEnglishMirror, RssDiscoveredItem } from './rss-normalizer.js';
+import { isSpanish } from '../service/language-detector.js';
 
 export interface RssDiscoveryResult {
   feedsProcessed: number;
@@ -131,6 +132,16 @@ export class RssDiscoveryJob {
         metrics.incCounter('rss.en_mirror_skipped_total');
         logger.info({ url: rawItem.link, media_key: feed.mediaKey }, 'rss_en_mirror_skipped');
         continue;
+      }
+
+      // Early language filter for bilingual sources (El Turbión publishes ES + EN)
+      if (feed.mediaKey === 'el_turbion') {
+        const rawText = `${rawItem.title ?? ''} ${rawItem.description ?? ''}`;
+        if (rawText.trim().length > 0 && !isSpanish(rawText)) {
+          metrics.incCounter('rss.filtered_not_spanish.total');
+          logger.info({ url: rawItem.link, media_key: feed.mediaKey }, 'rss_filtered_not_spanish');
+          continue;
+        }
       }
 
       const normalized = normalizeRssItem(rawItem, feed.mediaKey, feed.feedUrl);

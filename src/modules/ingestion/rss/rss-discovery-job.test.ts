@@ -217,6 +217,62 @@ describe('RssDiscoveryJob', () => {
     expect(publishMock).toHaveBeenCalledTimes(3);
   });
 
+  it('filters non-Spanish articles for el_turbion', async () => {
+    const enRss = `<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>The struggle for indigenous rights in Colombia</title>
+      <link>https://elturbion.com/indigenous-rights</link>
+      <description>An article about the fight for indigenous rights.</description>
+    </item>
+    <item>
+      <title>Lucha por los derechos indígenas en Colombia</title>
+      <link>https://elturbion.com/derechos-indigenas</link>
+      <description>Artículo sobre la lucha por los derechos de los pueblos indígenas.</description>
+    </item>
+  </channel>
+</rss>`;
+    fetchFn.mockResolvedValue({ xml: enRss, latencyMs: 50 });
+
+    const turbionFeed: RssFeedEntry = {
+      mediaKey: 'el_turbion',
+      name: 'El Turbión',
+      feedUrl: 'https://elturbion.com/feed',
+      homepage: 'https://elturbion.com',
+      sourceType: 'rss',
+      enabled: true,
+    };
+
+    const result = await job.run([turbionFeed]);
+
+    // Only the Spanish article should pass through
+    expect(result.itemsSeen).toBe(1);
+    expect(result.itemsNew).toBe(1);
+    expect(eventBusWrapper.published).toHaveLength(1);
+    expect(eventBusWrapper.published[0].payload.url).toBe('https://elturbion.com/derechos-indigenas');
+  });
+
+  it('does not filter non-Spanish articles for other media', async () => {
+    const enRss = `<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>The struggle for rights</title>
+      <link>https://example.com/rights</link>
+      <description>An article about the fight for rights.</description>
+    </item>
+  </channel>
+</rss>`;
+    fetchFn.mockResolvedValue({ xml: enRss, latencyMs: 50 });
+
+    const result = await job.run([testFeed]);
+
+    // Other media should NOT be filtered by language
+    expect(result.itemsSeen).toBe(1);
+    expect(result.itemsNew).toBe(1);
+  });
+
   it('resetDedup clears in-memory state', async () => {
     await job.run([testFeed]);
 

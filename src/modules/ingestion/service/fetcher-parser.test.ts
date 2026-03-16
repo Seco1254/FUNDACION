@@ -940,6 +940,42 @@ describe('FetcherParser', () => {
     });
   });
 
+  it('includes media_key in ArticlePolicyBlocked payload for DUPLICATE_URL', async () => {
+    const mediaRepo = makeMockMediaRepo();
+    const articleRepo = makeMockArticleRepo();
+    articleRepo.findByUrl.mockResolvedValue({ id: 'existing', url: 'https://example.com/dup' });
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn();
+    const scraperLookup = vi.fn();
+
+    const fetcher = new FetcherParser(
+      articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const envelope = makeDiscoveredEnvelope('https://example.com/dup', 'eltiempo');
+    await fetcher.handler()(envelope);
+
+    expect(published[0].payload).toHaveProperty('media_key', 'eltiempo');
+  });
+
+  it('includes media_key in ArticlePolicyBlocked payload for PARSE_FAIL', async () => {
+    const mediaRepo = makeMockMediaRepo();
+    const articleRepo = makeMockArticleRepo();
+    const auditWriter = makeMockAuditWriter();
+    const fetchHtml = vi.fn().mockRejectedValue(new Error('HTTP 500'));
+    const scraperLookup = vi.fn();
+
+    const fetcher = new FetcherParser(
+      articleRepo, mediaRepo, eventBus, auditWriter, fetchHtml, scraperLookup,
+    );
+
+    const envelope = makeDiscoveredEnvelope('https://www.eltiempo.com/test', 'eltiempo');
+    await fetcher.handler()(envelope);
+
+    expect(published[0].event_name).toBe('ArticlePolicyBlocked');
+    expect(published[0].payload).toHaveProperty('media_key', 'eltiempo');
+  });
+
   it('handles unique constraint violation as DUPLICATE_URL', async () => {
     const mediaRepo = makeMockMediaRepo();
     const articleRepo = makeMockArticleRepo();
