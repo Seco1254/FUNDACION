@@ -100,7 +100,7 @@ async function main() {
       where: { article: { mediaId: { in: mediaIds } } },
       include: {
         article: { select: { title: true, mediaId: true, media: { select: { mediaKey: true } } } },
-        event: { select: { id: true, status: true } },
+        event: { select: { id: true, state: true } },
       },
     });
 
@@ -121,12 +121,12 @@ async function main() {
     }
 
     // Published events with RSS articles
-    const publishedWithRss = linked.filter(l => l.event.status === 'PUBLISHED').length;
+    const publishedWithRss = linked.filter(l => l.event.state === 'PUBLISHED').length;
 
     // Total DB stats
     const totalArticles = await prisma.article.count();
     const totalEvents = await prisma.event.count();
-    const totalPublished = await prisma.event.count({ where: { status: 'PUBLISHED' } });
+    const totalPublished = await prisma.event.count({ where: { state: 'PUBLISHED' } });
     const totalRssArticles = await prisma.article.count({ where: { mediaId: { in: mediaIds } } });
 
     console.log(JSON.stringify({
@@ -141,7 +141,7 @@ async function main() {
       rssPublishedLinks: publishedWithRss,
       linkedDetails: linked.map(l => ({
         eventId: l.eventId,
-        eventStatus: l.event.status,
+        eventStatus: l.event.state,
         articleTitle: l.article.title?.slice(0, 80),
         articleMedia: l.article.media?.mediaKey,
       })),
