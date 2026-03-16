@@ -17,6 +17,11 @@ const MEDIA_ALLOWLIST = [
   { mediaKey: 'oec', name: 'Observatorio Editorial Colombiano' },
   { mediaKey: 'ascolbi', name: 'Ascolbi' },
   { mediaKey: 'aciur', name: 'ACIUR' },
+  // RSS-discovered sources (v3.1)
+  { mediaKey: 'servindi', name: 'Servindi' },
+  { mediaKey: 'prensa_rural', name: 'Agencia Prensa Rural' },
+  { mediaKey: 'el_turbion', name: 'El Turbión' },
+  { mediaKey: 'la_cola_de_rata', name: 'La Cola de Rata' },
 ];
 
 async function main() {

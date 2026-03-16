@@ -52,6 +52,11 @@ const mediaEntries: MediaSeed[] = [
     allowlisted: true,
     license: { license: 'CC-BY-NC-SA 4.0', attribution_required: true, non_commercial: true },
   },
+  // RSS-discovered sources
+  { mediaKey: 'servindi', name: 'Servindi', allowlisted: true },
+  { mediaKey: 'prensa_rural', name: 'Agencia Prensa Rural', allowlisted: true },
+  { mediaKey: 'el_turbion', name: 'El Turbión', allowlisted: true },
+  { mediaKey: 'la_cola_de_rata', name: 'La Cola de Rata', allowlisted: true },
 ];
 
 async function main() {
