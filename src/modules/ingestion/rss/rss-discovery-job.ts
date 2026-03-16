@@ -165,6 +165,10 @@ export class RssDiscoveryJob {
           url: normalized.url,
           media_key: feed.mediaKey,
           discovered_at: new Date().toISOString(),
+          // RSS metadata for downstream fallback (used only when HTML parse fails)
+          rss_title: normalized.title || undefined,
+          rss_summary: normalized.summary || undefined,
+          rss_published_at: normalized.publishedAt?.toISOString() || undefined,
         },
       };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRssItem, canonicalizeUrl } from './rss-normalizer.js';
+import { normalizeRssItem, canonicalizeUrl, decodeEntities } from './rss-normalizer.js';
 import { RssRawItem } from './rss-parser.js';
 
 describe('canonicalizeUrl', () => {
@@ -108,6 +108,49 @@ describe('normalizeRssItem', () => {
     expect(result!.categories).toEqual([]);
   });
 
+  it('uses dc:date when pubDate is absent (Prensa Rural RDF)', () => {
+    const rdfItem: RssRawItem = {
+      title: 'Artículo con dc:date',
+      link: 'https://prensarural.org/spip/spip.php?article999',
+      'dc:date': '2026-03-08T14:30:00-05:00',
+    };
+    const result = normalizeRssItem(rdfItem, 'prensa_rural', 'https://prensarural.org/spip/backend.php3');
+    expect(result).not.toBeNull();
+    expect(result!.publishedAt).toBeInstanceOf(Date);
+    expect(result!.publishedAt!.toISOString()).toBe('2026-03-08T19:30:00.000Z');
+  });
+
+  it('prefers pubDate over dc:date when both present', () => {
+    const item: RssRawItem = {
+      title: 'Both dates',
+      link: 'https://example.com/both-dates',
+      pubDate: 'Mon, 10 Mar 2026 12:00:00 GMT',
+      'dc:date': '2026-01-01T00:00:00Z',
+    };
+    const result = normalizeRssItem(item, 'test', 'https://example.com/feed');
+    expect(result!.publishedAt!.toISOString()).toBe('2026-03-10T12:00:00.000Z');
+  });
+
+  it('decodes HTML entities in title', () => {
+    const item: RssRawItem = {
+      title: 'Comunidades ind&#237;genas exigen justicia &amp; paz',
+      link: 'https://example.com/entities',
+      pubDate: 'Mon, 10 Mar 2026 12:00:00 GMT',
+    };
+    const result = normalizeRssItem(item, 'test', 'https://example.com/feed');
+    expect(result!.title).toBe('Comunidades indígenas exigen justicia & paz');
+  });
+
+  it('decodes HTML entities in summary', () => {
+    const item: RssRawItem = {
+      title: 'Test',
+      link: 'https://example.com/entities-summary',
+      description: 'La situaci&#243;n pol&#237;tica &amp; econ&#243;mica',
+    };
+    const result = normalizeRssItem(item, 'test', 'https://example.com/feed');
+    expect(result!.summary).toBe('La situación política & económica');
+  });
+
   it('truncates summary to 1000 chars', () => {
     const longDesc: RssRawItem = {
       title: 'Long',
@@ -127,5 +170,40 @@ describe('normalizeRssItem', () => {
     const result = normalizeRssItem(noGuid, 'servindi', 'https://servindi.org/feed');
     // identity key should be the canonical URL (primary), not hash
     expect(result!.identityKey).toBe('https://example.com/hash');
+  });
+});
+
+describe('decodeEntities', () => {
+  it('decodes numeric entities', () => {
+    expect(decodeEntities('&#237;')).toBe('í');
+    expect(decodeEntities('&#243;')).toBe('ó');
+  });
+
+  it('decodes hex entities', () => {
+    expect(decodeEntities('&#xE9;')).toBe('é');
+    expect(decodeEntities('&#xF1;')).toBe('ñ');
+  });
+
+  it('decodes named entities', () => {
+    expect(decodeEntities('&amp;')).toBe('&');
+    expect(decodeEntities('&lt;')).toBe('<');
+    expect(decodeEntities('&gt;')).toBe('>');
+    expect(decodeEntities('&quot;')).toBe('"');
+    expect(decodeEntities('&apos;')).toBe("'");
+  });
+
+  it('decodes Spanish named entities', () => {
+    expect(decodeEntities('&aacute;&eacute;&iacute;&oacute;&uacute;')).toBe('áéíóú');
+    expect(decodeEntities('&ntilde;')).toBe('ñ');
+    expect(decodeEntities('&Ntilde;')).toBe('Ñ');
+  });
+
+  it('handles mixed entities in a sentence', () => {
+    expect(decodeEntities('Pol&#237;tica &amp; justicia en Bogot&#225;'))
+      .toBe('Política & justicia en Bogotá');
+  });
+
+  it('returns plain text unchanged', () => {
+    expect(decodeEntities('Hello World')).toBe('Hello World');
   });
 });

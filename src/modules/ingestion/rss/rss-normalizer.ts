@@ -33,10 +33,10 @@ export function normalizeRssItem(
   const url = canonicalizeUrl(raw.link);
   if (!url) return null;
 
-  const title = (raw.title ?? '').trim();
+  const title = decodeEntities((raw.title ?? '').trim());
   if (!title) return null;
 
-  const publishedAt = parseRssDate(raw.pubDate ?? raw.published ?? raw.updated);
+  const publishedAt = parseRssDate(raw.pubDate ?? raw['dc:date'] ?? raw.published ?? raw.updated);
   const guid = raw.guid ?? null;
   const summary = raw.description ?? raw['content:encoded'] ?? raw.summary ?? null;
 
@@ -57,7 +57,7 @@ export function normalizeRssItem(
     title,
     publishedAt,
     categories,
-    summary: summary ? summary.slice(0, 1000) : null,
+    summary: summary ? decodeEntities(summary).slice(0, 1000) : null,
     guid,
   };
 }
@@ -125,4 +125,33 @@ function isUsefulGuid(guid: string): boolean {
 function hashIdentity(title: string, publishedAt: Date | null): string {
   const input = `${title.toLowerCase().trim()}|${publishedAt?.toISOString() ?? 'no-date'}`;
   return `hash:${createHash('sha256').update(input).digest('hex').slice(0, 16)}`;
+}
+
+/** Decode common HTML/XML entities (numeric + named). */
+export function decodeEntities(text: string): string {
+  return text
+    // Numeric entities: &#237; → í, &#xE9; → é
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    // Named entities
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&ntilde;/g, 'ñ')
+    .replace(/&Ntilde;/g, 'Ñ')
+    .replace(/&aacute;/g, 'á')
+    .replace(/&eacute;/g, 'é')
+    .replace(/&iacute;/g, 'í')
+    .replace(/&oacute;/g, 'ó')
+    .replace(/&uacute;/g, 'ú')
+    .replace(/&Aacute;/g, 'Á')
+    .replace(/&Eacute;/g, 'É')
+    .replace(/&Iacute;/g, 'Í')
+    .replace(/&Oacute;/g, 'Ó')
+    .replace(/&Uacute;/g, 'Ú')
+    .replace(/&uuml;/g, 'ü')
+    .replace(/&Uuml;/g, 'Ü');
 }

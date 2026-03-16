@@ -26,6 +26,7 @@ export class FetcherParser {
     return async (envelope: EventEnvelope): Promise<void> => {
       const { url, media_key } = envelope.payload as { url: string; media_key: string };
       const traceId = envelope.trace.trace_id;
+      const isRssSource = envelope.trace.source_module === 'rss';
 
       const media = await this.mediaRepo.findByKey(media_key);
       if (!media) {
@@ -91,20 +92,62 @@ export class FetcherParser {
           trace_id: traceId,
           data: { url, error: error.message },
         });
-        const blockedEnvelope: EventEnvelope = {
-          event_name: 'ArticlePolicyBlocked',
-          event_id: ulid(),
-          occurred_at: new Date().toISOString(),
-          trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-          payload: { url, reason_code: 'PARSE_FAIL' },
+        // For RSS articles, a parse exception is recoverable via metadata fallback
+        if (isRssSource) {
+          parsed = { title: '', snippet: '', textContent: '', publishedAt: null };
+        } else {
+          const blockedEnvelope: EventEnvelope = {
+            event_name: 'ArticlePolicyBlocked',
+            event_id: ulid(),
+            occurred_at: new Date().toISOString(),
+            trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
+            payload: { url, reason_code: 'PARSE_FAIL' },
+          };
+          await this.eventBus.publish(blockedEnvelope);
+          return;
+        }
+      }
+
+      // --- RSS metadata fallback ---
+      // Only for articles discovered via RSS: if HTML parse didn't produce
+      // a usable title, fall back to RSS feed metadata carried in the event payload.
+      // This NEVER activates for non-RSS articles (source_module !== 'rss').
+      let usedRssFallback = false;
+      if (isRssSource) {
+        const payload = envelope.payload as {
+          rss_title?: string;
+          rss_summary?: string;
+          rss_published_at?: string;
         };
-        await this.eventBus.publish(blockedEnvelope);
-        return;
+
+        if (!parsed.title || parsed.title.trim().length === 0) {
+          if (payload.rss_title && payload.rss_title.trim().length > 0) {
+            parsed = {
+              ...parsed,
+              title: payload.rss_title.trim(),
+            };
+            usedRssFallback = true;
+            logger.info({ url, media_key, fallback_field: 'title' }, 'rss_metadata_fallback_used');
+          }
+        }
+
+        if ((!parsed.snippet || parsed.snippet.trim().length === 0) && payload.rss_summary) {
+          parsed = { ...parsed, snippet: payload.rss_summary.trim() };
+          usedRssFallback = true;
+        }
+
+        if (!parsed.publishedAt && payload.rss_published_at) {
+          const d = new Date(payload.rss_published_at);
+          if (!isNaN(d.getTime())) {
+            parsed = { ...parsed, publishedAt: d };
+            usedRssFallback = true;
+          }
+        }
       }
 
       // Policy: block if title is missing or content is empty
       if (!parsed.title || parsed.title.trim().length === 0) {
-        logger.info({ url, reason: 'PARSE_FAIL' }, 'article_missing_title');
+        logger.info({ url, reason: 'PARSE_FAIL', is_rss: isRssSource }, 'article_missing_title');
         const blockedEnvelope: EventEnvelope = {
           event_name: 'ArticlePolicyBlocked',
           event_id: ulid(),
@@ -149,7 +192,17 @@ export class FetcherParser {
         }
       }
 
-      // 4) None
+      // 4) RSS summary fallback: only for RSS-sourced articles
+      if (isRssSource && bestText.length < MIN_LEN_META) {
+        const payload = envelope.payload as { rss_summary?: string };
+        if (payload.rss_summary && payload.rss_summary.length > bestText.length) {
+          bestText = payload.rss_summary;
+          textContentSource = 'rss';
+          usedRssFallback = true;
+        }
+      }
+
+      // 5) None
       if (bestText.length === 0) {
         textContentSource = 'none';
       }
@@ -176,6 +229,19 @@ export class FetcherParser {
         (['body', 'amp', 'rss'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
         (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
       );
+
+      // RSS observability
+      if (isRssSource) {
+        logger.info({
+          url,
+          media_key,
+          used_rss_fallback: usedRssFallback,
+          text_content_source: textContentSource,
+          text_content_len: textContentLen,
+          has_title: !!parsed.title,
+          has_snippet: !!snippet,
+        }, 'rss_article_entering_pipeline');
+      }
 
       let article;
       try {
