@@ -48,7 +48,7 @@ export class FetcherParser {
           event_id: ulid(),
           occurred_at: new Date().toISOString(),
           trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-          payload: { url, reason_code: 'DUPLICATE_URL' },
+          payload: { url, reason_code: 'DUPLICATE_URL', media_key },
         };
         await this.eventBus.publish(blockedEnvelope);
         return;
@@ -72,7 +72,7 @@ export class FetcherParser {
           event_id: ulid(),
           occurred_at: new Date().toISOString(),
           trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-          payload: { url, reason_code: 'PARSE_FAIL' },
+          payload: { url, reason_code: 'PARSE_FAIL', media_key },
         };
         await this.eventBus.publish(blockedEnvelope);
         return;
@@ -101,7 +101,7 @@ export class FetcherParser {
             event_id: ulid(),
             occurred_at: new Date().toISOString(),
             trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-            payload: { url, reason_code: 'PARSE_FAIL' },
+            payload: { url, reason_code: 'PARSE_FAIL', media_key },
           };
           await this.eventBus.publish(blockedEnvelope);
           return;
@@ -153,7 +153,7 @@ export class FetcherParser {
           event_id: ulid(),
           occurred_at: new Date().toISOString(),
           trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-          payload: { url, reason_code: 'PARSE_FAIL' },
+          payload: { url, reason_code: 'PARSE_FAIL', media_key },
         };
         await this.eventBus.publish(blockedEnvelope);
         return;
@@ -268,7 +268,7 @@ export class FetcherParser {
             event_id: ulid(),
             occurred_at: new Date().toISOString(),
             trace: { trace_id: traceId, span_id: ulid(), source_module: 'ingestion' },
-            payload: { url, reason_code: 'DUPLICATE_URL' },
+            payload: { url, reason_code: 'DUPLICATE_URL', media_key },
           };
           await this.eventBus.publish(blockedEnvelope);
           return;
