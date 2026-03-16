@@ -15,6 +15,8 @@ export interface RssRawItem {
   /** Atom: <published> or <updated> */
   published?: string;
   updated?: string;
+  /** Dublin Core: <dc:date> (RDF/RSS 1.0, e.g. Prensa Rural) */
+  'dc:date'?: string;
   description?: string;
   /** content:encoded (RSS 2.0 full body) */
   'content:encoded'?: string;
@@ -98,6 +100,7 @@ function normalizeRss2Item(raw: unknown): RssRawItem {
     link: extractText(item.link),
     guid: extractGuid(item.guid),
     pubDate: extractText(item.pubDate),
+    'dc:date': extractText(item['dc:date']),
     description: extractText(item.description),
     'content:encoded': extractText(item['content:encoded']),
     ...(categories.length > 0 ? { category: categories } : {}),

@@ -93,6 +93,28 @@ describe('parseRssXml', () => {
     expect(result.items[0].title).toContain('Título con');
   });
 
+  it('parses RDF/RSS 1.0 with dc:date (Prensa Rural format)', () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Prensa Rural</title>
+  </channel>
+  <item>
+    <title>Comunidades campesinas exigen tierras</title>
+    <link>https://prensarural.org/spip/spip.php?article12345</link>
+    <dc:date>2026-03-08T14:30:00-05:00</dc:date>
+    <description>Las comunidades campesinas del norte del Cauca exigen restitución de tierras.</description>
+  </item>
+</rdf:RDF>`;
+    const result = parseRssXml(xml);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].title).toBe('Comunidades campesinas exigen tierras');
+    expect(result.items[0]['dc:date']).toBe('2026-03-08T14:30:00-05:00');
+    expect(result.items[0].link).toBe('https://prensarural.org/spip/spip.php?article12345');
+  });
+
   it('handles RSS with single category (not array)', () => {
     const xml = `<?xml version="1.0"?>
 <rss version="2.0">

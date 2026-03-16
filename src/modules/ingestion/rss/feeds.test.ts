@@ -32,4 +32,16 @@ describe('RSS feed registry', () => {
       expect(feed.enabled).toBe(true);
     }
   });
+
+  it('servindi is disabled by default', () => {
+    const servindi = RSS_FEEDS.find((f) => f.mediaKey === 'servindi');
+    expect(servindi).toBeDefined();
+    expect(servindi!.enabled).toBe(false);
+  });
+
+  it('getEnabledFeeds does not include servindi', () => {
+    const enabled = getEnabledFeeds();
+    const keys = enabled.map((f) => f.mediaKey);
+    expect(keys).not.toContain('servindi');
+  });
 });

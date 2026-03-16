@@ -21,7 +21,8 @@ export const RSS_FEEDS: readonly RssFeedEntry[] = [
     feedUrl: 'https://www.servindi.org/feed',
     homepage: 'https://www.servindi.org',
     sourceType: 'rss',
-    enabled: true,
+    // Disabled: Peruvian source, does not contribute to Colombian corpus
+    enabled: false,
   },
   {
     mediaKey: 'prensa_rural',
