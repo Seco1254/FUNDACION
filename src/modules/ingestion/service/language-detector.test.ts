@@ -33,4 +33,31 @@ describe('isSpanish', () => {
       'This is a report about the economic situation in the country and what should be done to improve it for the citizens.';
     expect(isSpanish(text)).toBe(false);
   });
+
+  describe('short-text guard (< 40 tokens)', () => {
+    it('blocks short English text with EN stopwords', () => {
+      const text = 'The new reform would change the tax system for the country';
+      expect(isSpanish(text)).toBe(false);
+    });
+
+    it('passes short Spanish text with only ES stopwords', () => {
+      const text = 'La nueva reforma del sistema tributario para el país';
+      expect(isSpanish(text)).toBe(true);
+    });
+
+    it('passes short Spanish text without any stopwords', () => {
+      const text = 'Bogotá Medellín Cali';
+      expect(isSpanish(text)).toBe(true);
+    });
+
+    it('long mixed text still uses ratio (existing behavior)', () => {
+      // > 40 tokens, mostly Spanish, some EN words
+      const text =
+        'El presidente de Colombia anunció que la reforma tributaria del gobierno busca aumentar ' +
+        'los ingresos del Estado para financiar programas sociales en el país durante los próximos ' +
+        'años según las proyecciones del Banco de la República que indican crecimiento sostenido ' +
+        'a report by the World Bank suggests';
+      expect(isSpanish(text)).toBe(true);
+    });
+  });
 });

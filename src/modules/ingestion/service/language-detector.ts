@@ -38,6 +38,9 @@ export function isSpanish(text: string): boolean {
   const totalStopwords = esCount + enCount;
   if (totalStopwords === 0) return true;
 
+  // Short texts: insufficient signal for ratio. Any EN stopword strongly suggests English.
+  if (tokens.length < 40 && enCount > 0) return false;
+
   const esRatio = esCount / totalStopwords;
   return esRatio >= ES_THRESHOLD;
 }

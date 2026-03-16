@@ -16,7 +16,7 @@ import { metrics } from '../../../core/metrics/metrics.js';
 import { RssFeedEntry, getEnabledFeeds } from './feeds.js';
 import { fetchRssFeed } from './rss-fetcher.js';
 import { parseRssXml } from './rss-parser.js';
-import { normalizeRssItem, RssDiscoveredItem } from './rss-normalizer.js';
+import { normalizeRssItem, isEnglishMirror, RssDiscoveredItem } from './rss-normalizer.js';
 
 export interface RssDiscoveryResult {
   feedsProcessed: number;
@@ -126,6 +126,13 @@ export class RssDiscoveryJob {
     const newItems: RssDiscoveredItem[] = [];
 
     for (const rawItem of parsed.items) {
+      // Skip English mirror URLs (e.g., El Turbión /en/ articles)
+      if (rawItem.link && isEnglishMirror(rawItem.link, feed.mediaKey)) {
+        metrics.incCounter('rss.en_mirror_skipped_total');
+        logger.info({ url: rawItem.link, media_key: feed.mediaKey }, 'rss_en_mirror_skipped');
+        continue;
+      }
+
       const normalized = normalizeRssItem(rawItem, feed.mediaKey, feed.feedUrl);
       if (!normalized) continue;
 

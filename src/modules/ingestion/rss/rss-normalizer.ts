@@ -127,6 +127,20 @@ function hashIdentity(title: string, publishedAt: Date | null): string {
   return `hash:${createHash('sha256').update(input).digest('hex').slice(0, 16)}`;
 }
 
+/**
+ * Detect English mirror URLs from sources that publish bilingual content.
+ * Currently checks El Turbión's `/en/` path pattern.
+ */
+export function isEnglishMirror(url: string, mediaKey: string): boolean {
+  if (mediaKey !== 'el_turbion') return false;
+  try {
+    const path = new URL(url).pathname;
+    return path.startsWith('/en/') || path === '/en';
+  } catch {
+    return false;
+  }
+}
+
 /** Decode common HTML/XML entities (numeric + named). */
 export function decodeEntities(text: string): string {
   return text

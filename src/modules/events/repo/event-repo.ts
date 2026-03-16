@@ -269,6 +269,33 @@ export class EventRepository {
     });
   }
 
+  async findAllWithDetails(limit: number = 100) {
+    return this.prisma.event.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        versions: { orderBy: { versionIndex: 'desc' }, take: 1 },
+        eventArticles: {
+          include: {
+            article: {
+              select: {
+                id: true,
+                url: true,
+                status: true,
+                textContentLen: true,
+                textContentSource: true,
+                extractionFailReason: true,
+                paywallDetected: true,
+                usableForOverview: true,
+                media: { select: { mediaKey: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   async findByIdWithDetails(id: string) {
     return this.prisma.event.findUnique({
       where: { id },

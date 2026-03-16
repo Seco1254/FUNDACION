@@ -12,6 +12,8 @@ export interface RssFeedEntry {
   homepage: string;
   sourceType: 'rss';
   enabled: boolean;
+  /** When true, PolicyGuard applies geographic relevance filtering (Tier 3 international blocked). */
+  geoFilter?: boolean;
 }
 
 export const RSS_FEEDS: readonly RssFeedEntry[] = [
@@ -31,6 +33,7 @@ export const RSS_FEEDS: readonly RssFeedEntry[] = [
     homepage: 'https://prensarural.org',
     sourceType: 'rss',
     enabled: true,
+    geoFilter: true,
   },
   {
     mediaKey: 'el_turbion',

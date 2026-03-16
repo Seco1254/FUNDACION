@@ -172,6 +172,113 @@ export function debugFeedRoutes(
       });
     });
 
+    // ── General event eligibility diagnostic ──────────────────────
+    app.get('/v1/debug/feed/eligibility', async (_request, reply) => {
+      if (!eventRepo) {
+        return reply.status(503).send({ error: 'eventRepo not available' });
+      }
+
+      const rows = await eventRepo.findAllWithDetails(100);
+      const now = new Date();
+
+      const byState: Record<string, number> = {};
+      const byCause: Record<string, number> = {};
+      let feedEligible = 0;
+      let feedBlocked = 0;
+
+      const events = rows.map((row: any) => {
+        const state: string = row.state;
+        byState[state] = (byState[state] ?? 0) + 1;
+
+        const latestVersion = row.versions?.[0] ?? null;
+        const packet = (latestVersion?.packetJson as any) ?? {};
+        const articles = (row.eventArticles ?? []).map((ea: any) => ea.article);
+
+        // Source/text aggregation
+        const mediaKeys = new Set(articles.map((a: any) => a.media?.mediaKey ?? 'unknown'));
+        const uniqueSourcesCount = mediaKeys.size;
+        const usableArticles = articles.filter((a: any) => a.usableForOverview);
+        const totalUsableTextLen = usableArticles.reduce(
+          (sum: number, a: any) => sum + (a.textContentLen ?? 0), 0,
+        );
+        const keyFactsCount: number = packet.key_facts_count ?? 0;
+        const overviewStatus = deriveOverviewStatus(packet);
+        const evidenceLevel = computeEvidenceLevel(uniqueSourcesCount, totalUsableTextLen);
+
+        // Gate evaluation
+        const ai = packet?.ai_overview;
+        const hasDisclaimer = typeof ai?.why === 'string'
+          && /única fuente|una fuente|una sola fuente|evidencia limitada/i.test(ai.why);
+        const gate = evaluatePublishGate({
+          unique_sources_count: uniqueSourcesCount,
+          total_usable_text_len: totalUsableTextLen,
+          key_facts_count: keyFactsCount,
+          overview_status: overviewStatus,
+          has_disclaimer: hasDisclaimer,
+          headline: latestVersion?.headline ?? undefined,
+        });
+
+        if (gate.eligible) feedEligible++;
+        else feedBlocked++;
+
+        // Dominant cause
+        let dominantCause: string | null = null;
+        if (state === 'PENDING_PUBLISH') {
+          if (row.publishAt && row.publishAt > now) dominantCause = 'NOT_DUE';
+          else dominantCause = 'SCHEDULER_MISS';
+        } else if (!gate.eligible) {
+          const r = gate.reasons;
+          if (r.some((s: string) => s.startsWith('NON_NEWS'))) dominantCause = 'NON_NEWS';
+          else if (r.includes('TEXT_TOO_SHORT')) dominantCause = 'TEXT_TOO_SHORT';
+          else if (r.includes('OVERVIEW_FAILED')) dominantCause = 'OVERVIEW_FAILED';
+          else dominantCause = r[0] ?? null;
+        }
+
+        if (dominantCause) {
+          byCause[dominantCause] = (byCause[dominantCause] ?? 0) + 1;
+        }
+
+        return {
+          event_id: row.id,
+          state,
+          headline: latestVersion?.headline ?? null,
+          published_at: row.publishedAt?.toISOString() ?? null,
+          publish_at: row.publishAt?.toISOString() ?? null,
+          publish_due: row.publishAt ? row.publishAt <= now : null,
+          gate_eligible: gate.eligible,
+          gate_name: gate.gate_name,
+          gate_reasons: gate.reasons,
+          unique_sources_count: uniqueSourcesCount,
+          total_usable_text_len: totalUsableTextLen,
+          evidence_level: evidenceLevel,
+          key_facts_count: keyFactsCount,
+          overview_status: overviewStatus,
+          articles: articles.map((a: any) => ({
+            id: a.id,
+            url: a.url,
+            media_key: a.media?.mediaKey ?? 'unknown',
+            text_content_len: a.textContentLen ?? 0,
+            text_content_source: a.textContentSource ?? 'unknown',
+            usable_for_overview: a.usableForOverview ?? false,
+            extraction_fail_reason: a.extractionFailReason ?? null,
+            paywall_detected: a.paywallDetected ?? false,
+          })),
+          dominant_block_cause: dominantCause,
+        };
+      });
+
+      return reply.send({
+        summary: {
+          total_events: rows.length,
+          by_state: byState,
+          by_dominant_cause: byCause,
+          feed_eligible_count: feedEligible,
+          feed_blocked_count: feedBlocked,
+        },
+        events,
+      });
+    });
+
     done();
   };
 }

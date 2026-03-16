@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRssItem, canonicalizeUrl, decodeEntities } from './rss-normalizer.js';
+import { normalizeRssItem, canonicalizeUrl, decodeEntities, isEnglishMirror } from './rss-normalizer.js';
 import { RssRawItem } from './rss-parser.js';
 
 describe('canonicalizeUrl', () => {
@@ -170,6 +170,32 @@ describe('normalizeRssItem', () => {
     const result = normalizeRssItem(noGuid, 'servindi', 'https://servindi.org/feed');
     // identity key should be the canonical URL (primary), not hash
     expect(result!.identityKey).toBe('https://example.com/hash');
+  });
+});
+
+describe('isEnglishMirror', () => {
+  it('detects El Turbión English URLs', () => {
+    expect(isEnglishMirror('https://elturbion.com/en/some-article', 'el_turbion')).toBe(true);
+  });
+
+  it('does not flag El Turbión Spanish URLs', () => {
+    expect(isEnglishMirror('https://elturbion.com/articulo-espanol', 'el_turbion')).toBe(false);
+  });
+
+  it('does not flag other media even with /en/ path', () => {
+    expect(isEnglishMirror('https://elturbion.com/en/some-article', 'other_media')).toBe(false);
+  });
+
+  it('does not flag non-el_turbion feeds', () => {
+    expect(isEnglishMirror('https://prensarural.org/spip/article123', 'prensa_rural')).toBe(false);
+  });
+
+  it('detects bare /en path', () => {
+    expect(isEnglishMirror('https://elturbion.com/en', 'el_turbion')).toBe(true);
+  });
+
+  it('handles invalid URLs gracefully', () => {
+    expect(isEnglishMirror('not-a-url', 'el_turbion')).toBe(false);
   });
 });
 

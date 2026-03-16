@@ -162,6 +162,109 @@ describe('PolicyGuard', () => {
     expect(published[0].payload).toHaveProperty('reason_code', 'NOT_ALLOWLISTED');
   });
 
+  it('blocks prensa_rural article with international content (NOT_RELEVANT_GEO)', async () => {
+    const articleRepo = makeMockArticleRepo({
+      title: 'Crisis humanitaria en Irán se agrava',
+      snippet:
+        'Organizaciones de derechos humanos denuncian la grave situación humanitaria que vive la población civil en medio del conflicto armado internacional.',
+    });
+    const mediaRepo = makeMockMediaRepo();
+    mediaRepo.findById.mockResolvedValue({
+      id: 'media-pr',
+      mediaKey: 'prensa_rural',
+      name: 'Agencia Prensa Rural',
+      allowlisted: true,
+      createdAt: new Date(),
+    });
+    const auditWriter = makeMockAuditWriter();
+
+    const guard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditWriter);
+    await guard.handler()(makeNormalizedEnvelope('article-1'));
+
+    expect(articleRepo.updateStatus).toHaveBeenCalledWith('article-1', 'POLICY_BLOCKED', 'NOT_RELEVANT_GEO');
+    expect(published[0].event_name).toBe('ArticlePolicyBlocked');
+    expect(published[0].payload).toHaveProperty('reason_code', 'NOT_RELEVANT_GEO');
+  });
+
+  it('passes prensa_rural article with Colombian content', async () => {
+    const articleRepo = makeMockArticleRepo({
+      title: 'Comunidades del Cauca denuncian desplazamiento forzado',
+      snippet:
+        'Familias campesinas en el norte del Cauca fueron obligadas a abandonar sus tierras según reportes de organizaciones de derechos humanos que operan en la región colombiana.',
+    });
+    const mediaRepo = makeMockMediaRepo();
+    mediaRepo.findById.mockResolvedValue({
+      id: 'media-pr',
+      mediaKey: 'prensa_rural',
+      name: 'Agencia Prensa Rural',
+      allowlisted: true,
+      createdAt: new Date(),
+    });
+    const auditWriter = makeMockAuditWriter();
+
+    const guard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditWriter);
+    await guard.handler()(makeNormalizedEnvelope('article-1'));
+
+    expect(articleRepo.updateStatus).toHaveBeenCalledWith('article-1', 'POLICY_OK');
+    expect(published[0].event_name).toBe('ArticlePolicyOk');
+  });
+
+  it('does not apply geo filter for el_turbion (geoFilter not enabled)', async () => {
+    const articleRepo = makeMockArticleRepo({
+      title: 'Crisis humanitaria en Irán se agrava',
+      snippet:
+        'Organizaciones de derechos humanos denuncian la grave situación humanitaria que vive la población civil en medio del conflicto armado internacional.',
+    });
+    const mediaRepo = makeMockMediaRepo(); // defaults to eltiempo (no geoFilter)
+    const auditWriter = makeMockAuditWriter();
+
+    const guard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditWriter);
+    await guard.handler()(makeNormalizedEnvelope('article-1'));
+
+    // Should pass because el_turbion doesn't have geoFilter
+    expect(articleRepo.updateStatus).toHaveBeenCalledWith('article-1', 'POLICY_OK');
+    expect(published[0].event_name).toBe('ArticlePolicyOk');
+  });
+
+  it('passes prensa_rural article with regional LatAm content', async () => {
+    const articleRepo = makeMockArticleRepo({
+      title: 'Pueblos indígenas de Venezuela exigen respeto a sus territorios',
+      snippet:
+        'Comunidades originarias del país vecino denuncian la expansión minera que amenaza sus territorios ancestrales en la región del Orinoco.',
+    });
+    const mediaRepo = makeMockMediaRepo();
+    mediaRepo.findById.mockResolvedValue({
+      id: 'media-pr',
+      mediaKey: 'prensa_rural',
+      name: 'Agencia Prensa Rural',
+      allowlisted: true,
+      createdAt: new Date(),
+    });
+    const auditWriter = makeMockAuditWriter();
+
+    const guard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditWriter);
+    await guard.handler()(makeNormalizedEnvelope('article-1'));
+
+    // Regional (Tier 2) passes
+    expect(articleRepo.updateStatus).toHaveBeenCalledWith('article-1', 'POLICY_OK');
+    expect(published[0].event_name).toBe('ArticlePolicyOk');
+  });
+
+  it('includes media_key in ArticlePolicyBlocked payload', async () => {
+    const articleRepo = makeMockArticleRepo({
+      title: 'Test',
+      snippet: 'Too short',
+    });
+    const mediaRepo = makeMockMediaRepo();
+    const auditWriter = makeMockAuditWriter();
+
+    const guard = new PolicyGuard(articleRepo, mediaRepo, eventBus, auditWriter);
+    await guard.handler()(makeNormalizedEnvelope('article-1'));
+
+    expect(published[0].event_name).toBe('ArticlePolicyBlocked');
+    expect(published[0].payload).toHaveProperty('media_key', 'eltiempo');
+  });
+
   it('writes audit log entry on policy block', async () => {
     const articleRepo = makeMockArticleRepo({
       title: 'Test',

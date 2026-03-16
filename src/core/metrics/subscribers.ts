@@ -68,8 +68,28 @@ export function registerMetricSubscribers(eventBus: EventBus): void {
     metrics.incCounter('article.policy_ok.total');
   });
 
+  // ── Policy blocks (per reason + per media) ──
+  eventBus.subscribe('ArticlePolicyBlocked', 'Metrics.articlePolicyBlocked', async (env: EventEnvelope) => {
+    const payload = env.payload as Record<string, unknown>;
+    const reason = typeof payload.reason_code === 'string' ? payload.reason_code : 'UNKNOWN';
+    const mediaKey = typeof payload.media_key === 'string' ? payload.media_key : 'unknown';
+    metrics.incCounter('article.policy_blocked.total');
+    metrics.incCounter(`article.policy_blocked.${reason}.total`);
+    metrics.incCounter(`article.policy_blocked.by_media.${mediaKey}.total`);
+  });
+
   // ── Version committed (for drift frequency) ──
   eventBus.subscribe('EventVersionCommitted', 'Metrics.versionCommitted', async (_env: EventEnvelope) => {
     metrics.incCounter('version.committed.total');
+  });
+
+  // ── Embedding funnel ──
+  eventBus.subscribe('ArticleEmbedded', 'Metrics.articleEmbedded', async (_env: EventEnvelope) => {
+    metrics.incCounter('article.embedded.total');
+  });
+
+  // ── Published events ──
+  eventBus.subscribe('EventPublished', 'Metrics.eventPublished', async (_env: EventEnvelope) => {
+    metrics.incCounter('event.published.total');
   });
 }
