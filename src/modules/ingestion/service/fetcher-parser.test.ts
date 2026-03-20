@@ -227,8 +227,9 @@ describe('FetcherParser', () => {
     expect(articleRepo.create).toHaveBeenCalledOnce();
     const data = articleRepo.create.mock.calls[0][0];
 
-    expect(data.textContentLen).toBe(1000);
-    expect(data.textContentSource).toBe('body');
+    // dom-cleaner may upgrade body text if it extracts more from the HTML
+    expect(data.textContentLen).toBeGreaterThanOrEqual(1000);
+    expect(['body', 'dom_cleaner_v1']).toContain(data.textContentSource);
     expect(data.paywallDetected).toBe(false);
     expect(data.usableForOverview).toBe(true);
     expect(data.extractionFailReason).toBeNull();

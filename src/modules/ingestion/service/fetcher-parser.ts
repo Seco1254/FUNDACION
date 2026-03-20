@@ -11,6 +11,7 @@ import {
   extractMetaDescription,
 } from '../scrapers/html-utils.js';
 import { logger } from '../../../core/logging/logger.js';
+import { cleanDom, DOM_CLEANER_MIN_USABLE_LEN } from '../../text_sanitizer/dom-cleaner.js';
 
 export class FetcherParser {
   constructor(
@@ -166,6 +167,17 @@ export class FetcherParser {
       let bestText = parsed.textContent || '';
       let textContentSource: string = bestText.length > 0 ? 'body' : 'none';
 
+      // 0) DOM cleaner: real DOM parsing for better text extraction (HTML-scraped articles)
+      try {
+        const domResult = cleanDom({ html, url });
+        if (domResult.text.length > bestText.length && domResult.text.length >= DOM_CLEANER_MIN_USABLE_LEN) {
+          bestText = domResult.text;
+          textContentSource = 'dom_cleaner_v1';
+        }
+      } catch {
+        // DOM cleaner failure is non-fatal; fall through to existing extractors
+      }
+
       // 2) AMP fallback: if body text too short, try AMP page
       if (bestText.length < TEXT_MIN_LEN) {
         const ampUrl = extractAmpUrl(html);
@@ -218,7 +230,7 @@ export class FetcherParser {
       if (paywallDetected) extractionFailReason = 'paywall';
       else if (textContentLen === 0) extractionFailReason = 'empty';
       else if (
-        ['body', 'amp', 'rss'].includes(textContentSource) && textContentLen < TEXT_MIN_LEN
+        ['body', 'amp', 'rss', 'dom_cleaner_v1'].includes(textContentSource) && textContentLen < TEXT_MIN_LEN
       ) extractionFailReason = 'too_short';
       else if (textContentSource === 'meta' && textContentLen < MIN_LEN_META) {
         extractionFailReason = 'too_short';
@@ -226,7 +238,7 @@ export class FetcherParser {
 
       // Flexible usability threshold
       const usableForOverview = !paywallDetected && (
-        (['body', 'amp', 'rss'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
+        (['body', 'amp', 'rss', 'dom_cleaner_v1'].includes(textContentSource) && textContentLen >= TEXT_MIN_LEN) ||
         (textContentSource === 'meta' && textContentLen >= MIN_LEN_META)
       );
 

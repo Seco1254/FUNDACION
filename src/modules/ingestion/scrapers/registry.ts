@@ -7,6 +7,7 @@ import { ConsonanteScraper } from './consonante.js';
 import { OecScraper } from './oec.js';
 import { AscolbiScraper } from './ascolbi.js';
 import { AciurScraper } from './aciur.js';
+import { LaRepublicaScraper } from './larepublica.js';
 import { StubScraper } from './stub-scraper.js';
 
 const scrapers: Map<string, MediaScraper> = new Map();
@@ -18,6 +19,7 @@ scrapers.set('consonante', new ConsonanteScraper());
 scrapers.set('oec', new OecScraper());
 scrapers.set('ascolbi', new AscolbiScraper());
 scrapers.set('aciur', new AciurScraper());
+scrapers.set('larepublica', new LaRepublicaScraper());
 
 // RSS-only sources: no HTML scraper needed — discovery happens via RSS feeds.
 // StubScraper ensures getScraperForMedia returns a valid scraper for these keys

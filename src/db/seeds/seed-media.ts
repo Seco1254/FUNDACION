@@ -17,6 +17,7 @@ const MEDIA_ALLOWLIST = [
   { mediaKey: 'oec', name: 'Observatorio Editorial Colombiano' },
   { mediaKey: 'ascolbi', name: 'Ascolbi' },
   { mediaKey: 'aciur', name: 'ACIUR' },
+  { mediaKey: 'larepublica', name: 'La República' },
   // RSS-discovered sources (v3.1)
   { mediaKey: 'servindi', name: 'Servindi' },
   { mediaKey: 'prensa_rural', name: 'Agencia Prensa Rural' },
